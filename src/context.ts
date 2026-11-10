@@ -1,4 +1,5 @@
 import { MarkdownStore } from "./backends/markdown.js";
+import { BeadsStore } from "./backends/beads.js";
 import { type ConfigOverrides, type ResolvedConfig, resolveConfig } from "./config.js";
 import { AxiError } from "./errors.js";
 import type { Store } from "./store.js";
@@ -21,6 +22,10 @@ export function resolveTasksContext(
 ): TasksContext {
   const config = resolveConfig(overrides);
 
+  if (config.backend === "beads" && config.beads) {
+    return { store: new BeadsStore(config.beads), config,
+      ...(suggestionGlobals ? { suggestionGlobals } : {}) };
+  }
   if (config.backend !== "markdown") {
     throw new AxiError(
       `Unsupported backend "${config.backend}" — P1 ships the markdown backend only`,
