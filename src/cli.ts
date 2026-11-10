@@ -8,9 +8,10 @@ import { captureChannelCoverage, chatHookCommand, chatHookSettings } from './cap
 import { captureChatPrompt } from './chat-hook.js';
 import { deliverRequest } from './delivery.js';
 import { captureRequest, initializeProject, mapRequest, requestCoverage, unclassifiedRequests } from './intake.js';
+import { recordStage, checkPlanReadiness, planReadinessHistory, stageHistory } from './planning.js';
 import { ProjectStore, StoreError } from './store.js';
 
-const help = `Software Factory request intake
+const help = `Software Factory request intake and staged planning
 All commands print JSON; chat-hook is silent on success. No settings are installed.
 
   init           --db <sqlite> --input <Project JSON file>
@@ -18,6 +19,13 @@ All commands print JSON; chat-hook is silent on success. No settings are install
                  --channel <cli|chat|firstmate_inbox|other> --source <reference>
                  --text-file <file|-> [--captured-at <ISO timestamp>]
   map            --db <sqlite> --input <MapRequestInput JSON file>
+  understand     --db <sqlite> --input <RecordStageInput JSON file>
+  design         --db <sqlite> --input <RecordStageInput JSON file>
+  plan           --db <sqlite> --input <RecordStageInput JSON file>
+  detail         --db <sqlite> --input <RecordStageInput JSON file>
+  check-plan     --db <sqlite> --input <CheckReadinessInput JSON file>
+  findings       --db <sqlite> --project <id> --plan <plan ID>
+  stages         --db <sqlite> --project <id> --feature <feature ID>
   unclassified   --db <sqlite> --project <id>
   coverage       --db <sqlite> --project <id> --request <request ID>
   outbox         --db <sqlite> --project <id>
@@ -37,6 +45,13 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   capture: { db: valueOption, project: valueOption, 'client-request-id': valueOption,
     channel: valueOption, source: valueOption, 'text-file': valueOption, 'captured-at': valueOption },
   map: { db: valueOption, input: valueOption },
+  understand: { db: valueOption, input: valueOption },
+  design: { db: valueOption, input: valueOption },
+  plan: { db: valueOption, input: valueOption },
+  detail: { db: valueOption, input: valueOption },
+  'check-plan': { db: valueOption, input: valueOption },
+  findings: { db: valueOption, project: valueOption, plan: valueOption },
+  stages: { db: valueOption, project: valueOption, feature: valueOption },
   unclassified: { db: valueOption, project: valueOption },
   coverage: { db: valueOption, project: valueOption, request: valueOption },
   outbox: { db: valueOption, project: valueOption },
@@ -81,6 +96,21 @@ export function runCli(args: string[]): number {
           }));
           break;
         }
+        case 'understand': case 'design': case 'plan': case 'detail': {
+          const input = jsonFile('input');
+          if (!input || typeof input !== 'object' || !('stage' in input) || !input.stage ||
+            typeof input.stage !== 'object' || !('stage' in input.stage) || input.stage.stage !== verb) {
+            throw new StoreError('validation', 'stage_does_not_match_command');
+          }
+          output(recordStage(store, input)); break;
+        }
+        case 'check-plan': {
+          const report = checkPlanReadiness(store, jsonFile('input'));
+          output(report);
+          return report.readyPlan ? 0 : 1;
+        }
+        case 'findings': output(planReadinessHistory(store, required('project'), required('plan'))); break;
+        case 'stages': output(stageHistory(store, required('project'), required('feature'))); break;
         case 'map': output(mapRequest(store, jsonFile('input'))); break;
         case 'unclassified': output(unclassifiedRequests(store, required('project'))); break;
         case 'coverage': output(requestCoverage(store, required('project'), required('request'))); break;

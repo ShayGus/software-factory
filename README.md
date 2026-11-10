@@ -1,4 +1,4 @@
-# Software Factory request capture — BUILD-04
+# Software Factory staged planning — BUILD-06
 
 This TypeScript package defines the records and operation boundaries for the
 FirstMate product-development workflow in [the design](Software_Factory_Design.md).
@@ -6,6 +6,7 @@ It preserves request, feature, design, detailed-plan, assignment and review iden
 through one complete feature workflow. BUILD-03 adds local SQLite persistence.
 BUILD-04 adds CLI intake, source mapping, a standalone Claude Code chat hook,
 configuration-based capture coverage and an explicit FirstMate inbox delivery adapter.
+BUILD-06 adds staged understanding, design, planning, detail, reuse and readiness checks.
 It does not schedule workers or implement a UI, HTTP service, tasks-axi changes or Beads.
 
 Node.js 22.13.0 or later is required. Install and verify with:
@@ -49,6 +50,9 @@ All objects reject unknown keys. Schemas do not trim, rewrite or coerce source t
 | Observation | `ObservationSchema` |
 | Guidance revision | `GuidanceRevisionSchema` |
 | Operation | `OperationSchema` |
+| Understanding revision (BUILD-06) | `UnderstandingRevisionSchema` |
+| Method stage selection (BUILD-06) | `StageRevisionSchema` |
+| Deterministic readiness result (BUILD-06) | `PlanReadinessRevisionSchema` |
 
 `RecordSchema` is the discriminated union, and `RecordsSchema` parses arrays.
 Record references are `{ id, revision }`; artifact identities are
@@ -223,8 +227,8 @@ the SQLite flag requirement; Node 22 still labels this API experimental. Transac
 and prepared statements use the common Node 22 API surface. Zod remains the only
 runtime package dependency. Operations are synchronous; handlers must stay short.
 
-The database has append-only record history and durable command receipts. All sixteen
-BUILD-02 record kinds, including operation revisions, use `RecordSchema`; there are no
+The database has append-only record history and durable command receipts. The sixteen
+BUILD-02 record kinds and three BUILD-06 method records use `RecordSchema`; there are no
 parallel persistence record shapes. SQLite `user_version` identifies storage format 1;
 unknown versions are rejected. This build does not supply database migrations.
 
@@ -321,8 +325,9 @@ and adoption of unaffected evidence remain later workflow policy.
   no license; this package does not select one on the operator's behalf.
 
 Durable history, transactions, idempotency and pending-operation storage are implemented.
-Operation execution/reconciliation, source comparison, assignment generation and live
-product review are later builds. No live FirstMate integration or full product milestone is
+Request delivery and staged planning are implemented below. General operation
+execution/reconciliation, semantic source interpretation, assignment generation and live
+product review remain later builds. No live FirstMate integration or full product milestone is
 claimed by these contract fixtures.
 
 ## Request capture CLI — BUILD-04
@@ -549,3 +554,144 @@ that every historical conversational request was captured.
 BUILD-04 verification covers immutable original text across mapping/correction,
 visible omitted ranges, all dispositions, stale-write rejection, atomic capture,
 CLI round trips, hook idempotence and channel coverage with no hook installed.
+
+## Staged design and planning — BUILD-06
+
+The local CLI and exported application functions now record Understand, Design, Plan,
+Detail and deterministic readiness checks in the BUILD-03 store. They use the existing
+`design_plan_feature` operation family and its idempotency/CAS rules. These commands
+make no model, network, FirstMate, worker-dispatch or task-manager calls.
+
+```sh
+software-factory understand --db /absolute/path/project.sqlite --input /absolute/path/understand.json
+software-factory design     --db /absolute/path/project.sqlite --input /absolute/path/design.json
+software-factory plan       --db /absolute/path/project.sqlite --input /absolute/path/plan.json
+software-factory detail     --db /absolute/path/project.sqlite --input /absolute/path/detail.json
+software-factory check-plan --db /absolute/path/project.sqlite --input /absolute/path/check.json
+software-factory findings  --db /absolute/path/project.sqlite --project project-1 --plan plan-new
+software-factory stages    --db /absolute/path/project.sqlite --project project-1 --feature feature-1
+```
+
+Every stage input follows `RecordStageInputSchema` (`recordStage(store, input)`):
+
+```json
+{
+  "idempotencyKey": "understand-feature-1",
+  "expectedRevision": 0,
+  "issuedAt": "2026-11-10T10:36:43Z",
+  "stage": {
+    "kind": "stage_revision", "id": "stage-understand", "projectId": "project-1",
+    "schemaVersion": 1, "revision": 1,
+    "createdAt": "2026-11-10T10:36:43Z", "updatedAt": "2026-11-10T10:36:43Z",
+    "stage": "understand", "feature": { "id": "feature-1", "revision": 1 },
+    "sourceRequests": [{ "id": "request-1", "revision": 1 }],
+    "criteria": [{ "id": "criterion-general", "revision": 1 }],
+    "artifact": { "id": "understand-1", "revision": 1 },
+    "changeReason": "Research the existing message flow"
+  },
+  "records": [{
+    "kind": "understanding_revision", "id": "understand-1", "projectId": "project-1",
+    "schemaVersion": 1, "revision": 1,
+    "createdAt": "2026-11-10T10:36:43Z", "updatedAt": "2026-11-10T10:36:43Z",
+    "feature": { "id": "feature-1", "revision": 1 },
+    "sourceRequests": [{ "id": "request-1", "revision": 1 }],
+    "criteria": [{ "id": "criterion-general", "revision": 1 }],
+    "goal": "Correct the ERPNext error message",
+    "userBehavior": "Read the correct message after the existing error",
+    "terms": { "error": "The existing connection failure" },
+    "priorities": [], "examples": [], "exclusions": ["No changes to connection behavior"],
+    "existingWork": [{ "source": { "uri": "repo://connection-errors" }, "finding": "The error flow already works" }],
+    "openUnknowns": [],
+    "scope": [{ "request": { "id": "request-1", "revision": 1 }, "term": "ERPNext", "role": "entire_scope" }],
+    "changeReason": "Initial investigation"
+  }]
+}
+```
+
+This example assumes intake has already created the named feature, criterion and
+request with ERPNext in its original text. Each subsequent stage names its predecessor
+through `previousStage: {id, revision}`. `expectedRevision` applies to the stage ID;
+each supplied artifact also undergoes the store's revision checks. Use revision 1
+and expected revision 0 for a new stage, then increment both appropriately. Reusing
+a key with a changed payload fails, and a replay returns the original receipt.
+
+| Stage | Selected artifact | Content added to the existing contracts |
+| --- | --- | --- |
+| `understand` | `UnderstandingRevisionSchema` | Goal, user behavior, vocabulary, priorities, examples, exclusions, researched existing work, explicit unknowns, request scope roles |
+| `design` | `DesignRevisionSchema` | `workflow.understanding`; `workflow.reuse` with `alreadyWorks`, `gap`, `change`; `workflow.scope`; `workflow.changeReason`. Existing behavior, technical design, source comparison and decision references remain canonical. |
+| `plan` | `ImplementationPlanRevisionSchema` | `workflow.slices` (ordered IDs, behavior, criteria and task refs), `scope`, `integrationSteps`, `finalVerification`, `retainedTasks`, `changeReason`. Existing execution strategy, ordered tasks, real dependencies and priorities remain canonical. |
+| `detail` | The selected plan or a later revision of it | Detailed task revisions containing behavior, design references, `decisionsToKeep`, boundaries, reuse targets, inputs, outputs, blockers, acceptance cases, `verificationMethod` and return requirements |
+
+At Plan, include linked draft tasks in `records` alongside the plan, using
+`draft: true` and their feature/design/plan/criterion references. At Detail, supply
+completed task revisions and a plan revision whose delivery sequence and slices name
+them. All linked records are stored atomically, so circular task/plan links require
+no partial writes. An omitted detail field can remain absent in a draft and is
+reported by readiness. A non-draft task retains BUILD-02's required detail. Empty
+input, reuse-target or decision lists explicitly mean none; acceptance cases,
+outputs and boundaries, when supplied, must be nonempty.
+
+Decisions extend `DecisionChangeSchema` with
+`choice: {kind: "product" | "technical", state: "resolved" | "open"}`. Resolved means
+`selected` or `rejected`; open decisions cannot use those dispositions. Only open
+product decisions produce approval-related readiness findings. Settled decisions
+are reused without an approval mutation, including when an old question list still
+contains the exact answered question. Each task lists the relevant design decisions
+it must preserve; it need not repeat decisions unrelated to that task.
+
+A stage can select an existing design or plan without writing it again: supply
+`records: []` and `stage.reuse` containing a passed `check` (the existing
+`ComparisonSchema`) and a `criterionMap` of `{current: Ref, existing: Ref}` entries.
+The comparison must cite the current original requests and selected artifact;
+every current criterion must map to a criterion of the reused artifact's feature.
+This also supports rechecking existing artifacts for a newer feature revision.
+Earlier designs with prose reuse findings can be selected through this check;
+plans need structured slices and feature-verification steps to pass readiness.
+
+Readiness input follows `CheckReadinessInputSchema` (`checkPlanReadiness`):
+
+```json
+{
+  "projectId": "project-1",
+  "detailStage": { "id": "stage-detail", "revision": 1 },
+  "expectedPlanRevision": 2,
+  "idempotencyKey": "check-plan-new-2",
+  "issuedAt": "2026-11-10T10:36:43Z"
+}
+```
+
+The check persists a `PlanReadinessRevisionSchema` with exact feature, plan and
+Detail-stage references. Findings name the affected revision and field. A finding
+withholds a ready plan, and `check-plan` returns exit status 1 with the findings in
+stdout. With no findings, the same transaction creates the next plan revision with
+`readiness.ready: true`, a passed comparison, and `workflow.readinessCheck`. Task
+revisions are retained. `findings` and `planReadinessHistory` read the persisted
+checks without rerunning or changing them. `stages` and `stageHistory` show the
+method history separately from the source feature revision and execution state.
+
+The check catches criteria absent from slices or tasks, tasks/slices with no current
+criterion, example-only scope, absent integration across multiple slices, absent
+final feature verification, open product decisions, unresolved source findings,
+missing actionable detail, and inconsistent stage/dependency ordering. Scope roles
+come from recorded source analysis: for example, the BUILD-02 request says ERPNext
+is an example, so Understand records `role: "example"` and Design/Plan must record
+`coverage: "general"` for that request and term. An ERPNext-only scope is recorded as
+`coverage: "example_only"` and blocks readiness even when all criterion IDs survive.
+This deterministic check does not infer arbitrary natural-language intent or prove
+the completeness of the source analysis. The original text and the recorded source
+comparisons remain available for that review; no model call is hidden in readiness.
+
+For a material discovery, write a new affected design/plan revision with its reason
+and update the corresponding stage revision. An unchanged task can remain at its
+exact previous revision when the new plan lists
+`workflow.retainedTasks: [{task: {id, revision}, reason: "..."}]`. Changed tasks get
+new revisions. Correct findings through these revisions and run a new readiness
+check with a new key. Earlier checks remain history. A ready revision cannot change
+the delivery content that its linked readiness record checked.
+
+`test/planning.test.ts` exercises a general cross-system feature and a compact
+single-message correction through the same CLI/application path, plus current-request
+reuse, dropped behavior, the BUILD-02 ERPNext narrowing scenario, integration gaps,
+detail gaps, settled decisions, correction/recheck, revision-preserving replanning,
+transaction conflicts and export/restore. Assignment generation, instruction fidelity,
+execution management and product review remain their separate planned builds.

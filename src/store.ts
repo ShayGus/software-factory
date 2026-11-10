@@ -155,7 +155,7 @@ export class ProjectStore {
       const latest = new Map<string, FactoryRecord>();
       for (const record of history) latest.set(record.id, record);
       expected(command.expectedRevision, latest.get(command.targetId));
-      if (command.command === 'design_plan_feature') for (const ref of command.payload.expectedRevisions) {
+      if (command.command === 'design_plan_feature' && 'expectedRevisions' in command.payload) for (const ref of command.payload.expectedRevisions) {
         expected(ref.revision, latest.get(ref.id));
       }
       const writes = parse(RecordsSchema.min(1), prepare(structuredClone(history)));

@@ -48,6 +48,40 @@ export const CriterionSchema = record('criterion', {
   sourceRefs: z.array(SourceRefSchema).min(1), disposition: DispositionSchema,
 });
 
+// Scope roles are recorded during source comparison; deterministic checks do not
+// pretend to infer all intent from natural-language prose.
+export const RequestScopeSchema = z.strictObject({
+  request: RefSchema, term: TextSchema, role: z.enum(['example', 'required', 'entire_scope']),
+});
+export const PlannedScopeSchema = z.strictObject({
+  request: RefSchema, term: TextSchema, coverage: z.enum(['general', 'example_only', 'required', 'entire_scope']),
+});
+export const UnderstandingRevisionSchema = record('understanding_revision', {
+  feature: RefSchema, sourceRequests: z.array(RefSchema).min(1), criteria: z.array(RefSchema),
+  goal: TextSchema, userBehavior: TextSchema, terms: z.record(TextSchema, TextSchema),
+  priorities: z.array(TextSchema), examples: z.array(TextSchema), exclusions: z.array(TextSchema),
+  existingWork: z.array(z.strictObject({ source: SourceRefSchema, finding: TextSchema })).min(1),
+  openUnknowns: z.array(TextSchema), scope: z.array(RequestScopeSchema), changeReason: TextSchema,
+});
+export const StageRevisionSchema = record('stage_revision', {
+  stage: z.enum(['understand', 'design', 'plan', 'detail']), feature: RefSchema,
+  sourceRequests: z.array(RefSchema).min(1), criteria: z.array(RefSchema), artifact: RefSchema,
+  previousStage: RefSchema.optional(), changeReason: TextSchema,
+  reuse: z.strictObject({
+    check: ComparisonSchema,
+    criterionMap: z.array(z.strictObject({ current: RefSchema, existing: RefSchema })),
+  }).optional(),
+});
+export const ReadinessFindingSchema = z.strictObject({
+  code: z.enum(['dropped_behavior', 'example_driven_narrowing', 'invented_scope', 'missing_integration',
+    'unresolved_product_decision', 'detail_gap', 'stage_gap', 'source_gap', 'dependency_gap']),
+  record: RefSchema, path: TextSchema, message: TextSchema,
+});
+export const PlanReadinessRevisionSchema = record('plan_readiness_revision', {
+  feature: RefSchema, plan: RefSchema, detailStage: RefSchema,
+  findings: z.array(ReadinessFindingSchema), ready: z.boolean(),
+}).refine((value) => value.ready === (value.findings.length === 0), 'Readiness must agree with findings');
+
 export const DesignRevisionSchema = record('design_revision', {
   sourceRefs: z.array(SourceRefSchema).min(1), feature: RefSchema,
   productBehavior: TextSchema, examples: z.array(TextSchema), technicalDesign: TextSchema,
@@ -55,6 +89,11 @@ export const DesignRevisionSchema = record('design_revision', {
   decisions: z.array(RefSchema), alternatives: z.array(TextSchema), testingApproach: TextSchema,
   exclusions: z.array(TextSchema), unresolvedQuestions: z.array(TextSchema),
   sourceComparison: ComparisonSchema,
+  workflow: z.strictObject({
+    understanding: RefSchema,
+    reuse: z.strictObject({ alreadyWorks: TextSchema, gap: TextSchema, change: TextSchema }),
+    scope: z.array(PlannedScopeSchema), changeReason: TextSchema,
+  }).optional(),
 });
 
 export const DependencySchema = z.strictObject({
@@ -71,17 +110,33 @@ export const ImplementationPlanRevisionSchema = record('implementation_plan_revi
     taskId: IdSchema, priority: z.number().int(),
   })),
   readiness: z.strictObject({ ready: z.boolean(), comparison: ComparisonSchema }),
+  workflow: z.strictObject({
+    slices: z.array(z.strictObject({
+      id: IdSchema, behavior: TextSchema, criteria: z.array(RefSchema), tasks: z.array(RefSchema),
+    })).min(1),
+    scope: z.array(PlannedScopeSchema), integrationSteps: z.array(TextSchema),
+    finalVerification: z.array(TextSchema), changeReason: TextSchema,
+    retainedTasks: z.array(z.strictObject({ task: RefSchema, reason: TextSchema })),
+    readinessCheck: RefSchema.optional(),
+  }).optional(),
 });
 
 export const DetailedPlanTaskSchema = record('detailed_plan_task', {
   plan: RefSchema, design: RefSchema, feature: RefSchema,
-  expectedBehavior: TextSchema, criteria: z.array(RefSchema),
-  maintenanceObjective: TextSchema.optional(), designRefs: z.array(SourceRefSchema).min(1),
-  boundaries: z.array(TextSchema).min(1), reuseTargets: z.array(SourceRefSchema),
-  inputs: z.array(TextSchema), outputs: z.array(TextSchema).min(1), blockers: z.array(IdSchema),
-  verificationCases: z.array(TextSchema).min(1), returnRequirements: z.array(TextSchema).min(1),
-}).refine((value) => value.criteria.length > 0 || value.maintenanceObjective !== undefined,
-  'Task needs criteria or an explicit maintenance objective');
+  // Drafts retain traceability while their actionable detail is being prepared.
+  draft: z.boolean().optional(),
+  expectedBehavior: TextSchema.optional(), criteria: z.array(RefSchema),
+  maintenanceObjective: TextSchema.optional(), designRefs: z.array(SourceRefSchema).min(1).optional(),
+  boundaries: z.array(TextSchema).min(1).optional(), reuseTargets: z.array(SourceRefSchema).optional(),
+  inputs: z.array(TextSchema).optional(), outputs: z.array(TextSchema).min(1).optional(),
+  blockers: z.array(IdSchema).optional(), verificationCases: z.array(TextSchema).min(1).optional(),
+  returnRequirements: z.array(TextSchema).min(1).optional(),
+  decisionsToKeep: z.array(RefSchema).optional(), verificationMethod: TextSchema.optional(),
+}).refine((value) => value.draft || (value.criteria.length > 0 || value.maintenanceObjective !== undefined),
+  'Task needs criteria or an explicit maintenance objective')
+  .refine((value) => value.draft || ['expectedBehavior', 'designRefs', 'boundaries', 'reuseTargets',
+    'inputs', 'outputs', 'blockers', 'verificationCases', 'returnRequirements'].every(
+    (field) => value[field as keyof typeof value] !== undefined), 'Non-draft task requires complete legacy detail');
 
 export const TaskMappingSchema = record('task_mapping', {
   firstMateTaskId: IdSchema, feature: RefSchema.nullable(), criteria: z.array(RefSchema),
@@ -151,6 +206,7 @@ export const DecisionChangeSchema = record('decision_change', {
   disposition: DecisionDispositionSchema, originalInstruction: TextSchema.optional(),
   sourceRefs: z.array(SourceRefSchema).min(1), scopeChanges: z.array(ScopeChangeSchema),
   requestMapping: RequestMappingSchema.optional(),
+  choice: z.strictObject({ kind: z.enum(['product', 'technical']), state: z.enum(['resolved', 'open']) }).optional(),
 });
 
 export const CorrectionSchema = z.strictObject({
@@ -190,7 +246,8 @@ export const RecordSchema = z.discriminatedUnion('kind', [
   ProjectSchema, RequestSchema, FeatureRevisionSchema, CriterionSchema, DesignRevisionSchema,
   ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, TaskMappingSchema, AssignmentSchema,
   CriterionResultSchema, ProductReviewSchema, MeasurementClaimSchema, DecisionChangeSchema,
-  ObservationSchema, GuidanceRevisionSchema, OperationSchema,
+  ObservationSchema, GuidanceRevisionSchema, OperationSchema, UnderstandingRevisionSchema,
+  StageRevisionSchema, PlanReadinessRevisionSchema,
 ]);
 export const RecordsSchema = z.array(RecordSchema);
 
@@ -211,3 +268,8 @@ export type Observation = z.infer<typeof ObservationSchema>;
 export type GuidanceRevision = z.infer<typeof GuidanceRevisionSchema>;
 export type Operation = z.infer<typeof OperationSchema>;
 export type FactoryRecord = z.infer<typeof RecordSchema>;
+
+export type UnderstandingRevision = z.infer<typeof UnderstandingRevisionSchema>;
+export type StageRevision = z.infer<typeof StageRevisionSchema>;
+export type PlanReadinessRevision = z.infer<typeof PlanReadinessRevisionSchema>;
+export type ReadinessFinding = z.infer<typeof ReadinessFindingSchema>;

@@ -5,7 +5,7 @@ import {
 import {
   CriterionResultSchema, DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema,
   ImplementationPlanRevisionSchema, ObservationSchema, ProductReviewSchema, SelectedContextSchema,
-  FeatureRevisionSchema, CriterionSchema,
+  FeatureRevisionSchema, CriterionSchema, UnderstandingRevisionSchema, StageRevisionSchema,
 } from './records.js';
 
 const envelope = {
@@ -23,12 +23,16 @@ export const CaptureRequestCommandSchema = z.strictObject({
 });
 export const DesignPlanFeatureCommandSchema = z.strictObject({
   ...mutation, command: z.literal('design_plan_feature'),
-  payload: z.strictObject({
+  payload: z.union([z.strictObject({
     feature: RefSchema, sourceRefs: z.array(SourceRefSchema).min(1),
     existingDesignRefs: z.array(SourceRefSchema), expectedRevisions: z.array(RefSchema),
     design: DesignRevisionSchema, plan: ImplementationPlanRevisionSchema,
     tasks: z.array(DetailedPlanTaskSchema).min(1),
-  }),
+  }), z.strictObject({
+    action: z.literal('record_stage'), stage: StageRevisionSchema,
+    records: z.array(z.union([UnderstandingRevisionSchema, DesignRevisionSchema,
+      ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, DecisionChangeSchema])),
+  }), z.strictObject({ action: z.literal('check_readiness'), detailStage: RefSchema })]),
 });
 export const RecordDecisionSuggestionCommandSchema = z.strictObject({
   ...mutation, command: z.literal('record_decision_suggestion'),

@@ -1,0 +1,190 @@
+import type { Ref } from './primitives.js';
+import type {
+  FactoryRecord, ReadinessFinding, StageRevision, ImplementationPlanRevision,
+} from './records.js';
+
+export const samePlanningRef = (a: Ref, b: Ref) => a.id === b.id && a.revision === b.revision;
+export function planningRecord(records: FactoryRecord[], ref: Ref) {
+  return records.find((record) => samePlanningRef(record, ref));
+}
+
+/** Structural, deterministic source checks. Scope roles are explicit source-analysis
+ * data, not a claim that a keyword matcher understands arbitrary requests. */
+export function planReadinessFindings(records: FactoryRecord[], detail: StageRevision): ReadinessFinding[] {
+  const findings: ReadinessFinding[] = [];
+  const add = (code: ReadinessFinding['code'], record: Ref, path: string, message: string) => {
+    findings.push({ code, record: { id: record.id, revision: record.revision }, path, message });
+  };
+  const feature = planningRecord(records, detail.feature);
+  if (feature?.kind !== 'feature_revision') {
+    add('stage_gap', detail, 'feature', 'Feature revision is missing'); return findings;
+  }
+  const chain: StageRevision[] = [];
+  let stage: StageRevision | undefined = detail;
+  for (const expected of ['detail', 'plan', 'design', 'understand'] as const) {
+    if (!stage || stage.stage !== expected || !samePlanningRef(stage.feature, feature)) {
+      add('stage_gap', detail, 'previousStage', `Missing linked ${expected} stage`); return findings;
+    }
+    chain.push(stage);
+    const prior: FactoryRecord | undefined = stage.previousStage && planningRecord(records, stage.previousStage);
+    stage = prior?.kind === 'stage_revision' ? prior : undefined;
+  }
+  const [detailStage, planStage, designStage, understandStage] = chain as
+    [StageRevision, StageRevision, StageRevision, StageRevision];
+  const understanding = planningRecord(records, understandStage.artifact);
+  const design = planningRecord(records, designStage.artifact);
+  const plan = planningRecord(records, detailStage.artifact);
+  const initialPlan = planningRecord(records, planStage.artifact);
+  if (understanding?.kind !== 'understanding_revision' || design?.kind !== 'design_revision' ||
+    plan?.kind !== 'implementation_plan_revision' || initialPlan?.kind !== 'implementation_plan_revision') {
+    add('stage_gap', detail, 'artifact', 'Stage artifact is missing or has the wrong kind'); return findings;
+  }
+  if (plan.id !== initialPlan.id || plan.revision < initialPlan.revision || !samePlanningRef(plan.design, design)) {
+    add('stage_gap', detail, 'artifact', 'Detail must refine the selected plan and preserve its selected design');
+  }
+  if ((!design.workflow && !designStage.reuse) || !plan.workflow) {
+    add('stage_gap', plan, 'workflow', 'Design and plan need staged workflow content'); return findings;
+  }
+  if (design.sourceComparison.result !== 'passed' && !designStage.reuse) {
+    add('source_gap', design, 'sourceComparison', 'Design source comparison has material findings');
+  }
+  for (const item of chain) {
+    for (const request of feature.sourceRequests) if (!item.sourceRequests.some((ref) => samePlanningRef(ref, request))) {
+      add('source_gap', item, 'sourceRequests', `Stage omitted original request ${request.id}`);
+    }
+    for (const criterion of feature.criteria) if (!item.criteria.some((ref) => samePlanningRef(ref, criterion))) {
+      add('dropped_behavior', item, 'criteria', `Stage omitted criterion ${criterion.id}`);
+    }
+    if (item.reuse) {
+      const comparison = item.reuse.check;
+      if (comparison.result !== 'passed' || [...feature.sourceRequests, item.artifact].some((ref) =>
+        !comparison.sourceRefs.some((source) => source.record && samePlanningRef(source.record, ref)))) {
+        add('source_gap', item, 'reuse.check', 'Reuse must pass a comparison against the current request and artifact');
+      }
+    }
+  }
+  for (const source of feature.sourceRequests) if (!understanding.sourceRequests.some((ref) => samePlanningRef(ref, source))) {
+    add('source_gap', understanding, 'sourceRequests', `Understanding omitted original request ${source.id}`);
+  }
+  for (const criterion of feature.criteria) if (!understanding.criteria.some((ref) => samePlanningRef(ref, criterion))) {
+    add('dropped_behavior', understanding, 'criteria', `Understanding omitted criterion ${criterion.id}`);
+  }
+  if (understanding.openUnknowns.length) add('stage_gap', understanding, 'openUnknowns', 'Material understanding unknowns remain open');
+  const settledQuestions = design.decisions.flatMap((ref) => {
+    const decision = planningRecord(records, ref);
+    return decision?.kind === 'decision_change' && decision.choice?.state === 'resolved' ? [decision.questionOrChange] : [];
+  });
+  for (const question of design.unresolvedQuestions) if (!settledQuestions.includes(question)) {
+    add('unresolved_product_decision', design, 'unresolvedQuestions', question);
+  }
+  if (['failed', 'blocked'].includes(plan.readiness.comparison.result) || plan.readiness.comparison.findings.some(
+    (finding) => finding.result !== 'passed' && !finding.resolvedBy)) {
+    add('source_gap', plan, 'readiness.comparison', 'Plan source comparison has material findings');
+  }
+  const selectedCriteria = (refs: Ref[]) => refs.flatMap((ref) => {
+    // Reuse checks explicitly translate old criterion IDs/revisions to the current request.
+    for (const item of [detailStage, planStage, designStage]) {
+      const mappings = item.reuse?.criterionMap.filter((entry) => samePlanningRef(entry.existing, ref));
+      if (mappings?.length) return mappings.map((mapping) => mapping.current);
+    }
+    return [ref];
+  });
+  const isCriterion = (ref: Ref) => feature.criteria.some((criterion) => samePlanningRef(criterion, ref));
+  const slices = plan.workflow.slices;
+  const tasks = plan.deliverySequence.flatMap((ref) => {
+    const task = planningRecord(records, ref);
+    if (task?.kind === 'detailed_plan_task') return [task];
+    add('detail_gap', plan, 'deliverySequence', `Missing detailed task ${ref.id}`); return [];
+  });
+  const taskCriteria = tasks.flatMap((task) => selectedCriteria(task.criteria));
+  const sliceCriteria = slices.flatMap((slice) => selectedCriteria(slice.criteria));
+  for (const ref of feature.criteria) {
+    const criterion = planningRecord(records, ref);
+    if (criterion?.kind !== 'criterion' || criterion.disposition.state !== 'active') continue;
+    if (!sliceCriteria.some((item) => samePlanningRef(item, ref)) || !taskCriteria.some((item) => samePlanningRef(item, ref))) {
+      add('dropped_behavior', plan, 'workflow.slices', `Criterion ${ref.id} needs both a delivery slice and a detailed task`);
+    }
+  }
+  const ids = new Set<string>();
+  for (const slice of slices) {
+    if (ids.has(slice.id)) add('detail_gap', plan, 'workflow.slices', `Duplicate slice ${slice.id}`);
+    ids.add(slice.id);
+    const criteria = selectedCriteria(slice.criteria);
+    if (!criteria.length || criteria.some((ref) => !isCriterion(ref))) {
+      add('invented_scope', plan, 'workflow.slices', `Slice ${slice.id} is not linked to current criteria`);
+    }
+    if (!slice.tasks.length || slice.tasks.some((ref) => !plan.deliverySequence.some((task) => samePlanningRef(task, ref)))) {
+      add('detail_gap', plan, 'workflow.slices', `Slice ${slice.id} needs tasks in the delivery sequence`);
+    }
+    for (const criterion of criteria) if (!slice.tasks.some((ref) => {
+      const task = tasks.find((item) => samePlanningRef(item, ref));
+      return task && selectedCriteria(task.criteria).some((item) => samePlanningRef(item, criterion));
+    })) add('dropped_behavior', plan, 'workflow.slices', `Slice ${slice.id} has no task for ${criterion.id}`);
+  }
+  for (const task of tasks) {
+    const criteria = selectedCriteria(task.criteria);
+    if (!criteria.length || criteria.some((ref) => !isCriterion(ref))) {
+      add('invented_scope', task, 'criteria', 'Task is not linked to current criteria');
+    }
+    if (!slices.some((slice) => slice.tasks.some((ref) => samePlanningRef(ref, task)))) {
+      add('invented_scope', task, 'criteria', 'Task is outside the delivery slices');
+    }
+    const fields = ['expectedBehavior', 'designRefs', 'boundaries', 'reuseTargets', 'inputs', 'outputs',
+      'verificationCases', 'returnRequirements', 'decisionsToKeep', 'verificationMethod', 'blockers'] as const;
+    for (const field of fields) if (task[field] === undefined) {
+      add('detail_gap', task, field, `Task is missing ${field}`);
+    }
+    // Empty inputs/reuse/decision lists explicitly mean none. Output and acceptance
+    // arrays, when supplied, are nonempty by the canonical record schema.
+    if (task.draft) add('detail_gap', task, 'draft', 'Task detail is still a draft');
+    for (const decisionRef of task.decisionsToKeep ?? []) if (!design.decisions.some((ref) => samePlanningRef(ref, decisionRef))) {
+      add('detail_gap', task, 'decisionsToKeep', `Task preserves a decision outside its design: ${decisionRef.id}`);
+    }
+
+  }
+  if ((slices.length > 1 && !plan.workflow.integrationSteps.length) || !plan.workflow.finalVerification.length) {
+    add('missing_integration', plan, 'workflow', 'Multiple slices need integration steps; every plan needs final feature verification');
+  }
+  for (const scope of understanding.scope.filter((entry) => entry.role === 'example')) {
+    for (const owner of [design, plan]) {
+      // Earlier design contracts have prose reuse findings rather than scope
+      // metadata. A checked reuse comparison supplies their current-source check.
+      if (owner.kind === 'design_revision' && !owner.workflow && designStage.reuse) continue;
+      const actual = owner.workflow!.scope.find((entry) => samePlanningRef(entry.request, scope.request) &&
+        entry.term.toLocaleLowerCase('en') === scope.term.toLocaleLowerCase('en'));
+      if (!actual || actual.coverage !== 'general') add('example_driven_narrowing', owner, 'workflow.scope',
+        `${scope.term} is an example in the request; the planned scope must retain the general behavior`);
+    }
+  }
+  for (const ref of design.decisions) {
+    const decision = planningRecord(records, ref);
+    if (decision?.kind !== 'decision_change' || !decision.choice) {
+      add('detail_gap', design, 'decisions', `Decision ${ref.id} needs a product/technical classification and state`);
+    } else if (decision.choice.kind === 'product' && decision.choice.state === 'open') {
+      add('unresolved_product_decision', decision, 'choice', decision.questionOrChange);
+    }
+  }
+  const orderedSlices = slices.flatMap((slice) => slice.tasks.map((ref) => ref.id));
+  for (const dependency of plan.dependencies) {
+    const prerequisite = tasks.find((task) => task.id === dependency.prerequisiteTaskId);
+    if (dependency.needs.kind === 'criterion' && prerequisite && !prerequisite.criteria.some((ref) =>
+      dependency.needs.kind === 'criterion' && samePlanningRef(ref, dependency.needs.criterion))) {
+      add('dependency_gap', plan, 'dependencies', 'A prerequisite must supply the criterion that the dependency needs');
+    }
+    if (orderedSlices.indexOf(dependency.prerequisiteTaskId) > orderedSlices.indexOf(dependency.consumerTaskId)) {
+      add('dependency_gap', plan, 'workflow.slices', 'Slice order conflicts with the real task dependencies');
+    }
+  }
+  dependencyFindings(plan, tasks.map((task) => task.id), add);
+  return findings;
+}
+
+function dependencyFindings(plan: ImplementationPlanRevision, taskIds: string[],
+  add: (code: ReadinessFinding['code'], record: Ref, path: string, message: string) => void) {
+  for (const dependency of plan.dependencies) {
+    const before = taskIds.indexOf(dependency.prerequisiteTaskId);
+    const after = taskIds.indexOf(dependency.consumerTaskId);
+    if (before < 0 || after < 0 || before >= after) add('dependency_gap', plan, 'dependencies',
+      'Dependencies must name actual tasks and place prerequisites before consumers');
+  }
+}

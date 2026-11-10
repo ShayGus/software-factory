@@ -1,3 +1,4 @@
+import { planReadinessFindings } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
@@ -221,10 +222,85 @@ function checkCompletion(ctx: Context, review: ProductReview) {
   }
 }
 
+function reusedDesign(ctx: Context, design: Ref, feature: Ref): boolean {
+  return ctx.records.some((record) => record.kind === 'stage_revision' && record.stage === 'design' &&
+    record.reuse && record.reuse.check.result === 'passed' && sameRef(record.artifact, design) && sameRef(record.feature, feature));
+}
+
 function checkRecord(ctx: Context, record: FactoryRecord) {
   const project = ctx.records.find((candidate) => candidate.kind === 'project' && candidate.id === record.projectId);
   if (!project) ctx.add(record, 'missing_project', 'projectId', 'Project record is absent');
   switch (record.kind) {
+    case 'understanding_revision': {
+      const feature = ctx.get(record, record.feature, 'feature_revision', 'feature');
+      ctx.criteria(record, record.criteria, feature);
+      for (const ref of record.sourceRequests) ctx.get(record, ref, 'request', 'sourceRequests');
+      for (const scope of record.scope) {
+        const request = ctx.get(record, scope.request, 'request', 'scope.request');
+        if (request && !request.originalText.toLocaleLowerCase('en').includes(scope.term.toLocaleLowerCase('en'))) {
+          ctx.add(record, 'invalid_scope_term', 'scope', 'Scope term must occur in the original request');
+        }
+      }
+      break;
+    }
+    case 'stage_revision': {
+      const feature = ctx.get(record, record.feature, 'feature_revision', 'feature');
+      ctx.criteria(record, record.criteria, feature);
+      for (const ref of record.sourceRequests) ctx.get(record, ref, 'request', 'sourceRequests');
+      const artifactKind = record.stage === 'understand' ? 'understanding_revision' :
+        record.stage === 'design' ? 'design_revision' : 'implementation_plan_revision';
+      const artifact = ctx.get(record, record.artifact, artifactKind, 'artifact');
+      const reusedPlan = record.stage === 'detail' && ctx.records.some((stage) => stage.kind === 'stage_revision' &&
+        stage.stage === 'plan' && stage.reuse && sameRef(stage.feature, record.feature) && sameRef(stage.artifact, record.artifact));
+      if (artifact && !record.reuse && !reusedPlan) ctx.equal(record, artifact.feature, record.feature, 'artifact.feature');
+      const predecessor = { design: 'understand', plan: 'design', detail: 'plan' };
+      if (record.stage === 'understand') {
+        if (record.previousStage) ctx.add(record, 'stage_order', 'previousStage', 'Understand starts the stage chain');
+      } else {
+        const previous = record.previousStage && ctx.get(record, record.previousStage, 'stage_revision', 'previousStage');
+        if (!previous || previous.stage !== predecessor[record.stage]) ctx.add(record,
+          'stage_order', 'previousStage', 'Stage must name its immediate method predecessor');
+        if (previous) {
+          ctx.equal(record, previous.feature, record.feature, 'previousStage.feature');
+          if (record.stage === 'design' && artifact?.kind === 'design_revision' && !record.reuse && artifact.workflow) {
+            ctx.equal(record, artifact.workflow.understanding, previous.artifact, 'workflow.understanding');
+          }
+          if (record.stage === 'plan' && artifact?.kind === 'implementation_plan_revision' && !record.reuse) {
+            ctx.equal(record, artifact.design, previous.artifact, 'artifact.design');
+          }
+          if (record.stage === 'detail' && artifact?.kind === 'implementation_plan_revision' &&
+            (artifact.id !== previous.artifact.id || artifact.revision < previous.artifact.revision)) {
+            ctx.add(record, 'stage_order', 'artifact', 'Detail refines the selected plan');
+          }
+        }
+      }
+      if (record.reuse) {
+        ctx.comparison(record, record.reuse.check, feature);
+        ctx.sources(record, record.reuse.check, [...(feature?.sourceRequests ?? []), record.artifact]);
+        if (record.reuse.check.result !== 'passed') ctx.add(record, 'reuse_not_checked', 'reuse.check', 'Reuse check must pass');
+        for (const mapping of record.reuse.criterionMap) {
+          ctx.criteria(record, [mapping.current], feature);
+          const existingFeature = artifact && ctx.get(record, artifact.feature, 'feature_revision', 'reuse.artifact.feature');
+          ctx.criteria(record, [mapping.existing], existingFeature);
+        }
+        for (const ref of feature?.criteria ?? []) if (!record.reuse.criterionMap.some((entry) => sameRef(entry.current, ref))) {
+          ctx.add(record, 'reuse_not_checked', 'reuse.criterionMap', `Reuse did not check current criterion ${ref.id}`);
+        }
+      }
+      break;
+    }
+    case 'plan_readiness_revision': {
+      const stage = ctx.get(record, record.detailStage, 'stage_revision', 'detailStage');
+      ctx.get(record, record.plan, 'implementation_plan_revision', 'plan');
+      if (stage) {
+        ctx.equal(record, stage.feature, record.feature, 'feature');
+        ctx.equal(record, stage.artifact, record.plan, 'plan');
+        if (canonical(planReadinessFindings(ctx.records, stage)) !== canonical(record.findings)) {
+          ctx.add(record, 'readiness_mismatch', 'findings', 'Readiness findings must match deterministic checks');
+        }
+      }
+      break;
+    }
     case 'project':
       if (record.id !== record.projectId) ctx.add(record, 'project_mismatch', 'projectId', 'Project must name itself');
       break;
@@ -261,6 +337,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
     case 'design_revision': {
       const feature = ctx.get(record, record.feature, 'feature_revision', 'feature');
       for (const ref of record.decisions) ctx.get(record, ref, 'decision_change', 'decisions');
+      if (record.workflow) ctx.get(record, record.workflow.understanding, 'understanding_revision', 'workflow.understanding');
       ctx.comparison(record, record.sourceComparison, feature);
       ctx.sources(record, record.sourceComparison, feature?.sourceRequests ?? []);
       break;
@@ -268,7 +345,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
     case 'implementation_plan_revision': {
       const feature = ctx.get(record, record.feature, 'feature_revision', 'feature');
       const design = ctx.get(record, record.design, 'design_revision', 'design');
-      if (design) ctx.equal(record, design.feature, record.feature, 'design.feature');
+      if (design && !reusedDesign(ctx, design, record.feature)) ctx.equal(record, design.feature, record.feature, 'design.feature');
       const covered = new Set<string>();
       const seen = new Set<string>();
       for (const ref of record.deliverySequence) {
@@ -276,9 +353,17 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
         seen.add(ref.id);
         const task = ctx.get(record, ref, 'detailed_plan_task', 'deliverySequence');
         if (task) {
-          ctx.equal(record, task.plan, asRef(record), 'task.plan');
-          ctx.equal(record, task.design, record.design, 'task.design');
-          ctx.equal(record, task.feature, record.feature, 'task.feature');
+          const retained = record.workflow?.retainedTasks.some((entry) => sameRef(entry.task, task));
+          if (retained) {
+            const previous = ctx.get(record, { id: record.id, revision: record.revision - 1 },
+              'implementation_plan_revision', 'workflow.retainedTasks');
+            if (!previous?.deliverySequence.some((entry) => sameRef(entry, task))) ctx.add(record,
+              'invalid_retained_task', 'workflow.retainedTasks', 'Retained task must occur unchanged in the previous plan');
+          } else {
+            ctx.equal(record, task.plan, asRef(record), 'task.plan');
+            ctx.equal(record, task.design, record.design, 'task.design');
+            ctx.equal(record, task.feature, record.feature, 'task.feature');
+          }
           for (const criterion of task.criteria) covered.add(key(criterion));
         }
       }
@@ -294,10 +379,29 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       ctx.comparison(record, record.readiness.comparison, feature);
       ctx.sources(record, record.readiness.comparison, [...(feature?.sourceRequests ?? []), record.design]);
       if (record.readiness.ready) {
+        if (record.workflow) {
+          const check = record.workflow.readinessCheck && ctx.get(record, record.workflow.readinessCheck,
+            'plan_readiness_revision', 'workflow.readinessCheck');
+          if (check) ctx.equal(record, check.feature, record.feature, 'readinessCheck.feature');
+          const previous = check && ctx.get(record, check.plan, 'implementation_plan_revision', 'readinessCheck.plan');
+          const content = (plan: typeof record) => {
+            const { revision: _revision, updatedAt: _updatedAt, readiness: _readiness, feature: _feature, workflow, ...rest } = plan;
+            if (!workflow) return rest;
+            const { readinessCheck: _check, retainedTasks: _retained, changeReason: _reason, ...design } = workflow;
+            return { ...rest, workflow: design };
+          };
+          if (previous && canonical(content(previous)) !== canonical(content(record))) ctx.add(record,
+            'plan_not_ready', 'workflow.readinessCheck', 'Ready plan content differs from the checked plan revision');
+          if (!check || !check.ready || check.plan.id !== record.id || check.plan.revision !== record.revision - 1) {
+            ctx.add(record, 'plan_not_ready', 'workflow.readinessCheck', 'Ready revision needs a successful deterministic check of its predecessor');
+          }
+        }
         if (record.readiness.comparison.result !== 'passed') ctx.add(record, 'plan_not_ready', 'readiness', 'Source comparison did not pass');
         if (feature) for (const ref of feature.criteria) {
           const criterion = ctx.get(record, ref, 'criterion', 'criteria');
-          if (criterion?.requirement === 'required' && criterion.disposition.state === 'active' && !covered.has(key(ref))) {
+          const mapped = record.workflow?.readinessCheck && ctx.records.some((check) =>
+            check.kind === 'plan_readiness_revision' && sameRef(check, record.workflow!.readinessCheck!) && check.ready);
+          if (criterion?.requirement === 'required' && criterion.disposition.state === 'active' && !covered.has(key(ref)) && !mapped) {
             ctx.add(record, 'omitted_criterion', 'deliverySequence', `Plan omitted required criterion ${ref.id}`);
           }
         }
@@ -313,7 +417,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
         ctx.equal(record, record.feature, plan.feature, 'feature');
         ctx.equal(record, record.design, plan.design, 'design');
       }
-      if (design) ctx.equal(record, record.feature, design.feature, 'design.feature');
+      if (design && !reusedDesign(ctx, design, record.feature)) ctx.equal(record, record.feature, design.feature, 'design.feature');
       if (plan && !plan.deliverySequence.some((ref) => sameRef(ref, record))) {
         ctx.add(record, 'unplanned_task', 'plan', 'Task is absent from its plan delivery sequence');
       }
@@ -342,6 +446,12 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       if (record.correctionOf) ctx.get(record, record.correctionOf, 'measurement_claim', 'correctionOf');
       break;
     case 'decision_change':
+      if (record.choice?.state === 'resolved' && !['selected', 'rejected'].includes(record.disposition)) {
+        ctx.add(record, 'unsettled_decision', 'choice', 'Resolved decisions must have a selected or rejected disposition');
+      }
+      if (record.choice?.state === 'open' && ['selected', 'rejected'].includes(record.disposition)) {
+        ctx.add(record, 'unsettled_decision', 'choice', 'Selected and rejected decisions are settled');
+      }
       if (record.requestMapping) {
         const mapping = record.requestMapping;
         const request = ctx.get(record, mapping.request, 'request', 'requestMapping.request');
