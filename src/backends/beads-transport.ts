@@ -54,6 +54,7 @@ export class BeadsTransport {
     delete env.BEADS_DB;
     delete env.BEADS_REPO;
     env.BEADS_DIR = c.path;
+    env.BEADS_DOLT_AUTO_START = "0";
     env.BEADS_DOLT_DATABASE = c.database;
     env.BEADS_DOLT_SERVER_USER = c.server_user;
     if (c.server_socket) env.BEADS_DOLT_SERVER_SOCKET = c.server_socket;

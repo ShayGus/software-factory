@@ -13,7 +13,7 @@ import { deriveLinks, extractTags } from "../backends/markdown-grammar.js";
 import { PR_URL_EXPECTED } from "../pr-url.js";
 import { renderMutation, stateLabel, taskToJson } from "../confirm.js";
 import { requireCtx, type TasksContext } from "../context.js";
-import { blockedIds, heldTasks } from "../derive.js";
+import { blockedIds, heldTasks, isHoldActive } from "../derive.js";
 import { AxiError, notFound } from "../errors.js";
 import { parseFields } from "../fields.js";
 import { formatCountLine } from "../format.js";
@@ -26,7 +26,9 @@ import {
 } from "../id.js";
 import {
   STATES,
+  HOLD_KINDS,
   type Dep,
+  type Hold,
   type State,
   type TaskInput,
   type TaskLink,
@@ -49,6 +51,7 @@ flags:
   --kind <ship|scout|docs|...>, --repo <name>, --body <text> or --body-file <path>
   --start (place in In flight) | --queue (place in Queued, default)
   --blocked-by <id> (repeatable, must exist), --pr <url>, --report <path>, --priority <0-4>
+  --hold-reason <text> [--hold-kind captain|external|load|parked|future] [--hold-until YYYY-MM-DD]
   --mint [--prefix <p>]   mint a slug-xx id from the title instead of passing one
   --json   print the resulting task as a JSON object
 examples:
@@ -238,6 +241,20 @@ export async function addCommand(
   const report = takeFlag(args, "--report");
   const priority = parsePriority(takeFlag(args, "--priority"));
   const deps = parseDeps(args);
+  const holdReason = requireSafeTagFlagValue("--hold-reason",takeFlag(args,"--hold-reason"));
+  const holdKind = takeFlag(args,"--hold-kind");
+  const holdUntil = takeFlag(args,"--hold-until");
+  if ((holdKind !== undefined || holdUntil !== undefined) && holdReason === undefined) {
+    throw new AxiError("--hold-kind/--hold-until require --hold-reason", "VALIDATION_ERROR");
+  }
+  if (holdKind !== undefined && !(HOLD_KINDS as readonly string[]).includes(holdKind)) {
+    throw new AxiError(`--hold-kind must be one of ${HOLD_KINDS.join(", ")}`, "VALIDATION_ERROR");
+  }
+  if (holdUntil !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(holdUntil)) {
+    throw new AxiError("--hold-until must be YYYY-MM-DD", "VALIDATION_ERROR");
+  }
+  const hold: Hold | undefined = holdReason === undefined ? undefined : {reason:holdReason,
+    ...(holdKind ? {kind:holdKind as Hold["kind"]} : {}), ...(holdUntil ? {until:holdUntil} : {})};
   const json = takeBoolFlag(args, "--json");
   const start = takeBoolFlag(args, "--start");
   const queue = takeBoolFlag(args, "--queue");
@@ -314,7 +331,7 @@ export async function addCommand(
           existing.kind === "public-followup"
             ? []
             : getSuggestions({
-                action: "add",
+                action: isHoldActive(existing) ? "hold" : "add",
                 id,
                 state: existing.state,
                 globals: context?.suggestionGlobals,
@@ -335,6 +352,7 @@ export async function addCommand(
   if (repo) input.repo = repo;
   if (body !== undefined) input.body = body;
   if (priority !== undefined) input.priority = priority;
+  if (hold) input.hold = hold;
 
   const task = await store.create(input);
   const all = (await store.list({})).items;
@@ -344,7 +362,7 @@ export async function addCommand(
     jsonPayload: { ok: true, action: "add", task: taskToJson(task, all) },
     detail: renderTaskDetail(task, all, false, showFullTextHint(task)),
     suggestions: getSuggestions({
-      action: "add",
+      action: isHoldActive(task) ? "hold" : "add",
       id,
       state: task.state,
       globals: context?.suggestionGlobals,

@@ -40,6 +40,15 @@ BEGIN
     SET @tasks_axi_id=JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_entry,'$.id'));
     SET @tasks_axi_mode=JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_entry,'$.mode'));
     SET @tasks_axi_ns=JSON_EXTRACT(@tasks_axi_entry,'$.namespace');
+    IF JSON_EXTRACT(@tasks_axi_entry,'$.dispatch')=true THEN
+      IF EXISTS(SELECT 1 FROM dependencies d JOIN issues blocker ON blocker.id=d.depends_on_issue_id
+        WHERE d.issue_id=@tasks_axi_id AND d.type='blocks' AND blocker.status<>'closed')
+        OR (JSON_EXTRACT(@tasks_axi_ns,'$.task.hold') IS NOT NULL AND
+          (JSON_EXTRACT(@tasks_axi_ns,'$.task.hold.until') IS NULL OR
+           JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_ns,'$.task.hold.until')) > JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_entry,'$.local_date')))) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='task is blocked or held';
+      END IF;
+    END IF;
     IF @tasks_axi_mode='create' THEN
       INSERT INTO issues (id,title,description,design,acceptance_criteria,notes,status,priority,issue_type,created_by,metadata,closed_at)
       VALUES (@tasks_axi_id,JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_ns,'$.task.title')),

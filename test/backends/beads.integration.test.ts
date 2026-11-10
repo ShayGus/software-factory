@@ -5,6 +5,9 @@ import { BeadsStore } from "../../src/backends/beads.js";
 import { BeadsTransport } from "../../src/backends/beads-transport.js";
 import { sqlString } from "../../src/backends/beads-sql.js";
 import type { BeadsConfig } from "../../src/config.js";
+import { addCommand, showCommand } from "../../src/commands/crud.js";
+import { startCommand, doneCommand, reopenCommand, holdCommand, unholdCommand, readyCommand, mvCommand } from "../../src/commands/state.js";
+import { isHoldActive, readyTasks } from "../../src/derive.js";
 
 const enabled = Boolean(process.env.TASKS_AXI_BEADS_TEST_CONFIG);
 const config: BeadsConfig = enabled ? JSON.parse(process.env.TASKS_AXI_BEADS_TEST_CONFIG!) : {};
@@ -77,5 +80,37 @@ describe.skipIf(!enabled)("pinned bd 1.1.0 with a shared scratch Dolt server", (
     expect(results.filter((r)=>r.status==="fulfilled")).toHaveLength(1);
     expect(results.filter((r)=>r.status==="rejected")).toHaveLength(1);
     expect(["writer a","writer b"]).toContain((await a.get(logical))?.title);
+  },20000);
+
+  it("creates held captain work atomically and preserves evidence/holds across lifecycle replay", async () => {
+    const store=make(), logical=id("captain"), ctx={store,config:{backend:"beads",path:config.path,doneKeep:10,beads:config}};
+    const created=JSON.parse(await addCommand([logical,"Captain decision","--kind","captain","--hold-reason","fm-hold-v1:encoded", "--hold-kind","captain","--json"],ctx));
+    expect(created).toMatchObject({ok:true,action:"add"});
+    const held=await store.get(logical);
+    expect(held?.hold).toEqual({reason:"fm-hold-v1:encoded",kind:"captain"});
+    expect(readyTasks((await store.list({})).items).some((t)=>t.id===logical)).toBe(false);
+    await expect(startCommand([logical,"--json"],ctx)).rejects.toThrow(/held/);
+    expect(await readyCommand(["--include-held"],ctx)).toContain(logical);
+    const hint=await addCommand([logical,"Captain decision"],ctx);
+    expect(hint).toContain(`unhold ${logical}`); expect(hint).not.toContain(`start ${logical}`);
+    expect(JSON.parse(await unholdCommand([logical,"--json"],ctx))).toMatchObject({ok:true,action:"unhold"});
+    expect(JSON.parse(await startCommand([logical,"--json"],ctx)).task.state).toBe("in_flight");
+    await holdCommand([logical,"--reason","awaits review","--kind","captain"],ctx);
+    const report=`data/${logical}/report.md`, pr="https://github.com/example/repo/pull/3";
+    const done=JSON.parse(await doneCommand([logical,"--pr",pr,"--report",report,"--note","resolution recorded","--no-prune","--json"],ctx));
+    expect(done.task.state).toBe("done");expect(done.task.links).toContainEqual({kind:"pr",url:pr});
+    const closed=(await store.get(logical))?.closed;
+    await doneCommand([logical,"--note","resolution recorded","--report",report,"--no-prune","--json"],ctx);
+    expect((await store.get(logical))?.body).toBe("resolution recorded");
+    expect((await store.get(logical))?.closed).toBe(closed);
+    const reopened=JSON.parse(await reopenCommand([logical,"--json"],ctx));
+    expect(reopened).toMatchObject({ok:true,action:"reopen",task:{state:"queued"}});
+    expect((await store.get(logical))?.hold?.reason).toBe("awaits review");
+    expect(await showCommand([logical,"--full"],ctx)).toContain(report);
+    await holdCommand([logical,"--reason","expired","--kind","future","--until","2000-01-01"],ctx);
+    expect(isHoldActive((await store.get(logical))!)).toBe(false);
+    expect((await store.transition(logical,"in_flight")).hold?.reason).toBe("expired");
+    await expect(mvCommand([logical,"--to","/tmp/must-not-write-backlog.md"],ctx)).rejects.toThrow(/one-home/);
+    await expect(store.create({id:id("obligation"),title:"no",kind:"public-followup"})).rejects.toThrow(/public followups/);
   },20000);
 });

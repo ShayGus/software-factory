@@ -18,6 +18,7 @@ import {
   heldTasks,
   readyPublicFollowups,
   readyTasks,
+  isHoldActive,
 } from "../derive.js";
 import { AxiError, notFound } from "../errors.js";
 import { formatCountLine } from "../format.js";
@@ -313,7 +314,7 @@ export async function reopenCommand(
       task: taskToJson(task, all),
     },
     suggestions: getSuggestions({
-      action: "reopen",
+      action: isHoldActive(task) ? "hold" : "reopen",
       id,
       state: task.state,
       globals: context?.suggestionGlobals,
@@ -698,6 +699,10 @@ export async function mvCommand(
     ]);
   }
   const ids = [...new Set(positionals.map((p) => requireId(p, "id")))];
+
+  if (store.capabilities().backend === "beads") {
+    throw new AxiError("The Beads backend is one-home only; mv is unsupported", "UNSUPPORTED");
+  }
 
   const targetPath = resolveBacklogTarget(to);
   if (resolve(targetPath) === resolve(config.path)) {

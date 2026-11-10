@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { BeadsConfig } from "../config.js";
 import { AxiError, unsupported } from "../errors.js";
 import { validateId } from "../id.js";
+import { isHoldActive } from "../derive.js";
 import { HOLD_KINDS, STATES, type Dep, type State, type Task, type TaskInput,
   type TaskPatch, type TaskQuery, type TaskUpdateChange, type TaskUpdateResult, type TransitionOpts } from "../model.js";
 import type { PublicFollowupMutation } from "../public-followup.js";
@@ -34,6 +35,11 @@ function localToday(): string {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
 function fail(message: string): never { throw new AxiError(message, "VALIDATION_ERROR"); }
+function appendLink(task: Task, link: Task["links"][number]): void {
+  if (!deriveLinks(link.url).some((candidate) => same(candidate,link))) fail(`Invalid ${link.kind} link`);
+  if (!deriveLinks(task.title).some((candidate) => candidate.url === link.url)) task.title += ` ${link.url}`;
+  if (!task.links.some((candidate) => same(candidate,link))) task.links.push(link);
+}
 function jsonValue(value: unknown): unknown {
   if (typeof value === "string") {
     try { return JSON.parse(value); } catch { fail("Invalid Beads JSON column"); }
@@ -204,7 +210,9 @@ export class BeadsStore implements Store {
       deps: structuredClone(input.deps ?? []) } as Task;
     if (input.created === null) delete value.created;
     else if (input.created === undefined && value.state !== "done") value.created = this.now();
+    for (const link of value.links) appendLink(value,link);
     const task = normalize(value);
+    if (process.env.BD_DUE_REQUIRED === "true") fail("Beads due-required policy needs an explicit due date; this adapter does not invent one");
     const existing = await this.get(task.id);
     if (existing) return existing;
     for (const dep of task.deps) await this.require(dep.id);
@@ -231,7 +239,9 @@ export class BeadsStore implements Store {
       if (!task.body?.split("\n").includes(line)) { task.body = task.body ? `${task.body}\n${line}` : line; if (!changed.includes("body")) changed.push("body"); }
     }
     for (const link of patch.addLinks ?? []) {
-      if (!task.links.some((old) => same(old,link))) { task.links.push(link); if (!changed.includes("links")) changed.push("links"); }
+      const before=JSON.stringify([task.title,task.links]);
+      appendLink(task,link);
+      if (before !== JSON.stringify([task.title,task.links]) && !changed.includes("links")) changed.push("links");
     }
     normalize(task);
     if (patch.archiveBody && patch.body !== undefined && changed.includes("body") && record.task.body) changed.push("archive");
@@ -262,8 +272,35 @@ export class BeadsStore implements Store {
     await this.apply([this.entry(record.task,record,"dependency",record.namespace.archived)]);
     return true;
   }
-  async transition(_id: string, _to: State, _opts?: TransitionOpts): Promise<Task> {
-    throw unsupported("lifecycle (implementation pending)","beads");
+  async transition(id: string, to: State, opts: TransitionOpts = {}): Promise<Task> {
+    const record=await this.require(id), task=structuredClone(record.task);
+    if (!STATES.includes(to)) fail("Invalid transition state");
+    if (to === "in_flight") {
+      if (isHoldActive({...task,state:to},{today:this.now()})) fail("Cannot start an actively held Beads task");
+      for (const dep of task.deps.filter((d)=>d.type === "blocked-by")) {
+        const blocker=await this.get(dep.id);
+        if (blocker && blocker.state !== "done") fail(`Cannot start task while blocked by "${dep.id}"`);
+      }
+    }
+    if (opts.pr !== undefined) appendLink(task,{kind:"pr",url:opts.pr});
+    if (opts.report !== undefined) appendLink(task,{kind:"report",url:opts.report});
+    if (opts.note && !task.body?.split("\n").includes(opts.note)) task.body=task.body ? `${task.body}\n${opts.note}` : opts.note;
+    const date=opts.date ?? this.now();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail("Transition date must be YYYY-MM-DD");
+    task.state=to;
+    if (to === "done") task.closed=record.task.closed ?? date;
+    else {
+      delete task.closed;
+      if (to === "in_flight" && !task.created) task.created=date;
+    }
+    normalize(task);
+    if (same(task,record.task) && !record.namespace.archived) return record.task;
+    task.updated=this.now();
+    const entry={...this.entry(task,record,"transition",to === "done" && record.namespace.archived),
+      dispatch:to === "in_flight", local_date:this.now()};
+    if (record.task.state !== to) entry.namespace.order=to === "queued" ? Date.now() : -Date.now();
+    await this.apply([entry]);
+    return task;
   }
   async updatePublicFollowup(_id: string, _mutation: PublicFollowupMutation): Promise<Task> {
     throw unsupported("public followups","beads");

@@ -28,6 +28,7 @@ try {
   const command = ["exec", "-i", "--workdir", dirname(entry.containerPath)];
   if (entry.user !== undefined) command.push("--user", String(entry.user));
   command.push("--env", `BEADS_DIR=${entry.containerPath}`);
+  command.push("--env", "BEADS_DOLT_AUTO_START=0");
   for (const key of ["BD_DUE_REQUIRED", "BEADS_ACTOR", "BEADS_DOLT_PASSWORD", "BEADS_DOLT_DATABASE",
     "BEADS_DOLT_SERVER_HOST", "BEADS_DOLT_SERVER_PORT", "BEADS_DOLT_SERVER_USER", "BEADS_DOLT_SERVER_SOCKET"]) {
     let value = process.env[key];
