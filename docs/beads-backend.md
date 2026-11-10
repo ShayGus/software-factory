@@ -66,3 +66,42 @@ Relative paths resolve from the backlog root. A Docker transport must allowlist
 exact workspaces, forward only approved environment variables, preserve stdin
 and exit status, and refuse unknown paths. No shell command string is accepted
 as a binary. Tests use scratch workspaces only.
+
+## Scratch server proof (2026-11-10)
+
+Verified bd 1.1.0 from image `local/scotty:v0.4.0-cf6dda1` (image ID
+`sha256:3593e03ac0035ab7cb463e21e731e756ddfe762a800e0c58c759547cde88809d`).
+The independently managed scratch server uses `dolthub/dolt:2.7.2`, digest
+`sha256:1abcdd77083cc7dedce01f91d1314b48e55e5bdd512c575f086b929494c77a31`.
+No ports were exposed; an explicit Unix socket connects the scratch clients.
+Both workspaces were initialized with `bd init --server --external`, the same
+explicit database, prefix `fm`, and the server socket. One client executes the
+extracted binary locally, the other executes bd in a throwaway container.
+
+Both clients created independent rows and read each other's writes. Concurrent
+compare-and-set writes from a shared baseline produced one winner. Overlapping
+transactions (one-second delay before commit) produced one success and one
+rolled-back conflict. A procedure that changed a row then deliberately inserted
+into a nonexistent table rolled back its row change. A paused server caused the
+bounded client to time out (exit 124), with no success output or embedded fallback.
+Raw captures are task evidence: `two-client-proof.json`, `contention-proof.json`,
+and `outage-proof.json` in the build task's external evidence directory.
+
+Important pinned-version findings:
+
+- Native `create --deps blocks:<missing>` exits successfully and leaves an open
+  issue after warning that the dependency failed. It cannot provide atomic create.
+- `--set-metadata key=<json>` stores that JSON as a string, rather than an object.
+- Naive `bd sql 'BEGIN; ...; COMMIT'` can retain earlier writes on an intermediate
+  failure. It must never be used as an atomic mutation primitive.
+- A single `CALL` to a stored procedure with `START TRANSACTION`, an explicit
+  exception handler that runs `ROLLBACK`, and final `COMMIT` passed failure and
+  overlapping-client probes. Dolt procedure parameters must be copied to
+  session variables before reference from `UPDATE` expressions in this setup.
+
+The adapter therefore needs a versioned server-side transaction routine, invoked
+through the configured bd executable. It must compare the prior row snapshot,
+write the complete lifecycle/evidence/hold/dependency change, and retain history
+within that transaction. It must reject both nonzero transport exit and JSON
+error envelopes. This is a pinned SQL-schema integration behind the Store seam;
+it is not safe to substitute a sequence of native CLI writes.
