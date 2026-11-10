@@ -1,11 +1,12 @@
-# Software Factory contracts and persistence — BUILD-03
+# Software Factory request capture — BUILD-04
 
 This TypeScript package defines the records and operation boundaries for the
 FirstMate product-development workflow in [the design](Software_Factory_Design.md).
 It preserves request, feature, design, detailed-plan, assignment and review identities
 through one complete feature workflow. BUILD-03 adds local SQLite persistence.
-It does not run FirstMate or implement a reconciler, scheduler, CLI, HTTP, UI,
-tasks-axi changes or Beads.
+BUILD-04 adds CLI intake, source mapping, a standalone Claude Code chat hook,
+configuration-based capture coverage and an explicit FirstMate inbox delivery adapter.
+It does not schedule workers or implement a UI, HTTP service, tasks-axi changes or Beads.
 
 Node.js 22.13.0 or later is required. Install and verify with:
 
@@ -323,3 +324,228 @@ Durable history, transactions, idempotency and pending-operation storage are imp
 Operation execution/reconciliation, source comparison, assignment generation and live
 product review are later builds. No live FirstMate integration or full product milestone is
 claimed by these contract fixtures.
+
+## Request capture CLI — BUILD-04
+
+Build with `npm run build`, then run `node /absolute/software-factory/dist/src/cli.js
+--help`. The package also exposes the `software-factory` bin entry point. All
+commands return JSON, with structured errors on stderr and a nonzero exit status.
+The `chat-hook` command stays silent on success so captured text is not injected
+back into the conversation as hook output.
+
+The CLI uses the same `ProjectStore`, record schemas and command contracts exported
+by this package. There is no second store. Initialize a project from a canonical
+`Project` JSON record (replace the home reference with the intended FirstMate home):
+
+```json
+{
+  "kind": "project", "id": "pilot", "projectId": "pilot", "schemaVersion": 1,
+  "revision": 1, "createdAt": "2026-11-10T11:00:00Z", "updatedAt": "2026-11-10T11:00:00Z",
+  "goal": "Preserve requests through product review", "intendedUser": "Product owner",
+  "priorities": [], "exclusions": [], "vocabulary": {},
+  "repositories": [], "designRefs": [],
+  "firstMateHomeRef": "/absolute/firstmate-home", "timezone": "Asia/Jerusalem"
+}
+```
+
+Save that as `/tmp/project.json`. For the following examples, set `factory_cli` to
+the built CLI's absolute path. Put the exact request in `/tmp/request.txt`; file
+input and stdin preserve spaces, line endings and trailing newlines.
+
+```sh
+factory_cli=/absolute/software-factory/dist/src/cli.js
+node "$factory_cli" init --db /tmp/pilot.sqlite --input /tmp/project.json
+node "$factory_cli" capture --db /tmp/pilot.sqlite --project pilot \
+  --client-request-id owner-message-001 --channel cli --source file:/tmp/request.txt \
+  --captured-at 2026-11-10T12:00:00Z --text-file /tmp/request.txt
+```
+
+Use `--text-file -` to read stdin. `--captured-at` is optional and defaults to the
+capture time. Capture commits the immutable `Request`, a pending `capture_request`
+`Operation`, and the idempotency receipt in one SQLite transaction. Request IDs are
+deterministic and project-scoped. The same client request ID and payload replay;
+changed text, channel, source, attachments or an explicitly changed capture time
+conflict. A correction is additional source/decision content, never an edit to
+`originalText`. A new user message gets a new client request ID.
+
+### Map content and inspect omissions
+
+For an exact request `Export every system.\nKeep history.\n`, this mapping creates
+an initial feature and criterion for the first line only. Save it to
+`/tmp/mapping.json`, replacing `requestId` with the ID returned by capture:
+
+```json
+{
+  "projectId": "pilot", "requestId": "<returned request ID>",
+  "expectedRevision": 1, "idempotencyKey": "classify-export-001",
+  "issuedAt": "2026-11-10T12:01:00Z", "start": 0, "end": 21,
+  "rationale": "Separate export from the history requirement",
+  "target": {
+    "kind": "new_feature",
+    "feature": {
+      "id": "export-all-systems", "outcome": "Export every connected system",
+      "criteria": [{
+        "id": "export-each-system", "expectedBehavior": "Export every connected system",
+        "verificationMethod": "Exercise two different connected systems"
+      }]
+    }
+  }
+}
+```
+
+```sh
+node "$factory_cli" map --db /tmp/pilot.sqlite --input /tmp/mapping.json
+node "$factory_cli" coverage --db /tmp/pilot.sqlite --project pilot --request '<returned request ID>'
+node "$factory_cli" unclassified --db /tmp/pilot.sqlite --project pilot
+```
+
+Offsets are zero-based, half-open UTF-16 indices, as in JavaScript `text.slice(start,
+end)`. Every original character counts, including whitespace. The coverage output
+contains exact mapped excerpts, feature/criterion revision references and exact
+unmapped ranges. In this example, `Keep history.\n` remains visible in both coverage
+and the unclassified view. Overlapping mappings may associate one passage with
+several features; coverage counts their union. A completely mapped request leaves
+the unclassified view. This reports structural links; `semanticReview:
+"not_performed"` explicitly leaves interpretation quality for source comparison.
+
+Use `target: { "kind": "feature", "feature": { "id": "...", "revision": 1 },
+"criteria": [{ "id": "...", "revision": 1 }] }` to link an existing feature and
+its criteria. They must belong to the same project and feature revision, and the
+feature must name this source request. Use `target: { "kind": "disposition",
+"disposition": "clarification" }` for a passage that is not feature work. Other
+values are `deferral`, `duplication`, and `non_work_conversation`. These classify
+source content; changing a feature's scope or lifecycle is a separate operation.
+
+To correct a mapping, submit a new mapping with a new `idempotencyKey`, the current
+request's `expectedRevision`, a nondecreasing `issuedAt`, an `originalInstruction`
+containing the correction verbatim, and `replaces: [{ "id": "<old mapping decision
+ID>", "revision": 1 }]`. Replaced decisions remain in history, while only the new
+links contribute to current coverage. Replacing a large range with a smaller one
+exposes the remainder as unmapped. Do not overwrite the original request with the
+correction. Capture a new correction message separately if it also needs inbox
+delivery; assignment steering belongs to BUILD-09.
+
+Mappings extend the existing `DecisionChange` record with optional
+`requestMapping` metadata (source request revision, range, disposition, feature,
+criteria and replaced decisions). They use `record_decision_suggestion` commands;
+optional canonical `intakeRecords` in that command contain an initial feature and
+criteria so all content participates in its payload digest and atomic write. The
+request's disposition links select the current mapping decisions. Its aggregate
+disposition is `unclassified` while any text is unmapped, `work` for fully mapped
+content containing work, or the sole non-work disposition. Fully mapped content
+with several non-work dispositions retains the aggregate `unclassified` token;
+the per-range report and unclassified view use actual range coverage.
+
+### Deliver through the FirstMate inbox
+
+Capture queues delivery; it does not contact FirstMate. Inspect and deliver it
+explicitly:
+
+```sh
+node "$factory_cli" outbox --db /tmp/pilot.sqlite --project pilot
+node "$factory_cli" deliver --db /tmp/pilot.sqlite --project pilot \
+  --request '<returned request ID>' --fm-home /absolute/firstmate-home
+```
+
+`--fm-home` must be explicit and absolute. The adapter executes
+`<fmHome>/bin/fm-inbox.sh note --request-id <toolkit-request-id> --json -`
+with the exact text on stdin and that `FM_HOME`, using a literal argument array
+without a shell. Stdin also preserves flag-like text and large prompts. Inherited
+`FM_*` variables are removed before setting the explicit `FM_HOME`, preventing
+ambient state, root or wake-queue overrides from redirecting delivery. To use scripts
+from a separate installation with a scratch home, pass an absolute
+`--inbox-executable /absolute/installation/bin/fm-inbox.sh`. The project-scoped
+toolkit request ID prevents client-ID collisions between projects in the same
+FirstMate inbox.
+
+The adapter validates the returned `fm-inbox-note.v1` JSON, matching request ID,
+and `saved: true`. It records the note ID, path and full receipt in a new operation
+revision. `outcome: "replay"` is success and refers to the existing note. Repeated
+delivery of a succeeded operation performs no new subprocess call. A nonzero exit without a valid saved receipt, a timeout, malformed response or
+wrong request ID remains an explicit `unknown` outcome; an executable that cannot start is `failed`. Retrying `deliver` uses the
+same request ID, so a save followed by a failed process or local commit reconciles
+through FirstMate's replay path. Keep using the same home when retrying.
+
+`saved: true, announced: false` means the note exists but its alert needs recovery.
+The saved receipt is recorded as success even when FirstMate exits 3 for that
+announcement failure.
+Use the existing FirstMate command `FM_HOME=/absolute/firstmate-home
+/absolute/installation/bin/fm-inbox.sh announce <returned-note-id>` to repeat the
+alert. Do not capture another request. The persisted receipt retains the original
+announcement observation; this toolkit does not infer later alert acknowledgement
+or product completion. Delivery is transport, not implementation evidence.
+
+Adapter compatibility is based on BUILD-01 samples `01a`/`01b`/`01c` from FirstMate
+commit `ed1eb1d7`. Tests use a contract double inside a temporary FirstMate home,
+including save-then-fail/replay recovery; they never execute against the real
+FirstMate home. No FirstMate files, supervisor settings, task lifecycle or Beads
+records are modified by this package.
+
+### Standalone Claude Code chat capture
+
+`chat-hook` reads a Claude Code `UserPromptSubmit` JSON event from stdin. It stores
+the `prompt` verbatim with channel `chat`, and uses `session_id` and
+`transcript_path` as provenance without reading the transcript. When present,
+`prompt_id` supplies a stable per-turn client ID; the same prompt in a later turn
+is a distinct request. Older events without `prompt_id` receive a fresh ID per
+invocation. For a controlled retry of such an event, supply the same explicit
+`--client-request-id` each time. Text alone is never a deduplication key.
+
+The event fields and command-hook layout follow the official
+[Claude Code hooks reference](https://code.claude.com/docs/en/hooks#userpromptsubmit).
+Generate the exact settings snippet for this project/database:
+
+```sh
+node "$factory_cli" hook-settings --db /tmp/pilot.sqlite --project pilot
+```
+
+The output has this shape, with absolute paths filled in:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{
+      "hooks": [{
+        "type": "command",
+        "command": "'/usr/bin/node' '/absolute/software-factory/dist/src/cli.js' 'chat-hook' '--db' '/tmp/pilot.sqlite' '--project' 'pilot'",
+        "timeout": 10
+      }]
+    }]
+  }
+}
+```
+
+This command only prints JSON. Installation is an explicit configuration action
+outside this task; no settings file is edited. The hook captures locally and
+queues delivery, so inbox availability does not delay the prompt. Use `outbox`
+and `deliver` for the pending notes. Errors return nonzero and are written to
+stderr; an event that fails capture is not preserved. The hook neither enables
+nor depends on FirstMate's background supervisor or existing host-mirror hook.
+
+### Report entry-channel coverage from configuration facts
+
+```sh
+node "$factory_cli" channels --db /tmp/pilot.sqlite --project pilot
+node "$factory_cli" channels --db /tmp/pilot.sqlite --project pilot \
+  --settings /absolute/project/.claude/settings.json
+```
+
+| Entry channel | Reported capture | Configuration fact |
+| --- | --- | --- |
+| CLI | Manual | A user or integration must invoke `capture`. |
+| Chat without supplied enabled hook evidence | Manual fallback | `capture --channel chat` is available; automatic chat capture is not verified. |
+| Chat with the generated unconditional command | Automatic in inspected configuration | An exact command match names this CLI, database and project, with no async/conditional execution or hook disabling. |
+| FirstMate inbox | Manual fallback | No inbound importer is implemented; explicitly capture a note's exact text and source with `--channel firstmate_inbox`. Sending an outbox note does not capture other inbox entries. |
+
+`--settings` is read-only and repeatable. The report lists each inspected path,
+parse/read errors, matching hook configuration and disabling facts. Any inspected
+`disableAllHooks: true` or unreadable/invalid settings prevents an automatic claim.
+It recognizes the generated command exactly; arbitrary shell wrappers and
+conditional hooks remain unverified. No supplied settings means no installed-hook
+evidence. Other scopes, policy, runtime hook acceptance and successful execution
+are not verified, and the report says so. This configuration report does not claim
+that every historical conversational request was captured.
+
+BUILD-04 verification covers immutable original text across mapping/correction,
+visible omitted ranges, all dispositions, stale-write rejection, atomic capture,
+CLI round trips, hook idempotence and channel coverage with no hook installed.

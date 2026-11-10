@@ -4,6 +4,7 @@
   "private": true,
   "description": "Runtime contracts for the FirstMate product-development workflow",
   "type": "module",
+  "bin": { "software-factory": "./dist/src/cli.js" },
   "exports": { ".": { "types": "./dist/src/index.d.ts", "import": "./dist/src/index.js" } },
   "files": ["dist/src", "fixtures", "README.md"],
   "scripts": {

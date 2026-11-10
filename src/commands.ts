@@ -5,6 +5,7 @@ import {
 import {
   CriterionResultSchema, DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema,
   ImplementationPlanRevisionSchema, ObservationSchema, ProductReviewSchema, SelectedContextSchema,
+  FeatureRevisionSchema, CriterionSchema,
 } from './records.js';
 
 const envelope = {
@@ -31,7 +32,11 @@ export const DesignPlanFeatureCommandSchema = z.strictObject({
 });
 export const RecordDecisionSuggestionCommandSchema = z.strictObject({
   ...mutation, command: z.literal('record_decision_suggestion'),
-  payload: z.strictObject({ decision: DecisionChangeSchema }),
+  payload: z.strictObject({ decision: DecisionChangeSchema,
+    // Intake can create an initial feature and its criteria alongside its mapping.
+    // All content participates in the command digest and the same store transaction.
+    intakeRecords: z.array(z.union([FeatureRevisionSchema, CriterionSchema])).optional(),
+  }),
 });
 export const MapManageExecutionTaskCommandSchema = z.strictObject({
   ...mutation, command: z.literal('map_manage_execution_task'),

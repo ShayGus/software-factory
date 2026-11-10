@@ -137,10 +137,20 @@ export const ScopeChangeSchema = z.strictObject({
   featureId: IdSchema, fromRevision: RevisionSchema, toRevision: RevisionSchema,
   criterionId: IdSchema, action: z.enum(['remove', 'demote', 'defer', 'amend']),
 });
+// Half-open UTF-16 offsets into the immutable captured request. Mapping corrections
+// replace links on the current request; the old decisions remain in history.
+export const RequestMappingSchema = z.strictObject({
+  request: RefSchema, start: z.number().int().nonnegative(), end: z.number().int().positive(),
+  disposition: RequestDispositionSchema.exclude(['unclassified']),
+  feature: RefSchema.nullable(), criteria: z.array(RefSchema), replaces: z.array(RefSchema),
+}).refine((value) => value.end > value.start, 'Mapping range must be nonempty')
+  .refine((value) => value.disposition === 'work' ? value.feature !== null :
+    value.feature === null && value.criteria.length === 0, 'Only work mappings name a feature and criteria');
 export const DecisionChangeSchema = record('decision_change', {
   questionOrChange: TextSchema, affectedRecords: z.array(RefSchema).min(1), rationale: TextSchema,
   disposition: DecisionDispositionSchema, originalInstruction: TextSchema.optional(),
   sourceRefs: z.array(SourceRefSchema).min(1), scopeChanges: z.array(ScopeChangeSchema),
+  requestMapping: RequestMappingSchema.optional(),
 });
 
 export const CorrectionSchema = z.strictObject({

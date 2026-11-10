@@ -342,6 +342,31 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       if (record.correctionOf) ctx.get(record, record.correctionOf, 'measurement_claim', 'correctionOf');
       break;
     case 'decision_change':
+      if (record.requestMapping) {
+        const mapping = record.requestMapping;
+        const request = ctx.get(record, mapping.request, 'request', 'requestMapping.request');
+        const feature = mapping.feature ? ctx.get(record, mapping.feature, 'feature_revision', 'requestMapping.feature') : undefined;
+        ctx.criteria(record, mapping.criteria, feature);
+        if (request && (mapping.end > request.originalText.length || !record.sourceRefs.some((source) =>
+          source.record && sameRef(source.record, mapping.request) &&
+          source.excerpt === request.originalText.slice(mapping.start, mapping.end)))) {
+          ctx.add(record, 'invalid_request_range', 'requestMapping', 'Range must name an exact excerpt of the original request');
+        }
+        if (feature && !feature.sourceRequests.some((source) => sameRef(source, mapping.request))) {
+          ctx.add(record, 'omitted_source', 'requestMapping.feature', 'Feature must name the mapped source request');
+        }
+        for (const ref of [mapping.request, ...(mapping.feature ? [mapping.feature] : []), ...mapping.criteria]) {
+          if (!record.affectedRecords.some((affected) => sameRef(ref, affected))) {
+            ctx.add(record, 'omitted_source', 'affectedRecords', 'Mapping target must be an affected record');
+          }
+        }
+        for (const ref of mapping.replaces) {
+          const prior = ctx.get(record, ref, 'decision_change', 'requestMapping.replaces');
+          if (prior && (!prior.requestMapping || !sameRef(prior.requestMapping.request, mapping.request))) {
+            ctx.add(record, 'invalid_mapping_replacement', 'requestMapping.replaces', 'Replacement must map the same request');
+          }
+        }
+      }
       for (const ref of record.affectedRecords) {
         const target = ctx.index.get(key(ref));
         if (!target || target.projectId !== record.projectId) ctx.add(record, 'missing_reference', 'affectedRecords', `Missing affected ${ref.id}`);
