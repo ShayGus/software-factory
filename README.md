@@ -1,12 +1,13 @@
-# Software Factory contracts — BUILD-02
+# Software Factory contracts and persistence — BUILD-03
 
 This TypeScript package defines the records and operation boundaries for the
 FirstMate product-development workflow in [the design](Software_Factory_Design.md).
 It preserves request, feature, design, detailed-plan, assignment and review identities
-through one complete feature workflow. It does not run FirstMate or implement storage,
-a scheduler, a CLI, HTTP, UI, tasks-axi changes or Beads.
+through one complete feature workflow. BUILD-03 adds local SQLite persistence.
+It does not run FirstMate or implement a reconciler, scheduler, CLI, HTTP, UI,
+tasks-axi changes or Beads.
 
-Node.js 22 or later is required. Install and verify with:
+Node.js 22.13.0 or later is required. Install and verify with:
 
 ```sh
 npm ci
@@ -19,7 +20,7 @@ The package entry point is `dist/src/index.js`. The only runtime dependency is
 [Zod](https://zod.dev/basics), pinned in the lockfile. Zod provides runtime parsing,
 path-specific errors and inferred TypeScript types from the same schema, avoiding
 separate interface and validator definitions. It is MIT licensed and runs locally.
-No network, paid service or database is required at runtime or for tests.
+No network, paid service or database server is required at runtime or for tests.
 
 ## Record contracts
 
@@ -112,8 +113,8 @@ Record-local `Schema.parse` checks structure; `validateRecords` also checks link
 `assertExpectedRevision(expected, actual)` checks optimistic revision expectations;
 `0` means creation and `actual: null` means absent. `assertRevisionTransition(before,
 after)` requires the same identity, one revision increment, ordered timestamps and
-preserved original request capture. BUILD-03 must perform these checks atomically
-with writes and retain history; these functions do not supply storage atomicity.
+preserved original request capture. `ProjectStore` performs these checks atomically
+with writes and retains history; the standalone functions do not supply storage atomicity.
 
 Failed comparisons and failed/incomplete reviews are valid historical records.
 Storing them must not accidentally mean dispatch or completion is permitted:
@@ -168,8 +169,8 @@ revisions before committing changes.
 command, target, expected revision and payload. Object key order, transport ID,
 issuance time and idempotency key do not affect the digest; source text and array
 order do. `assertIdempotencyReuse` rejects a different project/key/command/digest.
-BUILD-03 owns the durable project/key uniqueness check and replay result. It must
-not retry an ambiguous external operation merely because a subprocess timed out.
+`ProjectStore` owns the durable project/key uniqueness check and replay result.
+An ambiguous external operation must not be retried merely because a subprocess timed out.
 
 Operations preserve `pending`, `succeeded`, `failed` or `unknown` plus external
 references and optional evidenced reconciliation. `BoundaryErrorSchema` defines
@@ -212,17 +213,113 @@ unmapped work. Tests also verify metadata, exact source preservation, default re
 criteria, revision increments and idempotency replay/conflicts. Fixtures run entirely
 offline; no FirstMate commands are executed.
 
-## Design questions left open
+## SQLite persistence
 
-- Does a state-only feature update create a new semantic feature revision? How should
-  a prior review or unaffected criterion evidence be adopted after such an update?
-  Current references are exact; old results remain historical until explicitly linked
-  into a current review through a current assignment/result. Automated invalidation and
-  evidence-retention policy are not implemented by BUILD-02.
+`ProjectStore` uses Node's built-in [`node:sqlite` `DatabaseSync`](https://nodejs.org/download/release/v22.14.0/docs/api/sqlite.html).
+It adds no package dependency or native-addon installation and fits the single local
+TypeScript service baseline. Node 22.13.0 is the minimum because that version removed
+the SQLite flag requirement; Node 22 still labels this API experimental. Transactions
+and prepared statements use the common Node 22 API surface. Zod remains the only
+runtime package dependency. Operations are synchronous; handlers must stay short.
+
+The database has append-only record history and durable command receipts. All sixteen
+BUILD-02 record kinds, including operation revisions, use `RecordSchema`; there are no
+parallel persistence record shapes. SQLite `user_version` identifies storage format 1;
+unknown versions are rejected. This build does not supply database migrations.
+
+```ts
+import { ProjectStore, pendingOperation } from '@software-factory/contracts';
+
+const store = new ProjectStore('/path/to/project.sqlite');
+try {
+  const result = store.mutate(captureCommand, (history) => {
+    // A trusted application handler derives BUILD-02 records from the command.
+    // Include the Project record here too if this is the project's first write.
+    const requestRecord = deriveRequestRecord(captureCommand, history);
+    return [requestRecord, pendingOperation(captureCommand, 'delivery-operation-id')];
+  });
+  // result.records contains exact { id, revision } references to the first writes.
+  const backup = store.exportProject(captureCommand.projectId);
+  // JSON.stringify(backup) is portable; import it with emptyStore.importProject(...).
+} finally {
+  store.close();
+}
+```
+
+`mutate(envelope, prepare)` is a persistence primitive, not an implementation of the
+nine application command handlers. `prepare` is trusted application code: derive its
+records from the validated command meaning, and perform no external effects or nested
+store mutations. The callback must return an array synchronously. All records must
+belong to the command project. Include the intended pending operation in that same
+array; it and the mutation and receipt commit together. Purely local changes need no
+external operation. `pendingOperation(command, id)` creates a BUILD-02 operation with
+the command digest/key and state `pending`; it does not execute anything. A new
+operation must match the envelope and have no claimed external outcome.
+
+A `BEGIN IMMEDIATE` transaction takes the write lock before checking revisions or
+replay. The envelope's `targetId`/`expectedRevision` and design command's additional
+`expectedRevisions` are checked against current records. The target can be an unchanged
+aggregate whose revision guards writes to related records. Every proposed record also
+compares `revision - 1` against its current revision (zero for creation). There is one
+write per stable ID per mutation. New histories start at revision 1; updates increment
+by one and retain identity, creation time, ordered timestamps and original request
+capture. The complete project history plus proposed writes passes `validateRecords`
+before storage. A failed validation, stale comparison, callback or database write
+leaves no records, operation or receipt behind. IDs are globally stable; client request
+IDs and operation keys are unique within each project.
+
+A receipt is unique by project/idempotency key. Replays compare the BUILD-02
+`commandDigest` and return the **first** result without running `prepare`, even when
+the target or operation has since advanced. Transport ID/time and object key order
+can change; different command meaning fails with `idempotency_conflict`. Record
+references in the result resolve to the original immutable revisions, not latest state.
+`StoreError.detail` follows `BoundaryErrorSchema`: stale writes use `conflict`,
+schema/rule errors and key misuse use `validation`, missing exports use `not_found`.
+SQLite filesystem/locking errors and application callback errors propagate unchanged.
+The busy timeout is five seconds; callers can retry contention with the same command.
+
+`history(projectId)` returns every revision, `records(projectId)` returns latest
+revisions, and `get(projectId, id, revision?)` selects a current or historical record.
+`operations(projectId)` returns latest operation records, including `pending`,
+`succeeded`, `failed` and `unknown`. Record observed outcomes by another idempotent
+`mutate` call, targeting the operation's expected revision and returning its next
+BUILD-02 operation revision. Preserve its original command, key and digest; attach
+external references and evidenced reconciliation as appropriate. This only records
+an observation. There is no executor, retry loop, reconciler or automatic state change.
+
+`exportProject(projectId)` takes a consistent read snapshot and returns versioned
+JSON containing all record history (including operations) and command receipts with
+their original envelopes/results. `ProjectExportSchema` validates the transport
+container while reusing BUILD-02 schemas. `importProject(export)` accepts only a
+completely empty store, checks closed references and contiguous revision history,
+then imports everything in one transaction. Restore preserves pending/unknown states
+and replay results without executing operations. Historical operations imported without
+a receipt still reserve their keys and cannot be replayed as new work. Export contains
+artifact/attachment references and their identities, not file bytes; move referenced
+files separately. Missing-file reporting and live reconciliation belong to BUILD-15.
+
+The store currently validates and reads project histories in memory. This keeps the
+foundation small for the local baseline; large-project indexing/streaming is later work.
+Tests use real temporary SQLite databases: close/reopen, two-connection stale writes,
+repeat/conflicting keys, an injected database failure proving rollback of records plus
+pending operation plus receipt, all sixteen record kinds, operation outcome history,
+and JSON round trips that retain replay behavior. BUILD-02 fixtures still run unchanged.
+
+## Feature revision decision and remaining questions
+
+A state-only feature update **creates a new feature revision**, using the same
+increment, `previousRevision`, and `changeReason` rules as any other feature update.
+No separate semantic-revision counter or implicit evidence promotion is introduced.
+Current references remain exact; old results and reviews remain historical until
+explicitly linked into a current review through a current assignment/result. A transition
+to `complete` therefore needs a passing review naming that new feature revision in
+the same transaction (or already present), as BUILD-02 requires. Automated invalidation
+and adoption of unaffected evidence remain later workflow policy.
+
 - Which project license should accompany publication? The input repository supplied
   no license; this package does not select one on the operator's behalf.
 
-BUILD-03 must implement durable history, transactions, idempotency and operation
-reconciliation. Source comparison, assignment generation and live product review are
-later workflow builds. No live FirstMate integration or full product milestone is
+Durable history, transactions, idempotency and pending-operation storage are implemented.
+Operation execution/reconciliation, source comparison, assignment generation and live
+product review are later builds. No live FirstMate integration or full product milestone is
 claimed by these contract fixtures.
