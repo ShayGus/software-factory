@@ -105,3 +105,130 @@ write the complete lifecycle/evidence/hold/dependency change, and retain history
 within that transaction. It must reject both nonzero transport exit and JSON
 error envelopes. This is a pinned SQL-schema integration behind the Store seam;
 it is not safe to substitute a sequence of native CLI writes.
+
+## Configuration and executable wrapper
+
+No workspace is initialized by tasks-axi. Provision an empty dedicated server
+database/workspace separately after deployment approval. Each writer must use
+that same server; the adapter forcibly disables bd auto-start. Server mode and
+endpoint/database must match the existing workspace's `metadata.json` exactly.
+Both the pinned bd build and Dolt 2.7.2 server version are checked before use.
+Use a database-scoped SQL account and appropriate socket/network permissions.
+The adapter installs its versioned tables and routine on first mutation; it
+requires table/routine creation rights. An existing routine with different
+source is refused. Schema upgrades require deliberate provisioning and tests.
+
+Example configuration (illustrative paths only):
+
+```toml
+backend = "beads"
+[beads]
+path = "scratch/backlog/.beads"
+binary = "./scripts/beads-docker-exec.mjs"
+prefix = "fm"
+database = "firstmate_scratch"
+server_socket = "scratch/sql/server.sock"
+server_user = "root"
+timeout_ms = 15000
+done_keep = 10
+```
+
+Alternatively set both `server_host` and integer `server_port`, omitting
+`server_socket`. Host/container reachability must be configured by the operator;
+loopback does not cross container namespaces. Paths and executable paths resolve
+against the invoking backlog root. Backend selection retains flag, environment,
+project, user, default precedence. `[beads]` keys merge project over user keys.
+`--file` and `TASKS_AXI_FILE` are Markdown-only and refused for Beads.
+
+`binary` is one executable path/name, never a shell command. The shipped wrapper
+reads an operator-owned JSON allowlist from `TASKS_AXI_BEADS_DOCKER_ALLOWLIST`:
+
+```json
+[
+  {
+    "path": "/absolute/scratch/backlog/.beads",
+    "containerPath": "/absolute/scratch/backlog/.beads",
+    "container": "approved-scratch-client",
+    "user": "1000",
+    "socket": "/absolute/scratch/sql/server.sock",
+    "containerSocket": "/absolute/scratch/sql/server.sock"
+  }
+]
+```
+
+Allowlist workspace paths must be canonical and exact. The wrapper rejects
+unknown workspaces, lifecycle commands and CLI workspace/path overrides. Body
+files use `--body-file -` with stdin. It forwards only the approved connection
+variables, actor, password and caller-supplied `BD_DUE_REQUIRED`; it always sets
+`BEADS_DOLT_AUTO_START=0`. It preserves streams and exit status, with a 60-second
+wrapper deadline plus the adapter's configurable deadline. It does not add a
+mount, expose a port or change an existing container. SQL privileges must limit
+the account to this database; the wrapper is a routing boundary, not a SQL
+authorization sandbox.
+
+## Lifecycle, history and recovery
+
+`add --hold-reason "decision pending" --hold-kind captain` creates its hold in
+the same transaction as the task and initial dependencies. `--hold-until`
+accepts the existing local-date gate. Holds remain metadata and do not change
+native base state or invent due dates. Explicit due-required environment policy
+is refused because this release has no due-date input. Start refuses active
+holds/blockers both before the mutation and inside the server transaction.
+
+Each mutation checks a snapshot of native fields, all metadata and native
+dependencies. Stale snapshots and competing writes produce a structured error.
+The routine atomically writes native fields, versioned metadata, edges, native
+audit events, before/after snapshots in `tasks_axi_history_v1`, and a Dolt commit.
+It preserves foreign metadata and unrelated relation types. Beads permits only
+one relation per target pair, so conflicting edge types are refused. Cycles
+retain Markdown's semantics: every active member remains blocked.
+
+The supported native statuses are `open`, `in_progress` and `closed`; unfamiliar
+native statuses or foreign/unversioned rows fail closed. Native edits to title,
+description, priority, status and supported dependencies are reflected on read.
+Managed hold/evidence/date fields remain in the versioned namespace. Native
+priority 2 retains the distinction between an absent priority and explicit 2.
+Beads limits titles to 500 characters. JSON metadata must be serializable.
+
+Large transaction payloads are staged in bounded chunks in the ignored
+`tasks_axi_payload_v1` table. The final CALL reads those chunks, changes tasks
+atomically, and clears the request. Provisional chunks are never backlog rows.
+An outage can leave orphan staging data; an operator may remove request IDs
+after confirming that no corresponding operation is in flight. The transport
+caps captured output at 32 MiB and reports an error when exceeded.
+
+Prune marks surplus Done rows `tasks_axi.archived=true` by count in one
+transaction. Active lists omit them; `show`/`get` and native `bd history` still
+work, with body snapshots and evidence retained. It never invokes `bd prune` or
+delete. `--no-archive` cannot turn this into deletion. Reopen/start clear the
+archive marker; a native reopening is also visible in active lists. Explicit
+`rm` is distinct, protects active dependents, and retains the adapter's history
+snapshots even though native issue deletion removes current-row audit events.
+
+After a timeout or lost response, inspect the task and retry the original
+idempotent command. An operation may have committed before its response was
+lost. Do not treat connectivity, lock, schema or JSON errors as a missing task.
+Replaying Done adds evidence/nonduplicate notes without replacing the closed
+date. There is no embedded fallback, background daemon or cross-home transfer.
+
+## Reproducible scratch acceptance
+
+Install project dependencies and run the normal build/test/lint/skill checks.
+The opt-in integration runner requires Docker, git, and these existing images:
+`local/scotty:v0.4.0-cf6dda1` and the pinned Dolt digest above. It extracts bd to
+a temporary folder, initializes two fresh scratch workspaces, starts only its
+own no-network/no-published-port SQL/client containers, and cleans them up.
+It never opens an existing backlog or changes the Scotty service.
+
+```sh
+pnpm build
+pnpm test:beads
+# A focused fixture run:
+pnpm test:beads -- -t 'archives by count'
+```
+
+The ordinary suite skips the real-Beads tests unless the scratch runner supplies
+its marked temporary configuration. Coverage includes two clients, stale writes,
+post-insert rollback, 61+ rows, metadata/relation preservation, full/large bodies,
+stdin, lifecycle/hold expiry and replay, typed evidence, retained native history,
+automatic pruning, unsupported operations, path refusal and server outage.

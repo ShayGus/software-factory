@@ -1,7 +1,7 @@
 # tasks-axi — agent notes
 
 Agent-ergonomic task/backlog CLI in the `*-axi` family, built on `axi-sdk-js` and mirroring `gh-axi`.
-P1 ships only the markdown backend behind a `Store` seam; sqlite (P2) and remote trackers (P3) are deferred.
+Markdown remains the default behind the `Store` seam; the local Beads backend is limited to one home with pinned bd/server versions. sqlite (P2) and remote trackers (P3) are deferred.
 
 ## Architecture
 

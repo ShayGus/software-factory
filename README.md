@@ -249,11 +249,12 @@ Body replacements with `--archive-body` append superseded bodies to `note-archiv
 
 ## Backends
 
-P1 ships the **markdown** backend only, behind a narrow `Store` interface so additional backends slot in without touching the CLI layer.
+**Markdown** remains the default. The local **Beads** adapter supports one owning home through a pinned bd 1.1.0 executable and one externally managed Dolt 2.7.2 SQL server. It retains logical task IDs, structured holds, evidence and archived history. Beads refuses `mv`, public followups and Markdown rendering. Configuration, the Docker executable wrapper, scratch tests and operating limits are in [the Beads contract](docs/beads-backend.md). This build does not deploy or migrate a backlog.
 
 | Backend                | Status  |
 | ---------------------- | ------- |
 | markdown               | shipped |
+| beads                  | local, one home |
 | sqlite                 | planned |
 | github / jira / linear | planned |
 

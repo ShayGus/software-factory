@@ -29,7 +29,8 @@
     "skills/tasks-axi",
     "LICENSE",
     "README.md",
-    "scripts/beads-docker-exec.mjs"
+    "scripts/beads-docker-exec.mjs",
+    "docs/beads-backend.md"
   ],
   "publishConfig": {
     "access": "public"
@@ -41,7 +42,8 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "dev": "tsx bin/tasks-axi.ts",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test:beads": "node scripts/test-beads-integration.mjs"
   },
   "license": "MIT",
   "engines": {

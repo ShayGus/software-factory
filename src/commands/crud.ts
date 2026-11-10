@@ -241,20 +241,41 @@ export async function addCommand(
   const report = takeFlag(args, "--report");
   const priority = parsePriority(takeFlag(args, "--priority"));
   const deps = parseDeps(args);
-  const holdReason = requireSafeTagFlagValue("--hold-reason",takeFlag(args,"--hold-reason"));
-  const holdKind = takeFlag(args,"--hold-kind");
-  const holdUntil = takeFlag(args,"--hold-until");
-  if ((holdKind !== undefined || holdUntil !== undefined) && holdReason === undefined) {
-    throw new AxiError("--hold-kind/--hold-until require --hold-reason", "VALIDATION_ERROR");
+  const holdReason = requireSafeTagFlagValue(
+    "--hold-reason",
+    takeFlag(args, "--hold-reason"),
+  );
+  const holdKind = takeFlag(args, "--hold-kind");
+  const holdUntil = takeFlag(args, "--hold-until");
+  if (
+    (holdKind !== undefined || holdUntil !== undefined) &&
+    holdReason === undefined
+  ) {
+    throw new AxiError(
+      "--hold-kind/--hold-until require --hold-reason",
+      "VALIDATION_ERROR",
+    );
   }
-  if (holdKind !== undefined && !(HOLD_KINDS as readonly string[]).includes(holdKind)) {
-    throw new AxiError(`--hold-kind must be one of ${HOLD_KINDS.join(", ")}`, "VALIDATION_ERROR");
+  if (
+    holdKind !== undefined &&
+    !(HOLD_KINDS as readonly string[]).includes(holdKind)
+  ) {
+    throw new AxiError(
+      `--hold-kind must be one of ${HOLD_KINDS.join(", ")}`,
+      "VALIDATION_ERROR",
+    );
   }
   if (holdUntil !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(holdUntil)) {
     throw new AxiError("--hold-until must be YYYY-MM-DD", "VALIDATION_ERROR");
   }
-  const hold: Hold | undefined = holdReason === undefined ? undefined : {reason:holdReason,
-    ...(holdKind ? {kind:holdKind as Hold["kind"]} : {}), ...(holdUntil ? {until:holdUntil} : {})};
+  const hold: Hold | undefined =
+    holdReason === undefined
+      ? undefined
+      : {
+          reason: holdReason,
+          ...(holdKind ? { kind: holdKind as Hold["kind"] } : {}),
+          ...(holdUntil ? { until: holdUntil } : {}),
+        };
   const json = takeBoolFlag(args, "--json");
   const start = takeBoolFlag(args, "--start");
   const queue = takeBoolFlag(args, "--queue");

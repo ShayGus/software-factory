@@ -701,7 +701,10 @@ export async function mvCommand(
   const ids = [...new Set(positionals.map((p) => requireId(p, "id")))];
 
   if (store.capabilities().backend === "beads") {
-    throw new AxiError("The Beads backend is one-home only; mv is unsupported", "UNSUPPORTED");
+    throw new AxiError(
+      "The Beads backend is one-home only; mv is unsupported",
+      "UNSUPPORTED",
+    );
   }
 
   const targetPath = resolveBacklogTarget(to);

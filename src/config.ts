@@ -12,13 +12,12 @@ import { AxiError } from "./errors.js";
  *   ~/.tasks-axi/config.toml > defaults (markdown, first existing
  *   backlog.md/data/backlog.md, otherwise backlog.md).
  *
- * P1 ships only the markdown backend; the Store seam keeps sqlite/remote
- * additions invisible to the CLI layer.
+ * Markdown remains the default; Beads requires an explicit server workspace.
  */
 
 export interface ResolvedConfig {
   backend: string;
-  /** Markdown backlog path (resolved to an absolute path). */
+  /** Backend workspace/backlog path (resolved to an absolute path). */
   path: string;
   /** Optional archive path for pruned tasks (resolved to an absolute path). */
   archivePath?: string;
@@ -104,11 +103,16 @@ export function parseConfigToml(src: string): TomlConfig {
       config.beads ??= {};
       if (["server_port", "timeout_ms", "done_keep"].includes(key)) {
         if (typeof value !== "number") {
-          throw new AxiError(`${source} must be an integer`, "VALIDATION_ERROR");
+          throw new AxiError(
+            `${source} must be an integer`,
+            "VALIDATION_ERROR",
+          );
         }
         Object.assign(config.beads, { [key]: value });
       } else {
-        Object.assign(config.beads, { [key]: requireTomlString(value, source) });
+        Object.assign(config.beads, {
+          [key]: requireTomlString(value, source),
+        });
       }
       continue;
     }
@@ -148,10 +152,7 @@ function stripTomlComment(raw: string): string {
   return raw;
 }
 
-function configKeySource(
-  table: ConfigTable,
-  key: string,
-): string | undefined {
+function configKeySource(table: ConfigTable, key: string): string | undefined {
   if (table === "root" && key === "backend") return "backend";
   if (
     table === "markdown" &&
@@ -159,8 +160,21 @@ function configKeySource(
   ) {
     return `markdown.${key}`;
   }
-  if (table === "beads" && ["path", "binary", "prefix", "database",
-    "server_host", "server_port", "server_user", "server_socket", "timeout_ms", "done_keep"].includes(key)) {
+  if (
+    table === "beads" &&
+    [
+      "path",
+      "binary",
+      "prefix",
+      "database",
+      "server_host",
+      "server_port",
+      "server_user",
+      "server_socket",
+      "timeout_ms",
+      "done_keep",
+    ].includes(key)
+  ) {
     return `beads.${key}`;
   }
   return undefined;
@@ -245,12 +259,6 @@ export function resolveConfig(overrides: ConfigOverrides = {}): ResolvedConfig {
       : env.TASKS_AXI_FILE !== undefined
         ? validatePathValue(env.TASKS_AXI_FILE, "TASKS_AXI_FILE")
         : undefined;
-  const tomlPath =
-    explicitPath !== undefined
-      ? undefined
-      : projectToml.markdown?.path !== undefined
-        ? validatePathValue(projectToml.markdown.path, "markdown.path")
-        : validatePathValue(homeToml.markdown?.path, "markdown.path");
 
   const backend =
     overrides.backend ??
@@ -261,41 +269,91 @@ export function resolveConfig(overrides: ConfigOverrides = {}): ResolvedConfig {
 
   if (backend === "beads") {
     if (explicitPath !== undefined) {
-      throw new AxiError("--file/TASKS_AXI_FILE is Markdown-only; configure beads.path explicitly", "VALIDATION_ERROR");
+      throw new AxiError(
+        "--file/TASKS_AXI_FILE is Markdown-only; configure beads.path explicitly",
+        "VALIDATION_ERROR",
+      );
     }
     const values = { ...homeToml.beads, ...projectToml.beads };
     function required(key: "path" | "binary" | "prefix" | "database"): string {
       const value = validatePathValue(values[key], `beads.${key}`);
-      if (!value) throw new AxiError(`beads.${key} is required`, "VALIDATION_ERROR");
+      if (!value)
+        throw new AxiError(`beads.${key} is required`, "VALIDATION_ERROR");
       return value;
     }
     const path = resolve(cwd, required("path"));
     const binary = required("binary");
     const prefix = required("prefix");
     const database = required("database");
-    if (!/^[a-z][a-z0-9-]*$/.test(prefix) || !/^[a-zA-Z0-9_]+$/.test(database)) {
-      throw new AxiError("Invalid beads.prefix or beads.database", "VALIDATION_ERROR");
+    if (
+      !/^[a-z][a-z0-9-]*$/.test(prefix) ||
+      !/^[a-zA-Z0-9_]+$/.test(database)
+    ) {
+      throw new AxiError(
+        "Invalid beads.prefix or beads.database",
+        "VALIDATION_ERROR",
+      );
     }
     if (/\s/.test(binary) && !existsSync(resolve(cwd, binary))) {
-      throw new AxiError("beads.binary must name one executable, not a shell command", "VALIDATION_ERROR");
+      throw new AxiError(
+        "beads.binary must name one executable, not a shell command",
+        "VALIDATION_ERROR",
+      );
     }
-    const socket = values.server_socket ? resolve(cwd, values.server_socket) : undefined;
+    const socket = values.server_socket
+      ? resolve(cwd, values.server_socket)
+      : undefined;
     const port = values.server_port;
-    if (!socket && (!values.server_host || !Number.isInteger(port) || port! < 1 || port! > 65535)) {
-      throw new AxiError("Beads requires server_socket or explicit server_host and server_port", "VALIDATION_ERROR");
+    if (
+      !socket &&
+      (!values.server_host ||
+        !Number.isInteger(port) ||
+        port! < 1 ||
+        port! > 65535)
+    ) {
+      throw new AxiError(
+        "Beads requires server_socket or explicit server_host and server_port",
+        "VALIDATION_ERROR",
+      );
     }
     if (socket && (values.server_host !== undefined || port !== undefined)) {
-      throw new AxiError("Choose beads.server_socket or server_host/server_port", "VALIDATION_ERROR");
+      throw new AxiError(
+        "Choose beads.server_socket or server_host/server_port",
+        "VALIDATION_ERROR",
+      );
     }
     const timeout = values.timeout_ms ?? 15000;
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 60000) {
-      throw new AxiError("beads.timeout_ms must be 1-60000", "VALIDATION_ERROR");
+      throw new AxiError(
+        "beads.timeout_ms must be 1-60000",
+        "VALIDATION_ERROR",
+      );
     }
-    const beads: BeadsConfig = { path, binary: binary.includes("/") ? resolve(cwd, binary) : binary,
-      prefix, database, server_user: values.server_user ?? "root", timeout_ms: timeout,
-      ...(socket ? {server_socket: socket} : {server_host: values.server_host, server_port: port}) };
-    return { backend, path, doneKeep: validateDoneKeep(values.done_keep ?? DEFAULT_KEEP), beads };
+    const beads: BeadsConfig = {
+      path,
+      binary: binary.includes("/") ? resolve(cwd, binary) : binary,
+      prefix,
+      database,
+      server_user: values.server_user ?? "root",
+      timeout_ms: timeout,
+      ...(socket
+        ? { server_socket: socket }
+        : { server_host: values.server_host, server_port: port }),
+    };
+    return {
+      backend,
+      path,
+      doneKeep: validateDoneKeep(values.done_keep ?? DEFAULT_KEEP),
+      beads,
+    };
   }
+
+  const tomlPath =
+    explicitPath !== undefined
+      ? undefined
+      : projectToml.markdown?.path !== undefined
+        ? validatePathValue(projectToml.markdown.path, "markdown.path")
+        : validatePathValue(homeToml.markdown?.path, "markdown.path");
 
   const path = resolveMarkdownPath(explicitPath, tomlPath, cwd);
 
