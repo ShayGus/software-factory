@@ -1,0 +1,33 @@
+{
+  "source": "negative mutation of 02b-tasks-add-with-dependency.txt",
+  "schema": "task_mutation",
+  "valid": false,
+  "input": {
+    "ok": true,
+    "action": "add",
+    "task": {
+      "id": "pilot-build",
+      "title": "build feature X",
+      "state": "cancelled",
+      "kind": "ship",
+      "repo": "fronto-bif",
+      "priority": null,
+      "created": "2026-11-10",
+      "closed": null,
+      "deps": [
+        {
+          "type": "blocked-by",
+          "id": "pilot-design"
+        }
+      ],
+      "hold": null,
+      "links": [],
+      "body": null,
+      "blocked": true,
+      "blocked_by": [
+        "pilot-design"
+      ],
+      "held": false
+    }
+  }
+}

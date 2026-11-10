@@ -1,0 +1,26 @@
+{
+  "description": "Unknown fields are rejected instead of silently stripped.",
+  "edits": [
+    {
+      "record": {
+        "id": "assignment-1",
+        "revision": 1
+      },
+      "path": [
+        "desgin"
+      ],
+      "value": {
+        "id": "design-1",
+        "revision": 1
+      }
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "schema"
+    ]
+  },
+  "gate": "records"
+}

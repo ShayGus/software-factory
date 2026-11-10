@@ -1,0 +1,14 @@
+{
+  "description": "One synthetic feature completes the full request/design/plan/assignment/review contract.",
+  "edits": [],
+  "addRecords": [],
+  "expected": {
+    "valid": true,
+    "codes": []
+  },
+  "gate": "completion",
+  "target": {
+    "id": "review-1",
+    "revision": 1
+  }
+}

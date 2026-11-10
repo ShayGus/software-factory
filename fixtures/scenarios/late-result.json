@@ -1,0 +1,52 @@
+{
+  "description": "A result for an unassigned criterion revision cannot close the newer revision.",
+  "edits": [
+    {
+      "record": {
+        "id": "result-second",
+        "revision": 1
+      },
+      "path": [
+        "criterion"
+      ],
+      "value": {
+        "id": "criterion-second-system",
+        "revision": 2
+      }
+    }
+  ],
+  "addRecords": [
+    {
+      "kind": "criterion",
+      "id": "criterion-second-system",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 2,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "featureId": "feature-1",
+      "expectedBehavior": "A non-ERPNext connected system uses the same feature.",
+      "verificationMethod": "Run a second-system acceptance case through the common interface.",
+      "requirement": "optional",
+      "sourceRefs": [
+        {
+          "uri": "fixture://records/request-1",
+          "record": {
+            "id": "request-1",
+            "revision": 1
+          }
+        }
+      ],
+      "disposition": {
+        "state": "active"
+      }
+    }
+  ],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "unassigned_criterion"
+    ]
+  },
+  "gate": "records"
+}

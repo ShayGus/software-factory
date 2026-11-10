@@ -1,0 +1,28 @@
+{
+  "description": "A ready plan must collectively cover required feature criteria.",
+  "edits": [
+    {
+      "record": {
+        "id": "task-1",
+        "revision": 1
+      },
+      "path": [
+        "criteria"
+      ],
+      "value": [
+        {
+          "id": "criterion-general",
+          "revision": 1
+        }
+      ]
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "omitted_criterion"
+    ]
+  },
+  "gate": "records"
+}

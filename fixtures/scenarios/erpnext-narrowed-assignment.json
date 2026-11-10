@@ -1,0 +1,95 @@
+{
+  "description": "Both criterion IDs remain listed, but independent source comparison finds ERPNext-only instructions.",
+  "edits": [
+    {
+      "record": {
+        "id": "assignment-1",
+        "revision": 1
+      },
+      "path": [
+        "instructionText"
+      ],
+      "value": "Implement feature X for ERPNext only."
+    },
+    {
+      "record": {
+        "id": "assignment-1",
+        "revision": 1
+      },
+      "path": [
+        "instructionFidelity"
+      ],
+      "value": {
+        "result": "failed",
+        "sourceRefs": [
+          {
+            "uri": "fixture://records/request-1",
+            "record": {
+              "id": "request-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/design-1",
+            "record": {
+              "id": "design-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/plan-1",
+            "record": {
+              "id": "plan-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/task-1",
+            "record": {
+              "id": "task-1",
+              "revision": 1
+            }
+          }
+        ],
+        "findings": [
+          {
+            "criterionId": "criterion-general",
+            "result": "failed",
+            "description": "ERPNext-only instructions narrow the original every-system request.",
+            "sourceRefs": [
+              {
+                "uri": "fixture://records/request-1",
+                "record": {
+                  "id": "request-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/design-1",
+                "record": {
+                  "id": "design-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "evidence": []
+          }
+        ],
+        "reviewerSession": "fixture-reviewer",
+        "comparedAt": "2026-11-10T10:36:43Z"
+      }
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "instruction_fidelity"
+    ]
+  },
+  "gate": "dispatch",
+  "target": {
+    "id": "assignment-1",
+    "revision": 1
+  }
+}

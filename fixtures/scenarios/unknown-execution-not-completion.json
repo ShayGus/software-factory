@@ -1,0 +1,37 @@
+{
+  "description": "An unknown execution operation is valid and does not create criterion evidence.",
+  "edits": [
+    {
+      "record": {
+        "id": "review-1",
+        "revision": 1
+      },
+      "path": [
+        "results"
+      ],
+      "value": []
+    },
+    {
+      "record": {
+        "id": "review-1",
+        "revision": 1
+      },
+      "path": [
+        "outcome"
+      ],
+      "value": "incomplete"
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "incomplete_criterion"
+    ]
+  },
+  "gate": "completion",
+  "target": {
+    "id": "review-1",
+    "revision": 1
+  }
+}

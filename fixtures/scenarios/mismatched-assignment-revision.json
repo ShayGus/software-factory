@@ -1,0 +1,84 @@
+{
+  "description": "Both design revisions exist, but the assignment claims revision 2 while the plan/task name revision 1.",
+  "edits": [
+    {
+      "record": {
+        "id": "assignment-1",
+        "revision": 1
+      },
+      "path": [
+        "design"
+      ],
+      "value": {
+        "id": "design-1",
+        "revision": 2
+      }
+    }
+  ],
+  "addRecords": [
+    {
+      "kind": "design_revision",
+      "id": "design-1",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 2,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "sourceRefs": [
+        {
+          "uri": "fixture://records/request-1",
+          "record": {
+            "id": "request-1",
+            "revision": 1
+          }
+        }
+      ],
+      "feature": {
+        "id": "feature-1",
+        "revision": 1
+      },
+      "productBehavior": "Expose feature X through the common connected-system interface.",
+      "examples": [
+        "ERPNext is an example, not the full scope.",
+        "A second connected system also works."
+      ],
+      "technicalDesign": "Reuse the connection interface; keep per-system details behind it.",
+      "reuseFindings": [
+        "Synthetic existing connection interface can serve both systems."
+      ],
+      "interfaces": [
+        "Common system interface"
+      ],
+      "dataFlow": "Request -> common interface -> connected system",
+      "decisions": [],
+      "alternatives": [
+        "Implement one-off ERPNext handling: rejected as narrower than requested."
+      ],
+      "testingApproach": "Common-interface and second-system acceptance cases.",
+      "exclusions": [],
+      "unresolvedQuestions": [],
+      "sourceComparison": {
+        "result": "passed",
+        "sourceRefs": [
+          {
+            "uri": "fixture://records/request-1",
+            "record": {
+              "id": "request-1",
+              "revision": 1
+            }
+          }
+        ],
+        "findings": [],
+        "reviewerSession": "fixture-reviewer",
+        "comparedAt": "2026-11-10T10:36:43Z"
+      }
+    }
+  ],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "revision_mismatch"
+    ]
+  },
+  "gate": "records"
+}

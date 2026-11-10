@@ -1,0 +1,27 @@
+{
+  "description": "Completion compares delivered behavior with the starting baseline.",
+  "edits": [
+    {
+      "record": {
+        "id": "review-1",
+        "revision": 1
+      },
+      "path": [
+        "baselineEvidence"
+      ],
+      "value": []
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "missing_baseline"
+    ]
+  },
+  "gate": "completion",
+  "target": {
+    "id": "review-1",
+    "revision": 1
+  }
+}

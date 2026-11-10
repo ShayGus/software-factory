@@ -1,0 +1,25 @@
+{
+  "description": "A passing result must identify the artifact revision or digest.",
+  "edits": [
+    {
+      "record": {
+        "id": "result-general",
+        "revision": 1
+      },
+      "path": [
+        "artifact"
+      ],
+      "value": {
+        "uri": "fixture://implementation/feature-x"
+      }
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "schema"
+    ]
+  },
+  "gate": "records"
+}

@@ -1,0 +1,203 @@
+import { z } from 'zod';
+import {
+  ArtifactSchema, ClaimStateSchema, CommandNameSchema, ComparisonSchema, ConsolidationStateSchema,
+  CorrectionActionSchema, CorrectionDeliveryFactSchema, CriterionResultStateSchema,
+  DecisionDispositionSchema, DispositionSchema, EvidenceSchema, ExecutionStrategySchema,
+  FeatureStateSchema, IdSchema, MethodStageSchema, OperationStateSchema, RefSchema,
+  RequestDispositionSchema, ReviewOutcomeSchema, RevisionSchema, SourceRefSchema,
+  TextSchema, TimestampSchema,
+} from './primitives.js';
+
+function record<K extends string, S extends z.ZodRawShape>(kind: K, shape: S) {
+  return z.strictObject({
+    kind: z.literal(kind), id: IdSchema, projectId: IdSchema, schemaVersion: z.literal(1),
+    revision: RevisionSchema, createdAt: TimestampSchema, updatedAt: TimestampSchema, ...shape,
+  }).refine((value) => {
+    const times = z.object({ createdAt: TimestampSchema, updatedAt: TimestampSchema }).parse(value);
+    return Date.parse(times.updatedAt) >= Date.parse(times.createdAt);
+  }, 'updatedAt precedes createdAt');
+}
+
+export const ProjectSchema = record('project', {
+  goal: TextSchema, intendedUser: TextSchema, priorities: z.array(TextSchema),
+  exclusions: z.array(TextSchema), vocabulary: z.record(TextSchema, TextSchema),
+  repositories: z.array(SourceRefSchema), designRefs: z.array(SourceRefSchema),
+  firstMateHomeRef: TextSchema,
+  timezone: TextSchema.refine((value) => {
+    try { new Intl.DateTimeFormat('en', { timeZone: value }); return true; } catch { return false; }
+  }, 'Unknown local timezone'),
+});
+
+export const RequestSchema = record('request', {
+  originalText: TextSchema, source: SourceRefSchema, channel: TextSchema,
+  capturedAt: TimestampSchema, clientRequestId: IdSchema, attachments: z.array(ArtifactSchema),
+  interpretationRefs: z.array(RefSchema), disposition: RequestDispositionSchema,
+  dispositionRefs: z.array(RefSchema),
+});
+
+export const FeatureRevisionSchema = record('feature_revision', {
+  outcome: TextSchema, sourceRequests: z.array(RefSchema).min(1), criteria: z.array(RefSchema),
+  exclusions: z.array(TextSchema), priority: z.number().int(), decisions: z.array(RefSchema),
+  changeReason: TextSchema, previousRevision: RevisionSchema.optional(),
+  state: FeatureStateSchema, methodStage: MethodStageSchema, disposition: DispositionSchema,
+});
+
+export const CriterionSchema = record('criterion', {
+  featureId: IdSchema, expectedBehavior: TextSchema, verificationMethod: TextSchema,
+  requirement: z.enum(['required', 'optional']).default('required'),
+  sourceRefs: z.array(SourceRefSchema).min(1), disposition: DispositionSchema,
+});
+
+export const DesignRevisionSchema = record('design_revision', {
+  sourceRefs: z.array(SourceRefSchema).min(1), feature: RefSchema,
+  productBehavior: TextSchema, examples: z.array(TextSchema), technicalDesign: TextSchema,
+  reuseFindings: z.array(TextSchema).min(1), interfaces: z.array(TextSchema), dataFlow: TextSchema,
+  decisions: z.array(RefSchema), alternatives: z.array(TextSchema), testingApproach: TextSchema,
+  exclusions: z.array(TextSchema), unresolvedQuestions: z.array(TextSchema),
+  sourceComparison: ComparisonSchema,
+});
+
+export const DependencySchema = z.strictObject({
+  prerequisiteTaskId: IdSchema, consumerTaskId: IdSchema, reason: TextSchema,
+  needs: z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('artifact'), artifact: ArtifactSchema }),
+    z.strictObject({ kind: z.literal('criterion'), criterion: RefSchema }),
+  ]),
+});
+export const ImplementationPlanRevisionSchema = record('implementation_plan_revision', {
+  feature: RefSchema, design: RefSchema, deliverySequence: z.array(RefSchema).min(1),
+  strategy: ExecutionStrategySchema, strategyReason: TextSchema, integrationApproach: TextSchema,
+  dependencies: z.array(DependencySchema), priorities: z.array(z.strictObject({
+    taskId: IdSchema, priority: z.number().int(),
+  })),
+  readiness: z.strictObject({ ready: z.boolean(), comparison: ComparisonSchema }),
+});
+
+export const DetailedPlanTaskSchema = record('detailed_plan_task', {
+  plan: RefSchema, design: RefSchema, feature: RefSchema,
+  expectedBehavior: TextSchema, criteria: z.array(RefSchema),
+  maintenanceObjective: TextSchema.optional(), designRefs: z.array(SourceRefSchema).min(1),
+  boundaries: z.array(TextSchema).min(1), reuseTargets: z.array(SourceRefSchema),
+  inputs: z.array(TextSchema), outputs: z.array(TextSchema).min(1), blockers: z.array(IdSchema),
+  verificationCases: z.array(TextSchema).min(1), returnRequirements: z.array(TextSchema).min(1),
+}).refine((value) => value.criteria.length > 0 || value.maintenanceObjective !== undefined,
+  'Task needs criteria or an explicit maintenance objective');
+
+export const TaskMappingSchema = record('task_mapping', {
+  firstMateTaskId: IdSchema, feature: RefSchema.nullable(), criteria: z.array(RefSchema),
+  detailedPlanTask: RefSchema.nullable(), dependencies: z.array(IdSchema), legacy: z.boolean(),
+  disposition: DispositionSchema,
+}).refine((value) => value.legacy || (value.feature !== null && value.detailedPlanTask !== null),
+  'Managed mapping requires feature and detailed task references');
+
+export const SelectedContextSchema = z.strictObject({
+  source: SourceRefSchema, artifact: ArtifactSchema.optional(), extract: TextSchema.optional(),
+  truncated: z.boolean(),
+}).refine((value) => !value.truncated || value.extract !== undefined,
+  'Truncated context must retain the supplied extract and reachable source');
+
+export const AssignmentSchema = record('assignment', {
+  attemptId: IdSchema, feature: RefSchema, design: RefSchema, plan: RefSchema,
+  detailedPlanTask: RefSchema, firstMateTaskId: IdSchema,
+  sourceRefs: z.array(SourceRefSchema).min(1), selectedContext: z.array(SelectedContextSchema).min(1),
+  criteria: z.array(RefSchema), prerequisiteArtifacts: z.array(ArtifactSchema), returnLocation: TextSchema,
+  instructionText: TextSchema, instructionFidelity: ComparisonSchema,
+});
+
+export const CriterionResultSchema = record('criterion_result', {
+  assignment: RefSchema, criterion: RefSchema, result: CriterionResultStateSchema,
+  accomplishedBehavior: TextSchema, artifact: ArtifactSchema.nullable(),
+  evidence: z.array(EvidenceSchema), limitations: z.array(TextSchema), suggestions: z.array(TextSchema),
+}).refine((value) => value.result !== 'passed' || (value.artifact !== null && value.evidence.length > 0),
+  'Passed result requires a versioned artifact and verification evidence');
+
+export const ProductReviewSchema = record('product_review', {
+  originalRequests: z.array(RefSchema).min(1), sourceRefs: z.array(SourceRefSchema).min(1),
+  feature: RefSchema, design: RefSchema, plan: RefSchema, detailedPlanTasks: z.array(RefSchema).min(1),
+  assignments: z.array(RefSchema).min(1), results: z.array(RefSchema),
+  reviewedArtifacts: z.array(ArtifactSchema).min(1), technicalReviewRefs: z.array(SourceRefSchema),
+  sourceComparison: ComparisonSchema, instructionFidelity: ComparisonSchema, planConformance: ComparisonSchema,
+  baselineEvidence: z.array(EvidenceSchema), improvementEvidence: z.array(EvidenceSchema),
+  unresolvedQuestions: z.array(TextSchema), outcome: ReviewOutcomeSchema,
+  reviewerSession: TextSchema, reviewedAt: TimestampSchema,
+});
+
+export const MeasurementClaimSchema = record('measurement_claim', {
+  claim: TextSchema, definition: TextSchema, unit: TextSchema, population: TextSchema,
+  filters: z.array(TextSchema), inputs: z.array(ArtifactSchema).min(1),
+  computationRef: SourceRefSchema, numerator: z.number().finite().optional(),
+  denominator: z.number().finite().positive().optional(), observedAt: TimestampSchema,
+  state: ClaimStateSchema, correctionOf: RefSchema.optional(), evidence: z.array(EvidenceSchema),
+}).refine((value) => (value.numerator === undefined) === (value.denominator === undefined),
+  'Ratio needs both numerator and non-zero denominator')
+  .refine((value) => value.state !== 'checked' || value.evidence.length > 0,
+    'Checked claim requires evidence');
+
+export const ScopeChangeSchema = z.strictObject({
+  featureId: IdSchema, fromRevision: RevisionSchema, toRevision: RevisionSchema,
+  criterionId: IdSchema, action: z.enum(['remove', 'demote', 'defer', 'amend']),
+});
+export const DecisionChangeSchema = record('decision_change', {
+  questionOrChange: TextSchema, affectedRecords: z.array(RefSchema).min(1), rationale: TextSchema,
+  disposition: DecisionDispositionSchema, originalInstruction: TextSchema.optional(),
+  sourceRefs: z.array(SourceRefSchema).min(1), scopeChanges: z.array(ScopeChangeSchema),
+});
+
+export const CorrectionSchema = z.strictObject({
+  action: CorrectionActionSchema, originalText: TextSchema, assignment: RefSchema,
+  affectedRevision: RefSchema, sequence: z.number().int().positive(),
+  supersedes: z.array(RefSchema),
+  facts: z.array(z.strictObject({
+    fact: CorrectionDeliveryFactSchema, at: TimestampSchema, evidence: z.array(EvidenceSchema).min(1),
+  })).min(1),
+}).refine((value) => new Set(value.facts.map((fact) => fact.fact)).size === value.facts.length,
+  'Delivery facts must be distinct')
+  .refine((value) => value.facts.some((fact) => fact.fact === 'recorded'),
+    'Correction must have its recorded fact');
+
+export const ObservationSchema = record('observation', {
+  finding: TextSchema, affectedScope: z.array(SourceRefSchema).min(1), evidence: z.array(EvidenceSchema),
+  proposedGeneralization: TextSchema.nullable(), consolidationState: ConsolidationStateSchema,
+  correction: CorrectionSchema.optional(),
+});
+
+export const GuidanceRevisionSchema = record('guidance_revision', {
+  scope: z.array(SourceRefSchema).min(1), text: TextSchema, supportingObservations: z.array(RefSchema).min(1),
+  supersededGuidance: z.array(RefSchema), applicability: TextSchema, unresolvedConflicts: z.array(TextSchema),
+});
+
+export const PayloadDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+export const OperationSchema = record('operation', {
+  idempotencyKey: IdSchema, command: CommandNameSchema, payloadDigest: PayloadDigestSchema,
+  state: OperationStateSchema, externalReferences: z.array(SourceRefSchema),
+  reconciliation: z.strictObject({
+    observedAt: TimestampSchema, evidence: z.array(EvidenceSchema).min(1),
+    observedState: OperationStateSchema, note: TextSchema,
+  }).nullable(),
+});
+
+export const RecordSchema = z.discriminatedUnion('kind', [
+  ProjectSchema, RequestSchema, FeatureRevisionSchema, CriterionSchema, DesignRevisionSchema,
+  ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, TaskMappingSchema, AssignmentSchema,
+  CriterionResultSchema, ProductReviewSchema, MeasurementClaimSchema, DecisionChangeSchema,
+  ObservationSchema, GuidanceRevisionSchema, OperationSchema,
+]);
+export const RecordsSchema = z.array(RecordSchema);
+
+export type Project = z.infer<typeof ProjectSchema>;
+export type Request = z.infer<typeof RequestSchema>;
+export type FeatureRevision = z.infer<typeof FeatureRevisionSchema>;
+export type Criterion = z.infer<typeof CriterionSchema>;
+export type DesignRevision = z.infer<typeof DesignRevisionSchema>;
+export type ImplementationPlanRevision = z.infer<typeof ImplementationPlanRevisionSchema>;
+export type DetailedPlanTask = z.infer<typeof DetailedPlanTaskSchema>;
+export type TaskMapping = z.infer<typeof TaskMappingSchema>;
+export type Assignment = z.infer<typeof AssignmentSchema>;
+export type CriterionResult = z.infer<typeof CriterionResultSchema>;
+export type ProductReview = z.infer<typeof ProductReviewSchema>;
+export type MeasurementClaim = z.infer<typeof MeasurementClaimSchema>;
+export type DecisionChange = z.infer<typeof DecisionChangeSchema>;
+export type Observation = z.infer<typeof ObservationSchema>;
+export type GuidanceRevision = z.infer<typeof GuidanceRevisionSchema>;
+export type Operation = z.infer<typeof OperationSchema>;
+export type FactoryRecord = z.infer<typeof RecordSchema>;

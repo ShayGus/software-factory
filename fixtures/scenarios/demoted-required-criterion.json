@@ -1,0 +1,74 @@
+{
+  "description": "Demoting a required criterion is a scope change even when its ID stays present.",
+  "edits": [],
+  "addRecords": [
+    {
+      "kind": "feature_revision",
+      "id": "feature-1",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 2,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "outcome": "Feature X works across connected systems.",
+      "sourceRequests": [
+        {
+          "id": "request-1",
+          "revision": 1
+        }
+      ],
+      "criteria": [
+        {
+          "id": "criterion-general",
+          "revision": 1
+        },
+        {
+          "id": "criterion-second-system",
+          "revision": 2
+        }
+      ],
+      "exclusions": [],
+      "priority": 1,
+      "decisions": [],
+      "changeReason": "Remove second-system acceptance.",
+      "state": "in_review",
+      "methodStage": "product_review",
+      "disposition": {
+        "state": "active"
+      },
+      "previousRevision": 1
+    },
+    {
+      "kind": "criterion",
+      "id": "criterion-second-system",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 2,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "featureId": "feature-1",
+      "expectedBehavior": "A non-ERPNext connected system uses the same feature.",
+      "verificationMethod": "Run a second-system acceptance case through the common interface.",
+      "requirement": "optional",
+      "sourceRefs": [
+        {
+          "uri": "fixture://records/request-1",
+          "record": {
+            "id": "request-1",
+            "revision": 1
+          }
+        }
+      ],
+      "disposition": {
+        "state": "active"
+      }
+    }
+  ],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "unapproved_scope_change"
+    ]
+  },
+  "gate": "records"
+}

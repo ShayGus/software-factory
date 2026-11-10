@@ -1,0 +1,29 @@
+{
+  "description": "Legacy execution can be linked without invented product acceptance.",
+  "edits": [],
+  "addRecords": [
+    {
+      "kind": "task_mapping",
+      "id": "mapping-legacy",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 1,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "firstMateTaskId": "bif-stock-assumptions",
+      "feature": null,
+      "criteria": [],
+      "detailedPlanTask": null,
+      "dependencies": [],
+      "legacy": true,
+      "disposition": {
+        "state": "active"
+      }
+    }
+  ],
+  "expected": {
+    "valid": true,
+    "codes": []
+  },
+  "gate": "records"
+}
