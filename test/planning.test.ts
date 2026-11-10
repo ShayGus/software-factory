@@ -7,7 +7,7 @@ import test from 'node:test';
 import {
   ProjectStore, RecordsSchema, UnderstandingRevisionSchema, DesignRevisionSchema,
   ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, StageRevisionSchema, DecisionChangeSchema,
-  recordStage, checkPlanReadiness, planReadinessHistory, ref, validateRecords,
+  recordStage, checkPlanReadiness, planReadinessHistory, ref, validateRecords, validateAssignmentForDispatch, planReadinessFindings,
   type FactoryRecord, type StageRevision,
 } from '../src/index.js';
 
@@ -152,7 +152,7 @@ const findingCases: { name: string; code: string; edit: (flow: ReturnType<typeof
     flow.detailedTasks[0]!.draft = true; delete flow.detailedTasks[0]!.verificationMethod; delete flow.detailedTasks[0]!.boundaries;
   } },
   { name: 'invented task scope', code: 'invented_scope', edit: (flow) => {
-    flow.detailedTasks[0]!.criteria = []; flow.detailedTasks[0]!.maintenanceObjective = 'Unrequested enhancement';
+    flow.detailedTasks[0]!.criteria = []; flow.detailedTasks[0]!.draft = true;
   } },
 ];
 for (const scenario of findingCases) test(`readiness records ${scenario.name} and withholds a ready revision`, () => {
@@ -381,5 +381,233 @@ test('unresolved source-comparison findings cannot be discarded by the determini
     assert.equal(result.readyPlan, null);
     assert.equal(result.check?.kind, 'plan_readiness_revision');
     if (result.check?.kind === 'plan_readiness_revision') assert.ok(result.check.findings.some((finding) => finding.code === 'source_gap'));
+  } finally { flow.store.close(); }
+});
+
+
+function reuseForCurrentFeature(flow: ReturnType<typeof setup>, options: {
+  criterionChange?: 'amend' | 'demote'; additionalRequest?: boolean;
+} = {}) {
+  const prior = flow.store.get(base.projectId, feature.id)!;
+  assert.equal(prior.kind, 'feature_revision');
+  if (prior.kind !== 'feature_revision') throw new Error('missing feature');
+  const writes: FactoryRecord[] = [];
+  const current = { ...prior, revision: 2, previousRevision: 1, criteria: [...prior.criteria],
+    sourceRequests: [...prior.sourceRequests], decisions: [...prior.decisions], changeReason: 'Checked current request against existing artifacts' };
+  if (options.criterionChange) {
+    const index = options.criterionChange === 'demote' ? 1 : 0;
+    const old = flow.store.get(base.projectId, current.criteria[index]!.id)!;
+    assert.equal(old.kind, 'criterion');
+    if (old.kind !== 'criterion') throw new Error('missing criterion');
+    const criterion = { ...old, revision: 2,
+      ...(options.criterionChange === 'demote' ? { requirement: 'optional' as const } :
+        { expectedBehavior: 'Common interface also preserves the clarified error contract' }) };
+    writes.push(criterion); current.criteria[index] = ref(criterion);
+    if (options.criterionChange === 'demote') {
+      const decision = DecisionChangeSchema.parse({ ...flow.decision, id: 'demotion-decision',
+        questionOrChange: 'Defer optional second-system case', originalInstruction: 'Make the second-system criterion optional',
+        affectedRecords: [ref(current), ref(criterion)],
+        scopeChanges: [{ featureId: current.id, fromRevision: 1, toRevision: 2, criterionId: criterion.id, action: 'demote' }] });
+      current.decisions.push(ref(decision)); writes.push(decision);
+    }
+  }
+  const additional = { ...baseline.find((record) => record.kind === 'request')!, id: 'request-current',
+    originalText: 'Keep feature X across every system; ERPNext remains an example.', interpretationRefs: [], dispositionRefs: [],
+    clientRequestId: 'current-request', disposition: 'unclassified' as const };
+  if (options.additionalRequest) { writes.push(additional); current.sourceRequests.push(ref(additional)); }
+  flow.store.mutate({ schemaVersion: 1, id: 'current-feature', projectId: base.projectId, issuedAt: time,
+    idempotencyKey: 'current-feature', command: 'record_decision_suggestion', targetId: feature.id, expectedRevision: 1,
+    payload: { decision: flow.decision } }, () => [...writes, current]);
+  const understanding = UnderstandingRevisionSchema.parse({ ...flow.understanding, revision: 2, feature: ref(current),
+    sourceRequests: current.sourceRequests, criteria: current.criteria,
+    scope: options.additionalRequest ? [...flow.understanding.scope, { request: ref(additional), term: 'ERPNext', role: 'example' }] : flow.understanding.scope });
+  const understand = StageRevisionSchema.parse({ ...flow.understandStage, revision: 2, feature: ref(current),
+    sourceRequests: current.sourceRequests, criteria: current.criteria, artifact: ref(understanding) });
+  flow.write(understand, [understanding]);
+  const reuse = (artifact: FactoryRecord) => ({ check: comparison([...current.sourceRequests, artifact]),
+    criterionMap: current.criteria.map((criterion, index) => ({ current: criterion, existing: flow.criteria[index]! })) });
+  const design = StageRevisionSchema.parse({ ...flow.designStage, revision: 2, feature: ref(current),
+    sourceRequests: current.sourceRequests, criteria: current.criteria, previousStage: ref(understand), reuse: reuse(flow.design) });
+  flow.write(design, []);
+  const plan = StageRevisionSchema.parse({ ...flow.planStage, revision: 2, feature: ref(current),
+    sourceRequests: current.sourceRequests, criteria: current.criteria, previousStage: ref(design),
+    artifact: ref(flow.detailedPlan), reuse: reuse(flow.detailedPlan) });
+  flow.write(plan, []);
+  const detail = StageRevisionSchema.parse({ ...flow.detailStage, revision: 2, feature: ref(current),
+    sourceRequests: current.sourceRequests, criteria: current.criteria, previousStage: ref(plan) });
+  flow.write(detail, []);
+  return { current, detail, additional, check: () => checkPlanReadiness(flow.store, { projectId: base.projectId,
+    detailStage: ref(detail), idempotencyKey: 'review-current-check', issuedAt: time, expectedPlanRevision: 2 }) };
+}
+
+test('review finding 1: ready staged plans accept verified retained tasks for dispatch and review', () => {
+  const flow = setup();
+  try {
+    flow.start(); flow.finish(); const result = flow.check(); assert.ok(result.readyPlan);
+    const plan = result.readyPlan;
+    const task = flow.detailedTasks[0]!;
+    const mapping = { ...baseline.find((record) => record.kind === 'task_mapping')!, id: 'mapping-staged',
+      firstMateTaskId: 'execution-task', detailedPlanTask: ref(task), feature, criteria: task.criteria };
+    const assignment = { ...baseline.find((record) => record.kind === 'assignment')!, id: 'assignment-staged',
+      feature, design: ref(flow.design), plan, detailedPlanTask: ref(task), firstMateTaskId: 'execution-task',
+      criteria: task.criteria, sourceRefs: [request, flow.design, plan, task].map(source),
+      selectedContext: [{ source: source(task), truncated: false }],
+      instructionFidelity: comparison([request, flow.design, plan, task]) };
+    const review = { ...baseline.find((record) => record.kind === 'product_review')!, id: 'review-staged',
+      feature, design: ref(flow.design), plan, detailedPlanTasks: [ref(task)], assignments: [ref(assignment)],
+      results: [], outcome: 'incomplete', originalRequests: [request], sourceRefs: [request, flow.design, plan].map(source),
+      sourceComparison: comparison([request]), instructionFidelity: comparison([request, flow.design, plan, task]),
+      planConformance: comparison([request, flow.design, plan, task]) };
+    const records = [...flow.store.history(base.projectId), mapping, assignment, review];
+    const dispatch = validateAssignmentForDispatch(records, ref(assignment));
+    assert.equal(dispatch.ok, true, JSON.stringify(dispatch));
+    assert.equal(validateRecords(records).ok, true, JSON.stringify(validateRecords(records)));
+    for (const mismatch of ['feature', 'design'] as const) {
+      const invalid = structuredClone(records);
+      const ready = invalid.find((record) => record.kind === 'implementation_plan_revision' && record.revision === 3)!;
+      (ready as unknown as Record<string, unknown>)[mismatch] = { id: `unrelated-${mismatch}`, revision: 1 };
+      const result = validateAssignmentForDispatch(invalid, ref(assignment));
+      assert.equal(result.ok, false, `Incompatible ${mismatch} must fail`);
+      if (!result.ok) assert.ok(result.issues.some((issue) => issue.recordId === assignment.id && issue.path === `task.${mismatch}`));
+    }
+    const withoutRetention = structuredClone(records);
+    const ready = withoutRetention.find((record) => record.kind === 'implementation_plan_revision' && record.revision === 3);
+    assert.ok(ready?.kind === 'implementation_plan_revision'); ready.workflow!.retainedTasks = [];
+    assert.equal(validateAssignmentForDispatch(withoutRetention, ref(assignment)).ok, false);
+  } finally { flow.store.close(); }
+});
+
+test('review finding 2: legacy ready plans cannot dispatch draft or incomplete tasks', () => {
+  for (const field of ['boundaries', 'verificationCases'] as const) {
+    const records = structuredClone(baseline);
+    const task = records.find((record) => record.kind === 'detailed_plan_task');
+    assert.ok(task?.kind === 'detailed_plan_task'); task.draft = true; delete task[field];
+    const result = validateAssignmentForDispatch(records, { id: 'assignment-1', revision: 1 });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.ok(result.issues.some((issue) => issue.code === 'detail_gap'));
+  }
+});
+
+test('review finding 3: all explicit scope roles retain their meaning in design and plan', () => {
+  for (const role of ['required', 'entire_scope'] as const) for (const owner of ['design', 'plan'] as const) {
+    const flow = setup(true);
+    try {
+      flow.understanding.scope[0]!.role = role;
+      flow.design.workflow!.scope[0]!.coverage = role;
+      flow.plan.workflow!.scope[0]!.coverage = role;
+      flow.detailedPlan.workflow!.scope[0]!.coverage = role;
+      (owner === 'design' ? flow.design : flow.detailedPlan).workflow!.scope[0]!.coverage = 'general';
+      flow.start(); flow.finish(); const result = flow.check();
+      assert.equal(result.readyPlan, null);
+      assert.ok(result.check?.kind === 'plan_readiness_revision');
+      assert.ok(result.check.findings.some((finding) => finding.path === 'workflow.scope' &&
+        finding.record.id === (owner === 'design' ? flow.design.id : flow.plan.id)));
+    } finally { flow.store.close(); }
+  }
+});
+
+test('review finding 4: reuse translates changed prerequisite criteria in the generated ready plan', () => {
+  const flow = setup();
+  try {
+    flow.start(); flow.finish();
+    const current = reuseForCurrentFeature(flow, { criterionChange: 'amend' });
+    const result = current.check(); assert.ok(result.readyPlan, JSON.stringify(result.check));
+    const ready = flow.store.get(base.projectId, flow.plan.id);
+    assert.ok(ready?.kind === 'implementation_plan_revision');
+    assert.deepEqual(ready.dependencies[0]!.needs, { kind: 'criterion', criterion: current.current.criteria[0] });
+    assert.equal(flow.store.get(base.projectId, flow.detailedTasks[0]!.id)?.revision, 2);
+    assert.equal(validateRecords(flow.store.history(base.projectId)).ok, true);
+  } finally { flow.store.close(); }
+});
+
+test('review finding 5: checked reuse covers additional requests while current scope entries still apply', () => {
+  const flow = setup();
+  try {
+    flow.start(); flow.finish();
+    const current = reuseForCurrentFeature(flow, { additionalRequest: true });
+    assert.ok(current.check().readyPlan);
+    for (const owner of ['design_revision', 'implementation_plan_revision'] as const) {
+      const records = flow.store.history(base.projectId);
+      const artifact = records.find((record) => record.kind === owner && record.revision === (owner === 'design_revision' ? 1 : 2));
+      assert.ok(artifact?.kind === owner);
+      if (artifact.kind !== 'design_revision' && artifact.kind !== 'implementation_plan_revision') continue;
+      artifact.workflow!.scope.push({ request: ref(current.additional), term: 'ERPNext', coverage: 'example_only' });
+      assert.ok(planReadinessFindings(records, current.detail).some((finding) =>
+        finding.code === 'example_driven_narrowing' && finding.record.id === artifact.id));
+    }
+  } finally { flow.store.close(); }
+});
+
+test('review finding 6: checked legacy decisions remain settled without rewriting their design', () => {
+  for (const disposition of ['selected', 'rejected'] as const) {
+    const flow = setup();
+    try {
+      delete flow.design.workflow; delete flow.decision.choice; flow.decision.disposition = disposition;
+      flow.design.unresolvedQuestions = [flow.decision.questionOrChange];
+      flow.store.mutate({ schemaVersion: 1, id: 'legacy-choice', projectId: base.projectId, issuedAt: time,
+        idempotencyKey: 'legacy-choice', command: 'record_decision_suggestion', targetId: flow.design.id, expectedRevision: 0,
+        payload: { decision: flow.decision } }, () => [flow.design, flow.decision]);
+      flow.write(flow.understandStage, [flow.understanding]);
+      flow.designStage.reuse = { check: comparison([request, flow.design]),
+        criterionMap: flow.criteria.map((criterion) => ({ current: criterion, existing: criterion })) };
+      flow.write(flow.designStage, []); flow.write(flow.planStage, [flow.plan, ...flow.tasks]); flow.finish();
+      assert.ok(flow.check().readyPlan);
+      assert.equal(flow.store.get(base.projectId, flow.design.id)?.revision, 1);
+      assert.equal(flow.store.get(base.projectId, flow.decision.id)?.revision, 1);
+    } finally { flow.store.close(); }
+  }
+});
+
+test('review finding 7: classified technical questions do not become product approvals', () => {
+  for (const kind of ['technical', 'product'] as const) {
+    const flow = setup();
+    try {
+      flow.decision.choice = { kind, state: 'open' }; flow.decision.disposition = 'proposed';
+      flow.design.unresolvedQuestions = [flow.decision.questionOrChange];
+      flow.start(); flow.finish(); const result = flow.check();
+      assert.equal(Boolean(result.readyPlan), kind === 'technical');
+      assert.ok(result.check?.kind === 'plan_readiness_revision');
+      assert.equal(result.check.findings.some((finding) => finding.code === 'unresolved_product_decision'), kind === 'product');
+    } finally { flow.store.close(); }
+  }
+});
+
+test('review finding 8: an approved optional demotion need not have delivery coverage', () => {
+  const flow = setup();
+  try {
+    flow.tasks.splice(1); flow.detailedTasks.splice(1);
+    for (const plan of [flow.plan, flow.detailedPlan]) {
+      plan.deliverySequence.splice(1); plan.workflow!.slices.splice(1); plan.dependencies = [];
+    }
+    flow.start(); flow.finish();
+    const current = reuseForCurrentFeature(flow, { criterionChange: 'demote' });
+    assert.ok(current.check().readyPlan);
+    // Electing to deliver an optional criterion still requires a matching task.
+    const records = flow.store.history(base.projectId);
+    const plan = records.find((record) => record.id === flow.plan.id && record.revision === 2);
+    assert.ok(plan?.kind === 'implementation_plan_revision');
+    plan.workflow!.slices[0]!.criteria.push(flow.criteria[1]!);
+    assert.ok(planReadinessFindings(records, current.detail).some((finding) => finding.code === 'dropped_behavior'));
+  } finally { flow.store.close(); }
+});
+
+test('review finding 9: explicit maintenance tasks and their slices need no fabricated criterion', () => {
+  const flow = setup(true);
+  try {
+    const draft = DetailedPlanTaskSchema.parse({ ...flow.tasks[0]!, id: 'maintenance-task', criteria: [],
+      maintenanceObjective: 'Remove the unused error helper while retaining current behavior' });
+    const detailed = DetailedPlanTaskSchema.parse({ ...flow.detailedTasks[0]!, id: draft.id, criteria: [],
+      maintenanceObjective: draft.maintenanceObjective });
+    flow.tasks.push(draft); flow.detailedTasks.push(detailed);
+    for (const [plan, task] of [[flow.plan, draft], [flow.detailedPlan, detailed]] as const) {
+      plan.deliverySequence.push(ref(task));
+      plan.workflow!.slices.push({ id: 'maintenance-slice', behavior: task.maintenanceObjective!, criteria: [], tasks: [ref(task)] });
+      plan.workflow!.integrationSteps.push('Verify cleanup alongside the message correction');
+    }
+    flow.start(); flow.finish(); assert.ok(flow.check().readyPlan);
+    const records = flow.store.history(base.projectId);
+    const task = records.find((record) => record.id === detailed.id && record.revision === 2);
+    assert.ok(task?.kind === 'detailed_plan_task'); delete task.maintenanceObjective;
+    assert.ok(planReadinessFindings(records, flow.detailStage).some((finding) => finding.code === 'invented_scope'));
   } finally { flow.store.close(); }
 });

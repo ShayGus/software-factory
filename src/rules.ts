@@ -1,10 +1,11 @@
-import { planReadinessFindings } from './planning-checks.js';
+import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
 import {
   RecordSchema, RecordsSchema, type Assignment, type FactoryRecord, type FeatureRevision,
-  type ProductReview, type Operation,
+  type ProductReview, type Operation, type DetailedPlanTask, type ImplementationPlanRevision,
+  DetailedPlanTaskSchema,
 } from './records.js';
 
 export interface RuleIssue {
@@ -109,6 +110,41 @@ function checkScopeTransition(ctx: Context, before: FeatureRevision, after: Feat
   }
 }
 
+function currentPlanCriteria(ctx: Context, plan: ImplementationPlanRevision, refs: Ref[]): Ref[] {
+  const check = plan.workflow?.readinessCheck && ctx.index.get(key(plan.workflow.readinessCheck));
+  const detail = check?.kind === 'plan_readiness_revision' && check.ready && ctx.index.get(key(check.detailStage));
+  return detail && detail.kind === 'stage_revision' ? stageCriteria(ctx.records, detail, refs) : refs;
+}
+
+function retainedTask(ctx: Context, plan: ImplementationPlanRevision, task: DetailedPlanTask): boolean {
+  if (!plan.deliverySequence.some((ref) => sameRef(ref, task))) return false;
+  let current = plan;
+  while (!sameRef(current, task.plan)) {
+    if (!current.workflow?.retainedTasks.some((entry) => sameRef(entry.task, task))) return false;
+    const previous = ctx.index.get(key({ id: current.id, revision: current.revision - 1 }));
+    if (previous?.kind !== 'implementation_plan_revision' || previous.projectId !== plan.projectId ||
+      !previous.deliverySequence.some((ref) => sameRef(ref, task))) return false;
+    current = previous;
+  }
+  // Retention cannot attach a task from another feature/design silently. New
+  // criterion revisions must be covered by the ready plan's recorded reuse check.
+  const criteria = currentPlanCriteria(ctx, plan, task.criteria);
+  const feature = ctx.index.get(key(plan.feature));
+  return sameRef(current.feature, task.feature) && sameRef(current.design, task.design) &&
+    task.design.id === plan.design.id && feature?.kind === 'feature_revision' &&
+    (task.feature.id === plan.feature.id || (task.criteria.length > 0 && criteria.every((ref) =>
+      !task.criteria.some((original) => sameRef(ref, original))))) &&
+    criteria.every((ref) => feature.criteria.some((expected) => sameRef(ref, expected)));
+}
+
+function checkTaskPlan(ctx: Context, owner: FactoryRecord, task: DetailedPlanTask, plan: ImplementationPlanRevision) {
+  if (!retainedTask(ctx, plan, task)) {
+    ctx.equal(owner, task.plan, plan, 'task.plan');
+    ctx.equal(owner, task.design, plan.design, 'task.design');
+    ctx.equal(owner, task.feature, plan.feature, 'task.feature');
+  }
+}
+
 function checkAssignment(ctx: Context, assignment: Assignment) {
   const feature = ctx.get(assignment, assignment.feature, 'feature_revision', 'feature');
   const design = ctx.get(assignment, assignment.design, 'design_revision', 'design');
@@ -119,21 +155,21 @@ function checkAssignment(ctx: Context, assignment: Assignment) {
   ctx.sources(assignment, assignment.instructionFidelity, [
     ...(feature?.sourceRequests ?? []), assignment.design, assignment.plan, assignment.detailedPlanTask,
   ]);
-  if (design) ctx.equal(assignment, design.feature, assignment.feature, 'design.feature');
+  if (design && !reusedDesign(ctx, design, assignment.feature)) ctx.equal(assignment, design.feature, assignment.feature, 'design.feature');
   if (plan) {
     ctx.equal(assignment, plan.design, assignment.design, 'plan.design');
     ctx.equal(assignment, plan.feature, assignment.feature, 'plan.feature');
   }
   if (task) {
-    ctx.equal(assignment, task.plan, assignment.plan, 'task.plan');
-    ctx.equal(assignment, task.design, assignment.design, 'task.design');
-    ctx.equal(assignment, task.feature, assignment.feature, 'task.feature');
-    for (const required of task.criteria) {
+    if (plan) checkTaskPlan(ctx, assignment, task, plan);
+    else ctx.equal(assignment, task.plan, assignment.plan, 'task.plan');
+    const criteria = plan && retainedTask(ctx, plan, task) ? currentPlanCriteria(ctx, plan, task.criteria) : task.criteria;
+    for (const required of criteria) {
       if (!assignment.criteria.some((actual) => sameRef(actual, required))) ctx.add(
         assignment, 'omitted_criterion', 'criteria', `Assignment omitted task criterion ${required.id}`);
     }
     for (const actual of assignment.criteria) {
-      if (!task.criteria.some((expected) => sameRef(actual, expected))) ctx.add(
+      if (!criteria.some((expected) => sameRef(actual, expected))) ctx.add(
         assignment, 'invented_criterion', 'criteria', `Criterion ${actual.id} is outside the detailed task`);
     }
   }
@@ -148,7 +184,7 @@ function checkReview(ctx: Context, review: ProductReview) {
   const feature = ctx.get(review, review.feature, 'feature_revision', 'feature');
   const design = ctx.get(review, review.design, 'design_revision', 'design');
   const plan = ctx.get(review, review.plan, 'implementation_plan_revision', 'plan');
-  if (design) ctx.equal(review, design.feature, review.feature, 'design.feature');
+  if (design && !reusedDesign(ctx, design, review.feature)) ctx.equal(review, design.feature, review.feature, 'design.feature');
   if (plan) {
     ctx.equal(review, plan.design, review.design, 'plan.design');
     ctx.equal(review, plan.feature, review.feature, 'plan.feature');
@@ -161,7 +197,7 @@ function checkReview(ctx: Context, review: ProductReview) {
   }
   for (const ref of review.detailedPlanTasks) {
     const task = ctx.get(review, ref, 'detailed_plan_task', 'detailedPlanTasks');
-    if (task) { ctx.equal(review, task.plan, review.plan, 'task.plan'); ctx.equal(review, task.design, review.design, 'task.design'); }
+    if (task && plan) checkTaskPlan(ctx, review, task, plan);
   }
   for (const ref of review.assignments) {
     const assignment = ctx.get(review, ref, 'assignment', 'assignments');
@@ -364,6 +400,9 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
             ctx.equal(record, task.design, record.design, 'task.design');
             ctx.equal(record, task.feature, record.feature, 'task.feature');
           }
+          if (record.readiness.ready && (task.draft || !DetailedPlanTaskSchema.safeParse({ ...task, draft: false }).success)) {
+            ctx.add(record, 'detail_gap', 'deliverySequence', `Ready plan has draft or incomplete task ${task.id}`);
+          }
           for (const criterion of task.criteria) covered.add(key(criterion));
         }
       }
@@ -384,11 +423,13 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
             'plan_readiness_revision', 'workflow.readinessCheck');
           if (check) ctx.equal(record, check.feature, record.feature, 'readinessCheck.feature');
           const previous = check && ctx.get(record, check.plan, 'implementation_plan_revision', 'readinessCheck.plan');
+          const detail = check && ctx.index.get(key(check.detailStage));
           const content = (plan: typeof record) => {
             const { revision: _revision, updatedAt: _updatedAt, readiness: _readiness, feature: _feature, workflow, ...rest } = plan;
             if (!workflow) return rest;
             const { readinessCheck: _check, retainedTasks: _retained, changeReason: _reason, ...design } = workflow;
-            return { ...rest, workflow: design };
+            return { ...rest, dependencies: detail?.kind === 'stage_revision' ?
+              stageDependencies(ctx.records, detail, plan.dependencies) : plan.dependencies, workflow: design };
           };
           if (previous && canonical(content(previous)) !== canonical(content(record))) ctx.add(record,
             'plan_not_ready', 'workflow.readinessCheck', 'Ready plan content differs from the checked plan revision');
@@ -428,7 +469,10 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       ctx.criteria(record, record.criteria, feature);
       if (record.detailedPlanTask) {
         const task = ctx.get(record, record.detailedPlanTask, 'detailed_plan_task', 'detailedPlanTask');
-        if (task && record.feature) ctx.equal(record, task.feature, record.feature, 'task.feature');
+        if (task && record.feature && !ctx.records.some((plan) => plan.kind === 'implementation_plan_revision' &&
+          plan.readiness.ready && sameRef(plan.feature, record.feature!) && retainedTask(ctx, plan, task))) {
+          ctx.equal(record, task.feature, record.feature, 'task.feature');
+        }
       }
       break;
     }

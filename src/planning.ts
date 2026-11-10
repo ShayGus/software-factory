@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { DesignPlanFeatureCommandSchema } from './commands.js';
 import { ref, stableId } from './intake.js';
-import { planReadinessFindings, planningRecord, samePlanningRef } from './planning-checks.js';
+import { planReadinessFindings, planningRecord, samePlanningRef, stageDependencies } from './planning-checks.js';
 import { IdSchema, RefSchema, TimestampSchema } from './primitives.js';
 import {
   DesignRevisionSchema, DetailedPlanTaskSchema, ImplementationPlanRevisionSchema, DecisionChangeSchema,
@@ -117,7 +117,7 @@ export function checkPlanReadiness(store: ProjectStore, input: unknown) {
         uri: `factory:record/${encodeURIComponent(record.id)}@${record.revision}`, record,
       }));
       writes.push(ImplementationPlanRevisionSchema.parse({ ...plan, feature: stage.feature, revision: plan.revision + 1,
-        updatedAt: data.issuedAt, workflow: { ...plan.workflow,
+        updatedAt: data.issuedAt, dependencies: stageDependencies(history, stage, plan.dependencies), workflow: { ...plan.workflow,
           changeReason: 'Deterministic plan-readiness check passed', readinessCheck: ref(check),
           retainedTasks: plan.deliverySequence.map((task) => ({ task, reason: 'Unchanged detail verified by readiness check' })),
         }, readiness: { ready: true, comparison: { result: 'passed', sourceRefs, findings: [],

@@ -637,7 +637,10 @@ Decisions extend `DecisionChangeSchema` with
 product decisions produce approval-related readiness findings. Settled decisions
 are reused without an approval mutation, including when an old question list still
 contains the exact answered question. Each task lists the relevant design decisions
-it must preserve; it need not repeat decisions unrelated to that task.
+it must preserve; it need not repeat decisions unrelated to that task. A checked
+reuse also recognizes legacy `selected`/`rejected` decisions without `choice`
+metadata as settled. A question matched to a classified technical decision is not
+reported as a product approval.
 
 A stage can select an existing design or plan without writing it again: supply
 `records: []` and `stage.reuse` containing a passed `check` (the existing
@@ -645,6 +648,10 @@ A stage can select an existing design or plan without writing it again: supply
 The comparison must cite the current original requests and selected artifact;
 every current criterion must map to a criterion of the reused artifact's feature.
 This also supports rechecking existing artifacts for a newer feature revision.
+The passed current-request comparison can bind historical scope pointers to an
+additional request; directly applicable scope entries still have to agree with
+that request. Reused prerequisite criteria are translated through the recorded
+criterion map in the generated ready plan.
 Earlier designs with prose reuse findings can be selected through this check;
 plans need structured slices and feature-verification steps to pass readiness.
 
@@ -665,12 +672,18 @@ Detail-stage references. Findings name the affected revision and field. A findin
 withholds a ready plan, and `check-plan` returns exit status 1 with the findings in
 stdout. With no findings, the same transaction creates the next plan revision with
 `readiness.ready: true`, a passed comparison, and `workflow.readinessCheck`. Task
-revisions are retained. `findings` and `planReadinessHistory` read the persisted
+revisions are retained. Existing assignment and review validation accepts those
+verified retention links while checking feature, design and criterion compatibility.
+Ready plans also reject draft/incomplete task detail when the plan predates BUILD-06.
+`findings` and `planReadinessHistory` read the persisted
 checks without rerunning or changing them. `stages` and `stageHistory` show the
 method history separately from the source feature revision and execution state.
 
-The check catches criteria absent from slices or tasks, tasks/slices with no current
-criterion, example-only scope, absent integration across multiple slices, absent
+The check requires delivery coverage for active required criteria and for optional
+criteria that the plan elects to implement. Tasks/slices without a current criterion
+need an explicit maintenance objective on every maintenance task in that slice.
+It catches unlinked scope, example-only scope, expansion beyond an entire-scope
+request, failure to preserve required integrations, absent integration across multiple slices, absent
 final feature verification, open product decisions, unresolved source findings,
 missing actionable detail, and inconsistent stage/dependency ordering. Scope roles
 come from recorded source analysis: for example, the BUILD-02 request says ERPNext

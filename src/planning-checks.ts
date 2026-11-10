@@ -8,6 +8,33 @@ export function planningRecord(records: FactoryRecord[], ref: Ref) {
   return records.find((record) => samePlanningRef(record, ref));
 }
 
+/** Follow only the recorded reuse checks in this detail stage's method chain. */
+export function stageCriteria(records: FactoryRecord[], detail: StageRevision, refs: Ref[]): Ref[] {
+  const stages: StageRevision[] = [];
+  let stage: StageRevision | undefined = detail;
+  for (let depth = 0; stage && depth < 3; depth++) {
+    stages.push(stage);
+    const previous: FactoryRecord | undefined = stage.previousStage && planningRecord(records, stage.previousStage);
+    stage = previous?.kind === 'stage_revision' ? previous : undefined;
+  }
+  return refs.flatMap((ref) => {
+    for (const item of stages) {
+      const mappings = item.reuse?.check.result === 'passed' &&
+        item.reuse.criterionMap.filter((entry) => samePlanningRef(entry.existing, ref));
+      if (mappings && mappings.length) return mappings.map((mapping) => mapping.current);
+    }
+    return [ref];
+  });
+}
+
+export function stageDependencies(records: FactoryRecord[], detail: StageRevision,
+  dependencies: ImplementationPlanRevision['dependencies']): ImplementationPlanRevision['dependencies'] {
+  return dependencies.flatMap((dependency) => dependency.needs.kind === 'criterion' ?
+    stageCriteria(records, detail, [dependency.needs.criterion]).map((criterion) => ({
+      ...dependency, needs: { kind: 'criterion' as const, criterion },
+    })) : [dependency]);
+}
+
 /** Structural, deterministic source checks. Scope roles are explicit source-analysis
  * data, not a claim that a keyword matcher understands arbitrary requests. */
 export function planReadinessFindings(records: FactoryRecord[], detail: StageRevision): ReadinessFinding[] {
@@ -70,25 +97,22 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
     add('dropped_behavior', understanding, 'criteria', `Understanding omitted criterion ${criterion.id}`);
   }
   if (understanding.openUnknowns.length) add('stage_gap', understanding, 'openUnknowns', 'Material understanding unknowns remain open');
-  const settledQuestions = design.decisions.flatMap((ref) => {
-    const decision = planningRecord(records, ref);
-    return decision?.kind === 'decision_change' && decision.choice?.state === 'resolved' ? [decision.questionOrChange] : [];
-  });
-  for (const question of design.unresolvedQuestions) if (!settledQuestions.includes(question)) {
-    add('unresolved_product_decision', design, 'unresolvedQuestions', question);
+  const decisions = design.decisions.map((ref) => planningRecord(records, ref));
+  const isSettled = (decision: FactoryRecord | undefined) => decision?.kind === 'decision_change' &&
+    (decision.choice?.state === 'resolved' || (designStage.reuse && !decision.choice &&
+      ['selected', 'rejected'].includes(decision.disposition)));
+  for (const question of design.unresolvedQuestions) {
+    const matches = decisions.filter((decision) => decision?.kind === 'decision_change' && decision.questionOrChange === question);
+    if (!matches.some((decision) => isSettled(decision) ||
+      (decision?.kind === 'decision_change' && decision.choice?.kind === 'technical'))) {
+      add('unresolved_product_decision', design, 'unresolvedQuestions', question);
+    }
   }
   if (['failed', 'blocked'].includes(plan.readiness.comparison.result) || plan.readiness.comparison.findings.some(
     (finding) => finding.result !== 'passed' && !finding.resolvedBy)) {
     add('source_gap', plan, 'readiness.comparison', 'Plan source comparison has material findings');
   }
-  const selectedCriteria = (refs: Ref[]) => refs.flatMap((ref) => {
-    // Reuse checks explicitly translate old criterion IDs/revisions to the current request.
-    for (const item of [detailStage, planStage, designStage]) {
-      const mappings = item.reuse?.criterionMap.filter((entry) => samePlanningRef(entry.existing, ref));
-      if (mappings?.length) return mappings.map((mapping) => mapping.current);
-    }
-    return [ref];
-  });
+  const selectedCriteria = (refs: Ref[]) => stageCriteria(records, detail, refs);
   const isCriterion = (ref: Ref) => feature.criteria.some((criterion) => samePlanningRef(criterion, ref));
   const slices = plan.workflow.slices;
   const tasks = plan.deliverySequence.flatMap((ref) => {
@@ -101,7 +125,10 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   for (const ref of feature.criteria) {
     const criterion = planningRecord(records, ref);
     if (criterion?.kind !== 'criterion' || criterion.disposition.state !== 'active') continue;
-    if (!sliceCriteria.some((item) => samePlanningRef(item, ref)) || !taskCriteria.some((item) => samePlanningRef(item, ref))) {
+    const inSlices = sliceCriteria.some((item) => samePlanningRef(item, ref));
+    const inTasks = taskCriteria.some((item) => samePlanningRef(item, ref));
+    if (criterion.requirement === 'optional' && !inSlices && !inTasks) continue;
+    if (!inSlices || !inTasks) {
       add('dropped_behavior', plan, 'workflow.slices', `Criterion ${ref.id} needs both a delivery slice and a detailed task`);
     }
   }
@@ -110,7 +137,11 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
     if (ids.has(slice.id)) add('detail_gap', plan, 'workflow.slices', `Duplicate slice ${slice.id}`);
     ids.add(slice.id);
     const criteria = selectedCriteria(slice.criteria);
-    if (!criteria.length || criteria.some((ref) => !isCriterion(ref))) {
+    const maintenanceSlice = slice.tasks.length > 0 && slice.tasks.every((ref) => {
+      const task = tasks.find((candidate) => samePlanningRef(candidate, ref));
+      return task && task.criteria.length === 0 && task.maintenanceObjective !== undefined;
+    });
+    if ((!criteria.length && !maintenanceSlice) || criteria.some((ref) => !isCriterion(ref))) {
       add('invented_scope', plan, 'workflow.slices', `Slice ${slice.id} is not linked to current criteria`);
     }
     if (!slice.tasks.length || slice.tasks.some((ref) => !plan.deliverySequence.some((task) => samePlanningRef(task, ref)))) {
@@ -123,7 +154,7 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   }
   for (const task of tasks) {
     const criteria = selectedCriteria(task.criteria);
-    if (!criteria.length || criteria.some((ref) => !isCriterion(ref))) {
+    if ((!criteria.length && !task.maintenanceObjective) || criteria.some((ref) => !isCriterion(ref))) {
       add('invented_scope', task, 'criteria', 'Task is not linked to current criteria');
     }
     if (!slices.some((slice) => slice.tasks.some((ref) => samePlanningRef(ref, task)))) {
@@ -145,19 +176,23 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   if ((slices.length > 1 && !plan.workflow.integrationSteps.length) || !plan.workflow.finalVerification.length) {
     add('missing_integration', plan, 'workflow', 'Multiple slices need integration steps; every plan needs final feature verification');
   }
-  for (const scope of understanding.scope.filter((entry) => entry.role === 'example')) {
-    for (const owner of [design, plan]) {
-      // Earlier design contracts have prose reuse findings rather than scope
-      // metadata. A checked reuse comparison supplies their current-source check.
-      if (owner.kind === 'design_revision' && !owner.workflow && designStage.reuse) continue;
-      const actual = owner.workflow!.scope.find((entry) => samePlanningRef(entry.request, scope.request) &&
+  for (const scope of understanding.scope) {
+    for (const [owner, selectedStage] of [[design, designStage], [plan, planStage]] as const) {
+      const actual = owner.workflow?.scope.find((entry) => samePlanningRef(entry.request, scope.request) &&
         entry.term.toLocaleLowerCase('en') === scope.term.toLocaleLowerCase('en'));
-      if (!actual || actual.coverage !== 'general') add('example_driven_narrowing', owner, 'workflow.scope',
-        `${scope.term} is an example in the request; the planned scope must retain the general behavior`);
+      // A passed comparison binds unchanged historical scope to the current
+      // requests. A directly applicable scope entry still has to agree.
+      const checkedReuse = selectedStage.reuse?.check.result === 'passed' && samePlanningRef(selectedStage.artifact, owner);
+      if (!actual && checkedReuse) continue;
+      const expected = scope.role === 'example' ? 'general' : scope.role;
+      if (!actual || actual.coverage !== expected) add(scope.role === 'example' ? 'example_driven_narrowing' :
+        scope.role === 'entire_scope' ? 'invented_scope' : 'dropped_behavior', owner, 'workflow.scope',
+      `${scope.term} has request role ${scope.role}; planned coverage must be ${expected}`);
     }
   }
   for (const ref of design.decisions) {
     const decision = planningRecord(records, ref);
+    if (isSettled(decision)) continue;
     if (decision?.kind !== 'decision_change' || !decision.choice) {
       add('detail_gap', design, 'decisions', `Decision ${ref.id} needs a product/technical classification and state`);
     } else if (decision.choice.kind === 'product' && decision.choice.state === 'open') {
@@ -167,8 +202,8 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   const orderedSlices = slices.flatMap((slice) => slice.tasks.map((ref) => ref.id));
   for (const dependency of plan.dependencies) {
     const prerequisite = tasks.find((task) => task.id === dependency.prerequisiteTaskId);
-    if (dependency.needs.kind === 'criterion' && prerequisite && !prerequisite.criteria.some((ref) =>
-      dependency.needs.kind === 'criterion' && samePlanningRef(ref, dependency.needs.criterion))) {
+    if (dependency.needs.kind === 'criterion' && prerequisite && !selectedCriteria(prerequisite.criteria).some((ref) =>
+      dependency.needs.kind === 'criterion' && selectedCriteria([dependency.needs.criterion]).some((need) => samePlanningRef(ref, need)))) {
       add('dependency_gap', plan, 'dependencies', 'A prerequisite must supply the criterion that the dependency needs');
     }
     if (orderedSlices.indexOf(dependency.prerequisiteTaskId) > orderedSlices.indexOf(dependency.consumerTaskId)) {
