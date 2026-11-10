@@ -77,7 +77,6 @@ test('capture retains exact bytes, queues delivery atomically, replays and rejec
   const { store } = setup(t);
   const first = capture(store);
   assert.equal(first.request.originalText, originalText);
-  assert.equal(first.operation?.kind, 'operation');
   assert.ok(first.operation?.kind === 'operation');
   assert.equal(first.operation.state, 'pending');
   const retry = captureRequest(store, { projectId: project.id, clientRequestId: 'client-1', originalText,
@@ -85,6 +84,68 @@ test('capture retains exact bytes, queues delivery atomically, replays and rejec
   assert.deepEqual(retry, first);
   assert.throws(() => capture(store, 'Export ERPNext only'), /idempotency_conflict/);
   assert.equal(store.operations(project.id).length, 1);
+});
+
+test('1066-5: initialization replay compares the complete canonical project', (t) => {
+  const { store } = setup(t);
+  const reordered = Object.fromEntries(Object.entries(project).reverse());
+  assert.deepEqual(initializeProject(store, reordered), initializeProject(store, project));
+  for (const change of [{ timezone: 'Asia/Jerusalem' }, { priorities: ['Urgent'] },
+    { firstMateHomeRef: 'fixture:another-home' }, { vocabulary: { task: 'Work item' } }]) {
+    assert.throws(() => initializeProject(store, { ...project, ...change }), /idempotency_conflict/);
+  }
+  const exported = store.exportProject(project.id);
+  const receipt = exported.receipts[0]!;
+  assert.ok(receipt.command.command === 'record_decision_suggestion');
+  const legacy = new ProjectStore(':memory:');
+  t.after(() => legacy.close());
+  legacy.importProject({ ...exported, receipts: [{ ...receipt,
+    command: { ...receipt.command, payload: { decision: receipt.command.payload.decision } } }] });
+  assert.deepEqual(initializeProject(legacy, project), receipt.result);
+  assert.throws(() => initializeProject(legacy, { ...project, timezone: 'Asia/Jerusalem' }), /idempotency_conflict/);
+});
+
+test('1066-6: separator whitespace and a trailing newline can be classified independently', (t) => {
+  const { store } = setup(t);
+  const original = 'Export.\n \tKeep history.\n';
+  const { request } = capture(store, original);
+  const separator = { ...mapping(request.id, 'Export.\n \t'.length), start: 'Export.'.length,
+    target: { kind: 'disposition', disposition: 'non_work_conversation' } };
+  const first = mapRequest(store, separator);
+  assert.equal(first.mappings[0]?.text, '\n \t');
+  const second = mapRequest(store, { ...separator, start: original.length - 1, end: original.length,
+    expectedRevision: 2, idempotencyKey: 'map-trailing-newline' });
+  assert.equal(second.mappings[1]?.text, '\n');
+  assert.deepEqual(second.unmapped.map((range) => range.text), ['Export.', 'Keep history.']);
+});
+
+test('1066-8: capture and mapping replays retain their original revisions', (t) => {
+  const { store, dir } = setup(t);
+  const first = capture(store);
+  const input = mapping(first.request.id);
+  const mapped = mapRequest(store, input);
+  const corrected = mapRequest(store, { ...input, expectedRevision: 2, idempotencyKey: 'correct-replay-case',
+    replaces: [mapped.mappings[0]!.decision], target: { kind: 'disposition', disposition: 'deferral' } });
+  const delivered = deliverRequest(store, project.id, first.request.id, { fmHome: scratchFirstMate(dir) });
+  assert.equal(delivered.state, 'succeeded');
+  assert.deepEqual(capture(store), first);
+  assert.deepEqual(mapRequest(store, input), mapped);
+  assert.deepEqual(requestCoverage(store, project.id, first.request.id), corrected);
+});
+
+test('1066-9: the unclassified view reads project history once', (t) => {
+  const { store } = setup(t);
+  const unmapped = capture(store, originalText, 'unmapped').request;
+  const partial = capture(store, originalText, 'partial').request;
+  const covered = capture(store, originalText, 'covered').request;
+  const input = { ...mapping(partial.id), target: { kind: 'disposition', disposition: 'deferral' } };
+  mapRequest(store, input);
+  mapRequest(store, { ...input, requestId: covered.id, end: originalText.length, idempotencyKey: 'cover-all' });
+  const read = t.mock.method(store, 'history');
+  const result = unclassifiedRequests(store, project.id);
+  assert.deepEqual(result.map((request) => request.id).sort(), [unmapped.id, partial.id].sort());
+  assert.equal(result.find((request) => request.id === partial.id)?.coverage.mappings[0]?.disposition, 'deferral');
+  assert.equal(read.mock.callCount(), 1);
 });
 
 test('capture application rolls back request and delivery when the database fails', (t) => {

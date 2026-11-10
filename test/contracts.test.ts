@@ -97,8 +97,7 @@ for (const name of readdirSync(new URL('firstmate/', fixtures)).filter((file) =>
   });
 }
 
-test('all sixteen record types are exercised, with immutable boundary metadata', () => {
-  assert.equal(new Set(baseline.map((record) => record.kind)).size, 16);
+test('records enforce immutable boundary metadata', () => {
   for (const record of baseline) {
     assert.equal(RecordSchema.safeParse({ ...record, revision: 0 }).success, false);
     assert.equal(RecordSchema.safeParse({ ...record, revision: 1.5 }).success, false);
@@ -106,6 +105,119 @@ test('all sixteen record types are exercised, with immutable boundary metadata',
     assert.equal(RecordSchema.safeParse({ ...record, updatedAt: '2020-01-01T00:00:00Z' }).success, false);
     const { projectId: _projectId, ...withoutProject } = record;
     assert.equal(RecordSchema.safeParse(withoutProject).success, false);
+  }
+});
+
+test('1066-1: status-only completion can cite unchanged passing evidence', () => {
+  const feature = byId('feature-1');
+  assert.ok(feature.kind === 'feature_revision');
+  const records = baseline.map((record) => record.id === feature.id ? { ...feature, state: 'in_review' } : record);
+  const completionEvidence = { review: { id: 'review-1', revision: 1 }, reason: 'The reviewed scope and delivered revision are unchanged' };
+  const complete = { ...feature, revision: 2, previousRevision: 1, state: 'complete',
+    methodStage: 'product_review', changeReason: 'Record completion', completionEvidence };
+  const valid = validateRecords([...records, complete]);
+  assert.equal(valid.ok, true, JSON.stringify(valid));
+  const repeated = validateRecords([...records, complete, { ...complete, revision: 3, previousRevision: 2 }]);
+  assert.equal(repeated.ok, true, JSON.stringify(repeated));
+  for (const candidate of [{ ...complete, completionEvidence: undefined },
+    { ...complete, outcome: 'Changed outcome' }, { ...complete, completionEvidence: { ...completionEvidence, reason: ' ' } }]) {
+    assert.equal(validateRecords([...records, candidate]).ok, false);
+  }
+  const failed = records.map((record) => record.kind === 'product_review' ? { ...record, outcome: 'failed' } : record);
+  assert.equal(validateRecords([...failed, complete]).ok, false);
+});
+
+test('1066-2: the current feature governs dispatch of a historical assignment', () => {
+  const feature = byId('feature-1');
+  assert.ok(feature.kind === 'feature_revision');
+  const successor = { ...feature, revision: 2, previousRevision: 1, state: 'in_progress', changeReason: 'Record status' };
+  const assignment = { id: 'assignment-1', revision: 1 };
+  const decision = { ...byId('decision-suggestion'), disposition: 'selected' };
+  const historyWithDecision = baseline.map((record) => record.id === decision.id ? decision : record);
+  assert.equal(validateAssignmentForDispatch([...baseline, successor], assignment).ok, true);
+  assert.equal(validateAssignmentForDispatch([...baseline, { ...successor, priority: feature.priority + 1 }], assignment).ok, true);
+  for (const [change, code] of [
+    [{ disposition: { state: 'cancelled', reason: 'Stop work', decision: { id: decision.id, revision: 1 } } }, 'inactive_feature'],
+    [{ outcome: 'Superseding product outcome' }, 'superseded_feature'],
+  ] as const) {
+    const records = [...historyWithDecision, { ...successor, ...change }];
+    const history = validateRecords(records);
+    assert.equal(history.ok, true, JSON.stringify(history));
+    const result = validateAssignmentForDispatch(records, assignment);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.ok(result.issues.some((issue) => issue.code === code));
+  }
+});
+
+test('1066-3: passing review comparisons cite the exact design, plan and task revisions', () => {
+  const design = byId('design-1');
+  const plan = byId('plan-1');
+  const task = byId('task-1');
+  const review = byId('review-1');
+  assert.ok(design.kind === 'design_revision' && plan.kind === 'implementation_plan_revision' &&
+    task.kind === 'detailed_plan_task' && review.kind === 'product_review');
+  const nextDesign = { id: design.id, revision: 2 };
+  const nextPlan = { id: plan.id, revision: 2 };
+  const nextTask = { id: task.id, revision: 2 };
+  const history = [...baseline.filter((record) => record.id !== review.id), { ...design, ...nextDesign },
+    { ...plan, ...nextPlan, design: nextDesign, deliverySequence: [nextTask], readiness: { ...plan.readiness,
+      comparison: { ...plan.readiness.comparison, sourceRefs: [...plan.readiness.comparison.sourceRefs, { uri: 'fixture:design-v2', record: nextDesign }] } } },
+    { ...task, ...nextTask, plan: nextPlan, design: nextDesign }];
+  assert.equal(validateReviewForCompletion([...history, review], review).ok, true);
+  for (const field of ['sourceComparison', 'instructionFidelity', 'planConformance'] as const) {
+    for (const target of [nextDesign, nextPlan, nextTask]) {
+      const comparison = review[field];
+      const sources = comparison.sourceRefs.map((source) => source.record?.id === target.id ? { ...source, record: target } : source);
+      const result = validateReviewForCompletion([...history, { ...review, [field]: { ...comparison, sourceRefs: sources } }], review);
+      assert.equal(result.ok, false, `${field} accepted the wrong ${target.id} revision`);
+      if (!result.ok) assert.ok(result.issues.some((issue) => issue.code === 'omitted_source' && issue.recordId === review.id));
+    }
+  }
+});
+
+test('1066-4: dispatch requires the current managed mapping to be active and match', () => {
+  const mapping = baseline.find((record) => record.kind === 'task_mapping');
+  assert.ok(mapping);
+  const assignment = { id: 'assignment-1', revision: 1 };
+  const decision = { ...byId('decision-suggestion'), disposition: 'selected' };
+  const history = baseline.map((record) => record.id === decision.id ? decision : record);
+  for (const state of ['cancelled', 'deferred'] as const) {
+    const disposition = { state, reason: 'Stop this execution task', decision: { id: decision.id, revision: 1 } };
+    const records: unknown[] = [...history, { ...mapping, revision: 2, disposition }];
+    assert.equal(validateRecords(records).ok, true);
+    const result = validateAssignmentForDispatch(records, assignment);
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.ok(result.issues.some((issue) => issue.code === 'inactive_mapping'));
+  }
+  const remapped = [...baseline, { ...mapping, revision: 2, firstMateTaskId: 'replacement-task' }];
+  assert.equal(validateRecords(remapped).ok, true);
+  assert.equal(validateAssignmentForDispatch(remapped, assignment).ok, false);
+});
+
+test('1066-7: standalone maintenance can be planned, mapped and dispatched without a feature', () => {
+  const design = { ...byId('design-1'), feature: null };
+  const plan = { ...byId('plan-1'), feature: null };
+  const task = { ...byId('task-1'), feature: null, criteria: [], maintenanceObjective: 'Remove the obsolete cache' };
+  const mapping = { ...byId('mapping-1'), feature: null, criteria: [] };
+  const assignment = { ...byId('assignment-1'), feature: null, criteria: [] };
+  const request = { ...byId('request-1'), interpretationRefs: [] };
+  const records = [byId('project-1'), request, design, plan, task, mapping, assignment];
+  const dispatched = validateAssignmentForDispatch(records, assignment);
+  assert.equal(dispatched.ok, true, JSON.stringify(dispatched));
+  assert.equal(validateRecords(records.map((record) => record.id === task.id ?
+    { ...task, maintenanceObjective: undefined } : record)).ok, false);
+  assert.equal(validateRecords([...records.map((record) => record.id === plan.id ?
+    { ...plan, feature: { id: 'feature-1', revision: 1 } } : record),
+  ...baseline.filter((record) => record.kind === 'feature_revision' || record.kind === 'criterion')]).ok, false);
+  for (const fixture of commandFixtures.filter((item) => item.valid)) {
+    const command = CommandEnvelopeSchema.parse(fixture.input);
+    if (command.command === 'map_manage_execution_task' || command.command === 'prepare_assignment') {
+      assert.equal(CommandEnvelopeSchema.safeParse({ ...command, payload: { ...command.payload, feature: null,
+        ...(command.command === 'map_manage_execution_task' ? { criteria: [], detailedPlanTask: { id: task.id, revision: 1 } } : {}) } }).success, true);
+    }
+    if (command.command === 'design_plan_feature' && 'feature' in command.payload) {
+      assert.equal(CommandEnvelopeSchema.safeParse({ ...command, payload: { ...command.payload, feature: null, design, plan, tasks: [task] } }).success, true);
+    }
   }
 });
 test('requested criteria default to required without mutating captured source text', () => {

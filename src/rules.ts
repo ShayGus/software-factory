@@ -17,16 +17,19 @@ export interface RuleIssue {
 type Kind = FactoryRecord['kind'];
 type OfKind<K extends Kind> = Extract<FactoryRecord, { kind: K }>;
 const key = (ref: Ref) => JSON.stringify([ref.id, ref.revision]);
-const sameRef = (left: Ref, right: Ref) => left.id === right.id && left.revision === right.revision;
+const sameRef = (left: Ref | null, right: Ref | null) => left === null || right === null ?
+  left === right : left.id === right.id && left.revision === right.revision;
 const asRef = (record: FactoryRecord): Ref => ({ id: record.id, revision: record.revision });
 
 class Context {
   readonly issues: RuleIssue[] = [];
   readonly index = new Map<string, FactoryRecord>();
+  readonly current = new Map<string, FactoryRecord>();
   constructor(readonly records: FactoryRecord[]) {
     for (const record of records) {
       if (this.index.has(key(record))) this.add(record, 'duplicate_record', 'id', 'Duplicate ID and revision');
       this.index.set(key(record), record);
+      if (record.revision > (this.current.get(record.id)?.revision ?? 0)) this.current.set(record.id, record);
     }
   }
   add(record: FactoryRecord, code: string, path: string, message: string) {
@@ -48,9 +51,9 @@ class Context {
     }
     return undefined;
   }
-  equal(owner: FactoryRecord, left: Ref, right: Ref, path: string) {
+  equal(owner: FactoryRecord, left: Ref | null, right: Ref | null, path: string) {
     if (!sameRef(left, right)) this.add(owner, 'revision_mismatch', path,
-      `Expected ${right.id}@${right.revision}; received ${left.id}@${left.revision}`);
+      `Expected ${right ? `${right.id}@${right.revision}` : 'no feature'}; received ${left ? `${left.id}@${left.revision}` : 'no feature'}`);
   }
   criteria(owner: FactoryRecord, refs: Ref[], feature?: FeatureRevision) {
     const seen = new Set<string>();
@@ -90,6 +93,25 @@ class Context {
   }
 }
 
+function featureContent(feature: FeatureRevision) {
+  const { revision: _revision, previousRevision: _previous, updatedAt: _updatedAt, changeReason: _reason,
+    state: _state, methodStage: _stage, completionEvidence: _evidence, ...content } = feature;
+  return content;
+}
+
+function carriesCompletionEvidence(ctx: Context, feature: FeatureRevision) {
+  const evidence = feature.completionEvidence;
+  if (!evidence) return false;
+  const review = ctx.get(feature, evidence.review, 'product_review', 'completionEvidence.review');
+  if (review?.outcome !== 'passed' || review.feature.id !== feature.id || review.feature.revision >= feature.revision) return false;
+  const content = canonical(featureContent(feature));
+  for (let revision = feature.revision - 1; revision >= review.feature.revision; revision--) {
+    const predecessor = ctx.index.get(key({ id: feature.id, revision }));
+    if (predecessor?.kind !== 'feature_revision' || canonical(featureContent(predecessor)) !== content) return false;
+  }
+  return true;
+}
+
 function checkScopeTransition(ctx: Context, before: FeatureRevision, after: FeatureRevision) {
   for (const ref of before.criteria) {
     const old = ctx.get(before, ref, 'criterion', 'criteria');
@@ -110,10 +132,10 @@ function checkScopeTransition(ctx: Context, before: FeatureRevision, after: Feat
   }
 }
 
-function currentPlanCriteria(ctx: Context, plan: ImplementationPlanRevision, refs: Ref[]): Ref[] {
+function currentPlanCriteria(ctx: Context, plan: ImplementationPlanRevision, task: DetailedPlanTask): Ref[] {
   const check = plan.workflow?.readinessCheck && ctx.index.get(key(plan.workflow.readinessCheck));
   const detail = check?.kind === 'plan_readiness_revision' && check.ready && ctx.index.get(key(check.detailStage));
-  return detail && detail.kind === 'stage_revision' ? stageCriteria(ctx.records, detail, refs) : refs;
+  return detail && detail.kind === 'stage_revision' ? stageCriteria(ctx.records, detail, task.criteria, task.feature) : task.criteria;
 }
 
 function retainedTask(ctx: Context, plan: ImplementationPlanRevision, task: DetailedPlanTask): boolean {
@@ -128,7 +150,9 @@ function retainedTask(ctx: Context, plan: ImplementationPlanRevision, task: Deta
   }
   // Retention cannot attach a task from another feature/design silently. New
   // criterion revisions must be covered by the ready plan's recorded reuse check.
-  const criteria = currentPlanCriteria(ctx, plan, task.criteria);
+  if (plan.feature === null || task.feature === null) return plan.feature === task.feature &&
+    current.feature === null && sameRef(current.design, task.design) && task.design.id === plan.design.id;
+  const criteria = currentPlanCriteria(ctx, plan, task);
   const feature = ctx.index.get(key(plan.feature));
   return sameRef(current.feature, task.feature) && sameRef(current.design, task.design) &&
     task.design.id === plan.design.id && feature?.kind === 'feature_revision' &&
@@ -145,8 +169,14 @@ function checkTaskPlan(ctx: Context, owner: FactoryRecord, task: DetailedPlanTas
   }
 }
 
+function matchesAssignment(mapping: OfKind<'task_mapping'>, assignment: Assignment) {
+  return !mapping.legacy && mapping.projectId === assignment.projectId &&
+    mapping.firstMateTaskId === assignment.firstMateTaskId && sameRef(mapping.detailedPlanTask, assignment.detailedPlanTask) &&
+    sameRef(mapping.feature, assignment.feature);
+}
+
 function checkAssignment(ctx: Context, assignment: Assignment) {
-  const feature = ctx.get(assignment, assignment.feature, 'feature_revision', 'feature');
+  const feature = assignment.feature ? ctx.get(assignment, assignment.feature, 'feature_revision', 'feature') : undefined;
   const design = ctx.get(assignment, assignment.design, 'design_revision', 'design');
   const plan = ctx.get(assignment, assignment.plan, 'implementation_plan_revision', 'plan');
   const task = ctx.get(assignment, assignment.detailedPlanTask, 'detailed_plan_task', 'detailedPlanTask');
@@ -163,7 +193,7 @@ function checkAssignment(ctx: Context, assignment: Assignment) {
   if (task) {
     if (plan) checkTaskPlan(ctx, assignment, task, plan);
     else ctx.equal(assignment, task.plan, assignment.plan, 'task.plan');
-    const criteria = plan && retainedTask(ctx, plan, task) ? currentPlanCriteria(ctx, plan, task.criteria) : task.criteria;
+    const criteria = plan && retainedTask(ctx, plan, task) ? currentPlanCriteria(ctx, plan, task) : task.criteria;
     for (const required of criteria) {
       if (!assignment.criteria.some((actual) => sameRef(actual, required))) ctx.add(
         assignment, 'omitted_criterion', 'criteria', `Assignment omitted task criterion ${required.id}`);
@@ -173,10 +203,7 @@ function checkAssignment(ctx: Context, assignment: Assignment) {
         assignment, 'invented_criterion', 'criteria', `Criterion ${actual.id} is outside the detailed task`);
     }
   }
-  const mapping = ctx.records.find((record) => record.kind === 'task_mapping' && !record.legacy &&
-    record.projectId === assignment.projectId && record.firstMateTaskId === assignment.firstMateTaskId &&
-    record.detailedPlanTask && sameRef(record.detailedPlanTask, assignment.detailedPlanTask) &&
-    record.feature && sameRef(record.feature, assignment.feature));
+  const mapping = ctx.records.find((record) => record.kind === 'task_mapping' && matchesAssignment(record, assignment));
   if (!mapping) ctx.add(assignment, 'missing_mapping', 'firstMateTaskId', 'No matching managed task mapping');
 }
 
@@ -225,6 +252,7 @@ function checkReview(ctx: Context, review: ProductReview) {
   }
   for (const comparison of [review.sourceComparison, review.instructionFidelity, review.planConformance]) {
     ctx.comparison(review, comparison, feature);
+    if (comparison.result === 'passed') ctx.sources(review, comparison, [review.design, review.plan, ...review.detailedPlanTasks]);
   }
   ctx.sources(review, review.sourceComparison, review.originalRequests);
   // Failed/incomplete reviews are valid records. A passed review makes stronger claims.
@@ -258,8 +286,8 @@ function checkCompletion(ctx: Context, review: ProductReview) {
   }
 }
 
-function reusedDesign(ctx: Context, design: Ref, feature: Ref): boolean {
-  return ctx.records.some((record) => record.kind === 'stage_revision' && record.stage === 'design' &&
+function reusedDesign(ctx: Context, design: Ref, feature: Ref | null): boolean {
+  return feature !== null && ctx.records.some((record) => record.kind === 'stage_revision' && record.stage === 'design' &&
     record.reuse && record.reuse.check.result === 'passed' && sameRef(record.artifact, design) && sameRef(record.feature, feature));
 }
 
@@ -288,7 +316,9 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       const artifact = ctx.get(record, record.artifact, artifactKind, 'artifact');
       const reusedPlan = record.stage === 'detail' && ctx.records.some((stage) => stage.kind === 'stage_revision' &&
         stage.stage === 'plan' && stage.reuse && sameRef(stage.feature, record.feature) && sameRef(stage.artifact, record.artifact));
-      if (artifact && !record.reuse && !reusedPlan) ctx.equal(record, artifact.feature, record.feature, 'artifact.feature');
+      if (artifact && (artifact.feature === null || (!record.reuse && !reusedPlan))) {
+        ctx.equal(record, artifact.feature, record.feature, 'artifact.feature');
+      }
       const predecessor = { design: 'understand', plan: 'design', detail: 'plan' };
       if (record.stage === 'understand') {
         if (record.previousStage) ctx.add(record, 'stage_order', 'previousStage', 'Understand starts the stage chain');
@@ -316,8 +346,8 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
         if (record.reuse.check.result !== 'passed') ctx.add(record, 'reuse_not_checked', 'reuse.check', 'Reuse check must pass');
         for (const mapping of record.reuse.criterionMap) {
           ctx.criteria(record, [mapping.current], feature);
-          const existingFeature = artifact && ctx.get(record, artifact.feature, 'feature_revision', 'reuse.artifact.feature');
-          ctx.criteria(record, [mapping.existing], existingFeature);
+          const existingFeature = artifact?.feature && ctx.get(record, artifact.feature, 'feature_revision', 'reuse.artifact.feature');
+          ctx.criteria(record, [mapping.existing], existingFeature ?? undefined);
         }
         for (const ref of feature?.criteria ?? []) if (!record.reuse.criterionMap.some((entry) => sameRef(entry.current, ref))) {
           ctx.add(record, 'reuse_not_checked', 'reuse.criterionMap', `Reuse did not check current criterion ${ref.id}`);
@@ -358,7 +388,10 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
         }
       } else if (record.previousRevision !== undefined) ctx.add(record, 'revision_mismatch', 'previousRevision',
         'First revision has no predecessor');
-      if (record.state === 'complete' && !ctx.records.some((candidate) => candidate.kind === 'product_review' &&
+      if (record.completionEvidence) {
+        if (record.state !== 'complete' || !carriesCompletionEvidence(ctx, record)) ctx.add(record,
+          'invalid_completion_evidence', 'completionEvidence', 'Carry-forward needs a passing review and unchanged feature content');
+      } else if (record.state === 'complete' && !ctx.records.some((candidate) => candidate.kind === 'product_review' &&
         sameRef(candidate.feature, record) && candidate.outcome === 'passed')) {
         ctx.add(record, 'incomplete_feature', 'state', 'Complete feature needs a passing review at this revision');
       }
@@ -371,7 +404,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       }
       break;
     case 'design_revision': {
-      const feature = ctx.get(record, record.feature, 'feature_revision', 'feature');
+      const feature = record.feature ? ctx.get(record, record.feature, 'feature_revision', 'feature') : undefined;
       for (const ref of record.decisions) ctx.get(record, ref, 'decision_change', 'decisions');
       if (record.workflow) ctx.get(record, record.workflow.understanding, 'understanding_revision', 'workflow.understanding');
       ctx.comparison(record, record.sourceComparison, feature);
@@ -379,7 +412,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       break;
     }
     case 'implementation_plan_revision': {
-      const feature = ctx.get(record, record.feature, 'feature_revision', 'feature');
+      const feature = record.feature ? ctx.get(record, record.feature, 'feature_revision', 'feature') : undefined;
       const design = ctx.get(record, record.design, 'design_revision', 'design');
       if (design && !reusedDesign(ctx, design, record.feature)) ctx.equal(record, design.feature, record.feature, 'design.feature');
       const covered = new Set<string>();
@@ -424,15 +457,18 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
           if (check) ctx.equal(record, check.feature, record.feature, 'readinessCheck.feature');
           const previous = check && ctx.get(record, check.plan, 'implementation_plan_revision', 'readinessCheck.plan');
           const detail = check && ctx.index.get(key(check.detailStage));
-          const content = (plan: typeof record) => {
+          const content = (plan: typeof record, dependencies = plan.dependencies) => {
             const { revision: _revision, updatedAt: _updatedAt, readiness: _readiness, feature: _feature, workflow, ...rest } = plan;
-            if (!workflow) return rest;
+            if (!workflow) return { ...rest, dependencies };
             const { readinessCheck: _check, retainedTasks: _retained, changeReason: _reason, ...design } = workflow;
-            return { ...rest, dependencies: detail?.kind === 'stage_revision' ?
-              stageDependencies(ctx.records, detail, plan.dependencies) : plan.dependencies, workflow: design };
+            return { ...rest, dependencies, workflow: design };
           };
-          if (previous && canonical(content(previous)) !== canonical(content(record))) ctx.add(record,
-            'plan_not_ready', 'workflow.readinessCheck', 'Ready plan content differs from the checked plan revision');
+          if (previous) {
+            const dependencies = detail?.kind === 'stage_revision' ?
+              stageDependencies(ctx.records, detail, previous.dependencies) : previous.dependencies;
+            if (canonical(content(previous, dependencies)) !== canonical(content(record))) ctx.add(record,
+              'plan_not_ready', 'workflow.readinessCheck', 'Ready plan content differs from the checked plan revision');
+          }
           if (!check || !check.ready || check.plan.id !== record.id || check.plan.revision !== record.revision - 1) {
             ctx.add(record, 'plan_not_ready', 'workflow.readinessCheck', 'Ready revision needs a successful deterministic check of its predecessor');
           }
@@ -450,7 +486,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       break;
     }
     case 'detailed_plan_task': {
-      const feature = ctx.get(record, record.feature, 'feature_revision', 'feature');
+      const feature = record.feature ? ctx.get(record, record.feature, 'feature_revision', 'feature') : undefined;
       const plan = ctx.get(record, record.plan, 'implementation_plan_revision', 'plan');
       const design = ctx.get(record, record.design, 'design_revision', 'design');
       ctx.criteria(record, record.criteria, feature);
@@ -469,8 +505,8 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       ctx.criteria(record, record.criteria, feature);
       if (record.detailedPlanTask) {
         const task = ctx.get(record, record.detailedPlanTask, 'detailed_plan_task', 'detailedPlanTask');
-        if (task && record.feature && !ctx.records.some((plan) => plan.kind === 'implementation_plan_revision' &&
-          plan.readiness.ready && sameRef(plan.feature, record.feature!) && retainedTask(ctx, plan, task))) {
+        if (task && (!record.legacy || record.feature) && !ctx.records.some((plan) => plan.kind === 'implementation_plan_revision' &&
+          plan.readiness.ready && sameRef(plan.feature, record.feature) && retainedTask(ctx, plan, task))) {
           ctx.equal(record, task.feature, record.feature, 'task.feature');
         }
       }
@@ -616,10 +652,28 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
   if (owner.instructionFidelity.result !== 'passed') ctx.add(owner, 'instruction_fidelity', 'instructionFidelity',
     'Instruction comparison with original request, design and task has not passed');
   const plan = ctx.get(owner, owner.plan, 'implementation_plan_revision', 'plan');
-  const feature = ctx.get(owner, owner.feature, 'feature_revision', 'feature');
   const design = ctx.get(owner, owner.design, 'design_revision', 'design');
   if (!plan?.readiness.ready || design?.sourceComparison.result !== 'passed') ctx.add(owner, 'plan_not_ready', 'plan', 'Design/plan not ready');
-  if (feature?.disposition.state !== 'active') ctx.add(owner, 'inactive_feature', 'feature', 'Feature is deferred or cancelled');
+  if (owner.feature) {
+    const assigned = ctx.get(owner, owner.feature, 'feature_revision', 'feature');
+    const current = ctx.current.get(owner.feature.id);
+    if (assigned && current?.kind === 'feature_revision') {
+      const { priority: _assignedPriority, ...assignedScope } = featureContent(assigned);
+      const { priority: _currentPriority, ...currentScope } = featureContent(current);
+      if (current.disposition.state !== 'active') ctx.add(owner, 'inactive_feature', 'feature', 'Feature is deferred or cancelled');
+      else if (canonical(assignedScope) !== canonical(currentScope)) ctx.add(owner, 'superseded_feature', 'feature',
+        'The current feature content supersedes this assignment');
+    }
+  }
+  const mappings = [...ctx.current.values()].filter((record): record is OfKind<'task_mapping'> => record.kind === 'task_mapping' && !record.legacy &&
+    record.projectId === owner.projectId && record.firstMateTaskId === owner.firstMateTaskId);
+  const mapping = mappings.length === 1 ? mappings[0] : undefined;
+  if (!mapping || !matchesAssignment(mapping, owner) || mapping.criteria.length !== owner.criteria.length ||
+    !mapping.criteria.every((criterion) => owner.criteria.some((ref) => sameRef(criterion, ref)))) {
+    ctx.add(owner, 'missing_mapping', 'firstMateTaskId', 'The current managed task mapping must match the assignment');
+  } else if (mapping.disposition.state !== 'active') {
+    ctx.add(owner, 'inactive_mapping', 'firstMateTaskId', 'The current managed task mapping is deferred or cancelled');
+  }
   return ctx.issues.length ? { ok: false, issues: ctx.issues } : { ok: true, data: owner };
 }
 

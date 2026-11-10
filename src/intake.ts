@@ -13,8 +13,8 @@ export const stableId = (namespace: string, ...parts: string[]) =>
 export const ref = ({ id, revision }: Ref): Ref => ({ id, revision });
 const same = (a: Ref, b: Ref) => a.id === b.id && a.revision === b.revision;
 const now = () => new Date().toISOString();
-export function requestRecord(store: ProjectStore, projectId: string, id: string): Request {
-  const value = store.get(projectId, id);
+export function requestRecord(store: ProjectStore, projectId: string, id: string, revision?: number): Request {
+  const value = store.get(projectId, id, revision);
   if (value?.kind !== 'request') throw new StoreError('not_found', 'request_not_found');
   return value;
 }
@@ -30,7 +30,7 @@ export function initializeProject(store: ProjectStore, input: unknown) {
   return store.mutate({ schemaVersion: 1, id: randomUUID(), projectId: project.id,
     issuedAt: project.createdAt, idempotencyKey: stableId('initialize-key', project.id),
     command: 'record_decision_suggestion', targetId: project.id, expectedRevision: 0,
-    payload: { decision },
+    payload: { decision, project },
   }, () => [project, decision]);
 }
 
@@ -49,12 +49,15 @@ export function captureRequest(store: ProjectStore, input: unknown) {
     targetId: id, expectedRevision: 0, payload: { ...payload, capturedAt },
   });
   const operationId = stableId('delivery', id);
-  store.mutate(command, () => [RequestSchema.parse({
+  const result = store.mutate(command, () => [RequestSchema.parse({
     kind: 'request', id, projectId, schemaVersion: 1, revision: 1,
     createdAt: capturedAt, updatedAt: capturedAt, ...command.payload,
     interpretationRefs: [], disposition: 'unclassified', dispositionRefs: [],
   }), pendingOperation(command, operationId)]);
-  return { request: requestRecord(store, projectId, id), operation: store.get(projectId, operationId) };
+  const request = result.records.find((record) => record.id === id)!;
+  const operation = result.records.find((record) => record.id === operationId)!;
+  return { request: requestRecord(store, projectId, request.id, request.revision),
+    operation: store.get(projectId, operation.id, operation.revision) };
 }
 
 const NewFeatureSchema = z.strictObject({
@@ -115,7 +118,7 @@ export function mapRequest(store: ProjectStore, input: unknown) {
     idempotencyKey: data.idempotencyKey, command: 'record_decision_suggestion',
     targetId: request.id, expectedRevision: data.expectedRevision, payload: { decision, intakeRecords },
   });
-  store.mutate(command, (history) => {
+  const result = store.mutate(command, (history) => {
     if (data.start >= data.end || data.end > request.originalText.length) throw new StoreError('validation', 'invalid_request_range');
     for (const replaced of data.replaces) if (!request.dispositionRefs.some((linked) => same(linked, replaced))) {
       throw new StoreError('conflict', 'replacement_mapping_is_not_current');
@@ -124,7 +127,7 @@ export function mapRequest(store: ProjectStore, input: unknown) {
     links.push(ref(decision));
     const next = { ...request, revision: request.revision + 1, updatedAt: data.issuedAt, dispositionRefs: links };
     const records = [...history, ...intakeRecords, decision, next];
-    const report = coverageFromRecords(next, records);
+    const report = coverageFromRecords(next, mappingDecisions(records));
     const dispositions = new Set(report.mappings.map((mapping) => mapping.disposition));
     next.disposition = report.unmapped.length ? 'unclassified' : dispositions.has('work') ? 'work' :
       dispositions.size === 1 ? report.mappings[0]!.disposition : 'unclassified';
@@ -132,12 +135,23 @@ export function mapRequest(store: ProjectStore, input: unknown) {
       .filter((value, index, all) => all.findIndex((other) => same(value, other)) === index);
     return [...intakeRecords, decision, next];
   });
-  return requestCoverage(store, data.projectId, request.id);
+  const saved = result.records.find((record) => record.id === request.id)!;
+  return coverageFromRecords(requestRecord(store, data.projectId, saved.id, saved.revision),
+    mappingDecisions(store.history(data.projectId)));
 }
 
-function coverageFromRecords(request: Request, records: FactoryRecord[]) {
+const revisionKey = (ref: Ref) => JSON.stringify([ref.id, ref.revision]);
+function mappingDecisions(records: FactoryRecord[]) {
+  const decisions = new Map<string, DecisionChange>();
+  for (const record of records) {
+    if (record.kind === 'decision_change' && record.requestMapping) decisions.set(revisionKey(record), record);
+  }
+  return decisions;
+}
+
+function coverageFromRecords(request: Request, decisions: Map<string, DecisionChange>) {
   const mappings = request.dispositionRefs.flatMap((linked) => {
-    const decision = records.find((record): record is DecisionChange => record.kind === 'decision_change' && same(record, linked));
+    const decision = decisions.get(revisionKey(linked));
     const mapping = decision?.requestMapping;
     if (!mapping || decision.disposition !== 'selected' || mapping.request.id !== request.id) return [];
     return [{ ...mapping, decision: ref(decision), text: request.originalText.slice(mapping.start, mapping.end) }];
@@ -153,10 +167,15 @@ function coverageFromRecords(request: Request, records: FactoryRecord[]) {
     structuralCoverageComplete: unmapped.length === 0, semanticReview: 'not_performed' as const };
 }
 export function requestCoverage(store: ProjectStore, projectId: string, requestId: string) {
-  return coverageFromRecords(requestRecord(store, projectId, requestId), store.history(projectId));
+  return coverageFromRecords(requestRecord(store, projectId, requestId), mappingDecisions(store.history(projectId)));
 }
 export function unclassifiedRequests(store: ProjectStore, projectId: string) {
-  return store.records(projectId).filter((record): record is Request => record.kind === 'request')
-    .filter((request) => requestCoverage(store, projectId, request.id).unmapped.length > 0)
-    .map((request) => ({ ...request, coverage: requestCoverage(store, projectId, request.id) }));
+  const history = store.history(projectId);
+  const decisions = mappingDecisions(history);
+  const latest = new Map<string, Request>();
+  for (const record of history) if (record.kind === 'request') latest.set(record.id, record);
+  return [...latest.values()].flatMap((request) => {
+    const coverage = coverageFromRecords(request, decisions);
+    return coverage.unmapped.length > 0 ? [{ ...request, coverage }] : [];
+  });
 }

@@ -61,10 +61,11 @@ URI fields accept repository paths and other reachable references, not just HTTP
 URLs. Artifact revisions and FirstMate IDs are opaque strings; toolkit record
 revisions are integers. A record revision is never a FirstMate run ID.
 
-`CriterionSchema` defaults `requirement` to `required`. A detailed task can instead
-name an explicit `maintenanceObjective` without inventing a product criterion.
-Legacy mappings may have null feature/task references and empty criteria. Managed
-mappings require references. Unclassified requests remain representable.
+`CriterionSchema` defaults `requirement` to `required`. A standalone maintenance
+task has `feature: null`, empty `criteria` and an explicit `maintenanceObjective`.
+Its design, plan, managed mapping and assignment also use `feature: null` and link
+the exact applicable revisions. Legacy mappings can also omit the detailed task
+reference. Unclassified requests remain representable.
 
 The named state enums are exported from `src/primitives.ts`. Wire values use
 underscores for spaces. Feature progress (`requested` through `complete`) and method
@@ -125,11 +126,13 @@ Failed comparisons and failed/incomplete reviews are valid historical records.
 Storing them must not accidentally mean dispatch or completion is permitted:
 
 - `validateAssignmentForDispatch` also requires passing instruction fidelity, a
-  ready plan, a source-compared design and an active feature.
+  ready plan, a source-compared design, a matching active current task mapping,
+  and an active current feature with unchanged scope for feature assignments.
 - A review claiming `outcome: passed`, and `validateReviewForCompletion`, require
   current passing evidence for every active required criterion, passed source,
   instruction and plan comparisons, no unresolved product questions, and evidence
-  of the requested improvement. A green technical-review link alone is insufficient.
+  of the requested improvement. Each passing comparison cites the exact design,
+  plan and detailed task revisions named by the review.
 
 **Semantic limit:** these validators do not understand natural-language scope.
 `ComparisonSchema` records the separate reviewer/source-comparison action with its
@@ -314,12 +317,11 @@ and JSON round trips that retain replay behavior. BUILD-02 fixtures still run un
 
 A state-only feature update **creates a new feature revision**, using the same
 increment, `previousRevision`, and `changeReason` rules as any other feature update.
-No separate semantic-revision counter or implicit evidence promotion is introduced.
-Current references remain exact; old results and reviews remain historical until
-explicitly linked into a current review through a current assignment/result. A transition
-to `complete` therefore needs a passing review naming that new feature revision in
-the same transaction (or already present), as BUILD-02 requires. Automated invalidation
-and adoption of unaffected evidence remain later workflow policy.
+A transition to `complete` can use a passing review of that exact revision or
+cite an earlier passing review through `completionEvidence: { review, reason }`.
+Carry-forward requires unchanged feature content and disposition across the
+intervening revisions. The cited review still names the original assignment,
+results and delivered artifacts. The reason records why that evidence still applies.
 
 - Which project license should accompany publication? The input repository supplied
   no license; this package does not select one on the operator's behalf.
@@ -405,7 +407,8 @@ node "$factory_cli" unclassified --db /tmp/pilot.sqlite --project pilot
 ```
 
 Offsets are zero-based, half-open UTF-16 indices, as in JavaScript `text.slice(start,
-end)`. Every original character counts, including whitespace. The coverage output
+end)`. Every original character counts, including whitespace. A range containing
+only whitespace can be classified independently. The coverage output
 contains exact mapped excerpts, feature/criterion revision references and exact
 unmapped ranges. In this example, `Keep history.\n` remains visible in both coverage
 and the unclassified view. Overlapping mappings may associate one passage with
@@ -440,6 +443,10 @@ disposition is `unclassified` while any text is unmapped, `work` for fully mappe
 content containing work, or the sole non-work disposition. Fully mapped content
 with several non-work dispositions retains the aggregate `unclassified` token;
 the per-range report and unclassified view use actual range coverage.
+
+Initialization compares the complete canonical project record when checking a
+replay. Capture and mapping replays return the revisions written by the original
+mutation. Use `coverage` or `outbox` to read current coverage or delivery state.
 
 ### Deliver through the FirstMate inbox
 
@@ -650,8 +657,11 @@ every current criterion must map to a criterion of the reused artifact's feature
 This also supports rechecking existing artifacts for a newer feature revision.
 The passed current-request comparison can bind historical scope pointers to an
 additional request; directly applicable scope entries still have to agree with
-that request. Reused prerequisite criteria are translated through the recorded
-criterion map in the generated ready plan.
+that request. Reuse translates prerequisite criteria through the recorded map in
+the generated ready plan. A prerequisite must supply every criterion a dependency
+translates to. Repeated reuse composes the prior checked plan's mappings for
+retained tasks and slices. Tasks authored against the current feature keep their
+explicit criteria.
 Earlier designs with prose reuse findings can be selected through this check;
 plans need structured slices and feature-verification steps to pass readiness.
 

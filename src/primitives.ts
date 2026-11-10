@@ -9,7 +9,7 @@ export const RefSchema = z.strictObject({ id: IdSchema, revision: RevisionSchema
 export const SourceRefSchema = z.strictObject({
   uri: TextSchema,
   record: RefSchema.optional(),
-  excerpt: TextSchema.optional(),
+  excerpt: z.string().min(1).optional(),
 });
 export const ArtifactSchema = z.strictObject({
   uri: TextSchema,

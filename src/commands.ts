@@ -6,6 +6,7 @@ import {
   CriterionResultSchema, DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema,
   ImplementationPlanRevisionSchema, ObservationSchema, ProductReviewSchema, SelectedContextSchema,
   FeatureRevisionSchema, CriterionSchema, UnderstandingRevisionSchema, StageRevisionSchema,
+  ProjectSchema,
 } from './records.js';
 
 const envelope = {
@@ -24,7 +25,7 @@ export const CaptureRequestCommandSchema = z.strictObject({
 export const DesignPlanFeatureCommandSchema = z.strictObject({
   ...mutation, command: z.literal('design_plan_feature'),
   payload: z.union([z.strictObject({
-    feature: RefSchema, sourceRefs: z.array(SourceRefSchema).min(1),
+    feature: RefSchema.nullable(), sourceRefs: z.array(SourceRefSchema).min(1),
     existingDesignRefs: z.array(SourceRefSchema), expectedRevisions: z.array(RefSchema),
     design: DesignRevisionSchema, plan: ImplementationPlanRevisionSchema,
     tasks: z.array(DetailedPlanTaskSchema).min(1),
@@ -36,7 +37,7 @@ export const DesignPlanFeatureCommandSchema = z.strictObject({
 });
 export const RecordDecisionSuggestionCommandSchema = z.strictObject({
   ...mutation, command: z.literal('record_decision_suggestion'),
-  payload: z.strictObject({ decision: DecisionChangeSchema,
+  payload: z.strictObject({ decision: DecisionChangeSchema, project: ProjectSchema.optional(),
     // Intake can create an initial feature and its criteria alongside its mapping.
     // All content participates in the command digest and the same store transaction.
     intakeRecords: z.array(z.union([FeatureRevisionSchema, CriterionSchema])).optional(),
@@ -56,12 +57,14 @@ export const MapManageExecutionTaskCommandSchema = z.strictObject({
   }).refine((value) => value.action !== 'set_priority' || value.priority !== undefined,
     'Priority change requires a priority')
     .refine((value) => value.action !== 'create' || value.task.kind === 'new',
-      'Create requires a new task description'),
+      'Create requires a new task description')
+    .refine((value) => value.feature !== null || value.criteria.length === 0,
+      'Mapping product criteria requires a feature'),
 });
 export const PrepareAssignmentCommandSchema = z.strictObject({
   ...mutation, command: z.literal('prepare_assignment'),
   payload: z.strictObject({
-    detailedPlanTask: RefSchema, feature: RefSchema, design: RefSchema, plan: RefSchema,
+    detailedPlanTask: RefSchema, feature: RefSchema.nullable(), design: RefSchema, plan: RefSchema,
     firstMateTaskId: IdSchema, selectedContext: z.array(SelectedContextSchema).min(1),
     returnLocation: TextSchema,
   }),

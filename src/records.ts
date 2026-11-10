@@ -40,6 +40,7 @@ export const FeatureRevisionSchema = record('feature_revision', {
   exclusions: z.array(TextSchema), priority: z.number().int(), decisions: z.array(RefSchema),
   changeReason: TextSchema, previousRevision: RevisionSchema.optional(),
   state: FeatureStateSchema, methodStage: MethodStageSchema, disposition: DispositionSchema,
+  completionEvidence: z.strictObject({ review: RefSchema, reason: TextSchema }).optional(),
 });
 
 export const CriterionSchema = record('criterion', {
@@ -83,7 +84,7 @@ export const PlanReadinessRevisionSchema = record('plan_readiness_revision', {
 }).refine((value) => value.ready === (value.findings.length === 0), 'Readiness must agree with findings');
 
 export const DesignRevisionSchema = record('design_revision', {
-  sourceRefs: z.array(SourceRefSchema).min(1), feature: RefSchema,
+  sourceRefs: z.array(SourceRefSchema).min(1), feature: RefSchema.nullable(),
   productBehavior: TextSchema, examples: z.array(TextSchema), technicalDesign: TextSchema,
   reuseFindings: z.array(TextSchema).min(1), interfaces: z.array(TextSchema), dataFlow: TextSchema,
   decisions: z.array(RefSchema), alternatives: z.array(TextSchema), testingApproach: TextSchema,
@@ -104,7 +105,7 @@ export const DependencySchema = z.strictObject({
   ]),
 });
 export const ImplementationPlanRevisionSchema = record('implementation_plan_revision', {
-  feature: RefSchema, design: RefSchema, deliverySequence: z.array(RefSchema).min(1),
+  feature: RefSchema.nullable(), design: RefSchema, deliverySequence: z.array(RefSchema).min(1),
   strategy: ExecutionStrategySchema, strategyReason: TextSchema, integrationApproach: TextSchema,
   dependencies: z.array(DependencySchema), priorities: z.array(z.strictObject({
     taskId: IdSchema, priority: z.number().int(),
@@ -122,7 +123,7 @@ export const ImplementationPlanRevisionSchema = record('implementation_plan_revi
 });
 
 export const DetailedPlanTaskSchema = record('detailed_plan_task', {
-  plan: RefSchema, design: RefSchema, feature: RefSchema,
+  plan: RefSchema, design: RefSchema, feature: RefSchema.nullable(),
   // Drafts retain traceability while their actionable detail is being prepared.
   draft: z.boolean().optional(),
   expectedBehavior: TextSchema.optional(), criteria: z.array(RefSchema),
@@ -134,6 +135,8 @@ export const DetailedPlanTaskSchema = record('detailed_plan_task', {
   decisionsToKeep: z.array(RefSchema).optional(), verificationMethod: TextSchema.optional(),
 }).refine((value) => value.draft || (value.criteria.length > 0 || value.maintenanceObjective !== undefined),
   'Task needs criteria or an explicit maintenance objective')
+  .refine((value) => value.feature !== null || (value.maintenanceObjective !== undefined && value.criteria.length === 0),
+    'Standalone maintenance requires an objective and no product criteria')
   .refine((value) => value.draft || ['expectedBehavior', 'designRefs', 'boundaries', 'reuseTargets',
     'inputs', 'outputs', 'blockers', 'verificationCases', 'returnRequirements'].every(
     (field) => value[field as keyof typeof value] !== undefined), 'Non-draft task requires complete legacy detail');
@@ -142,8 +145,9 @@ export const TaskMappingSchema = record('task_mapping', {
   firstMateTaskId: IdSchema, feature: RefSchema.nullable(), criteria: z.array(RefSchema),
   detailedPlanTask: RefSchema.nullable(), dependencies: z.array(IdSchema), legacy: z.boolean(),
   disposition: DispositionSchema,
-}).refine((value) => value.legacy || (value.feature !== null && value.detailedPlanTask !== null),
-  'Managed mapping requires feature and detailed task references');
+}).refine((value) => value.legacy || (value.detailedPlanTask !== null &&
+  (value.feature !== null || value.criteria.length === 0)),
+  'Managed mapping requires a detailed task and a feature for product criteria');
 
 export const SelectedContextSchema = z.strictObject({
   source: SourceRefSchema, artifact: ArtifactSchema.optional(), extract: TextSchema.optional(),
@@ -152,12 +156,13 @@ export const SelectedContextSchema = z.strictObject({
   'Truncated context must retain the supplied extract and reachable source');
 
 export const AssignmentSchema = record('assignment', {
-  attemptId: IdSchema, feature: RefSchema, design: RefSchema, plan: RefSchema,
+  attemptId: IdSchema, feature: RefSchema.nullable(), design: RefSchema, plan: RefSchema,
   detailedPlanTask: RefSchema, firstMateTaskId: IdSchema,
   sourceRefs: z.array(SourceRefSchema).min(1), selectedContext: z.array(SelectedContextSchema).min(1),
   criteria: z.array(RefSchema), prerequisiteArtifacts: z.array(ArtifactSchema), returnLocation: TextSchema,
   instructionText: TextSchema, instructionFidelity: ComparisonSchema,
-});
+}).refine((value) => value.feature !== null || value.criteria.length === 0,
+  'Standalone maintenance assignments cannot name product criteria');
 
 export const CriterionResultSchema = record('criterion_result', {
   assignment: RefSchema, criterion: RefSchema, result: CriterionResultStateSchema,

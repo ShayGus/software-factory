@@ -144,7 +144,16 @@ export class ProjectStore {
         .get(command.projectId, command.idempotencyKey);
       if (receipt) {
         const first = parse(ReceiptSchema, JSON.parse(String(receipt.body)));
-        if (commandDigest(first.command) !== commandDigest(command)) fail('idempotency_conflict');
+        let original = first.command;
+        // Older initialization receipts recorded the project in their result only.
+        if (command.command === 'record_decision_suggestion' && command.payload.project &&
+          original.command === 'record_decision_suggestion' && !original.payload.project && original.expectedRevision === 0) {
+          const { targetId } = original;
+          const ref = first.result.records.find((record) => record.id === targetId && record.revision === 1);
+          const project = ref && this.get(original.projectId, ref.id, ref.revision);
+          if (project?.kind === 'project') original = { ...original, payload: { ...original.payload, project } };
+        }
+        if (commandDigest(original) !== commandDigest(command)) fail('idempotency_conflict');
         return first.result;
       }
       // An imported operation without a receipt still reserves its key: never execute it again.
