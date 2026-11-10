@@ -2,7 +2,7 @@
   "name": "tasks-axi",
   "version": "0.2.6",
   "packageManager": "pnpm@11.1.1",
-  "description": "AXI-compliant task/backlog CLI — token-efficient TOON output, pluggable backends, byte-exact markdown round-trip, idempotent mutations",
+  "description": "AXI-compliant task/backlog CLI \u2014 token-efficient TOON output, pluggable backends, byte-exact markdown round-trip, idempotent mutations",
   "type": "module",
   "repository": {
     "type": "git",
@@ -28,7 +28,8 @@
     "dist/**/*.js",
     "skills/tasks-axi",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "scripts/beads-docker-exec.mjs"
   ],
   "publishConfig": {
     "access": "public"
