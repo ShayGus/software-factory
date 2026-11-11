@@ -3,6 +3,14 @@ import { planningRecord } from './planning-checks.js';
 import { missingAssignmentContext, narrowedInstruction, requiredAssignmentContext } from './instruction-context.js';
 
 export interface InstructionFinding { code: string; path: string; message: string }
+/** Check operative task scope separately from quoted sources and acceptance
+ * examples. Exact rendering cannot make a contradictory task faithful. */
+export function taskScopeFindings(records: FactoryRecord[], assignment: Assignment): InstructionFinding[] {
+  const task = planningRecord(records, assignment.detailedPlanTask);
+  const text = task?.kind === 'detailed_plan_task' ? [task.expectedBehavior ?? '', ...task.boundaries ?? []].join('\n') : '';
+  return narrowedInstruction(records, assignment, text) ? [{ code: 'narrowed_generality', path: 'detailedPlanTask',
+    message: 'Operative task instructions narrow an original example to the entire implementation scope' }] : [];
+}
 export function scaffoldParts(scaffold: string) {
   const headings = [...scaffold.matchAll(/^#{1,2} [^\r\n]*(?:\r?\n|$)/gm)];
   const section = (title: string) => {
@@ -92,7 +100,7 @@ export function renderWorkerBrief(records: FactoryRecord[], assignment: Assignme
  * finding, even if it might be a harmless paraphrase. Amend the plan and regenerate
  * instead of allowing changed prose to approve itself. */
 export function instructionFidelityFindings(records: FactoryRecord[], assignment: Assignment, brief: string): InstructionFinding[] {
-  const findings: InstructionFinding[] = [];
+  const findings: InstructionFinding[] = taskScopeFindings(records, assignment);
   const add = (code: string, path: string, message: string) => findings.push({ code, path, message });
   for (const source of missingAssignmentContext(records, assignment)) {
     add('missing_required_context', 'selectedContext', `Missing required context: ${JSON.stringify(source)}`);

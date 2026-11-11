@@ -1,7 +1,7 @@
 import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { missingAssignmentContext, narrowedInstruction } from './instruction-context.js';
-import { instructionBodies } from './instructions.js';
+import { instructionBodies, taskScopeFindings } from './instructions.js';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
 import {
@@ -681,6 +681,8 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
   if (!owner.brief && narrowedInstruction(validated.data, owner, owner.instructionText)) ctx.add(owner,
     'narrowed_generality', 'instructionText', 'Instructions narrow an original example to the entire scope');
   if (owner.brief) {
+    for (const finding of taskScopeFindings(validated.data, owner)) ctx.add(owner,
+      finding.code, finding.path, finding.message);
     try {
       if (owner.instructionText !== instructionBodies(validated.data, owner).spec) ctx.add(owner,
         'instruction_fidelity', 'instructionText', 'Generated assignment text differs from its detailed task and design');

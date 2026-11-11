@@ -7,14 +7,15 @@ import test from 'node:test';
 import {
   ProjectStore, RecordsSchema, prepareWorkerBrief, checkWorkerBrief, requiredAssignmentContext,
   scaffoldParts, validateAssignmentForDispatch, validateRecords, ref,
-  selectAssignmentContext, type Assignment, type PrepareWorkerBriefInput,
+  selectAssignmentContext, digestText, type Artifact, type Assignment, type FactoryRecord, type PrepareWorkerBriefInput,
 } from '../src/index.js';
 
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 const scaffold = readFileSync(new URL('../../fixtures/firstmate-brief.md', import.meta.url), 'utf8');
 const scenario = JSON.parse(readFileSync(new URL('../../fixtures/scenarios/erpnext-narrowed-assignment.json', import.meta.url), 'utf8'));
 const projectId = 'project-1';
-function setup(options: { omitSource?: boolean; crlf?: boolean; dependencies?: boolean } = {}) {
+function setup(options: { omitSource?: boolean; crlf?: boolean; dependencies?: boolean;
+  editRecords?: (records: FactoryRecord[]) => void } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'sf-brief-'));
   const database = join(directory, 'records.sqlite');
   const store = new ProjectStore(database);
@@ -30,6 +31,7 @@ function setup(options: { omitSource?: boolean; crlf?: boolean; dependencies?: b
     { prerequisiteTaskId: prerequisite.id, consumerTaskId: task.id, reason: 'Use the verified common behavior',
       needs: { kind: 'criterion', criterion: task.criteria[0]! } }];
   }
+  options.editRecords?.(records);
   store.importProject({ schemaVersion: 1, projectId, history: records, receipts: [] });
   const template = baseline.find((record): record is Assignment => record.kind === 'assignment')!;
   const request = records.find((record) => record.kind === 'request'); assert.ok(request?.kind === 'request');
@@ -309,4 +311,138 @@ test('recorded handover context stays pinned when later dependency results arriv
   assert.ok(pinned.records.some((record) => record.id === previous.id && record.revision === 1));
   assert.ok(!pinned.records.some((record) => record.id === previous.id && record.revision === 2));
   assert.ok(pinned.prerequisites.some((artifact) => artifact.revision === 'fixture-commit-1'));
+});
+
+test('review 1094-1: exact generation cannot approve a task narrowed from the original general design', () => {
+  const flow = setup({ editRecords: (records) => {
+    const task = records.find((record) => record.kind === 'detailed_plan_task'); assert.ok(task?.kind === 'detailed_plan_task');
+    task.expectedBehavior = scenario.edits[0].value;
+  } });
+  try {
+    const report = flow.prepare(); assert.equal(report.ok, false, JSON.stringify(report));
+    assert.ok(report.findings.some((finding) => finding.code === 'narrowed_generality'));
+    assert.equal(flow.check().ok, false);
+    assert.equal(flow.assignment().instructionFidelity.result, 'failed');
+    // A manually asserted pass must not bypass the operative-text check either.
+    const records = flow.store.history(projectId);
+    const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
+    assignment.instructionFidelity = { ...assignment.instructionFidelity, result: 'passed', findings: [] };
+    const dispatch = validateAssignmentForDispatch(records, ref(assignment)); assert.equal(dispatch.ok, false);
+    if (!dispatch.ok) assert.ok(dispatch.issues.some((finding) => finding.code === 'narrowed_generality'));
+  } finally { flow.close(); }
+});
+
+for (const identity of ['digest', 'revision'] as const) test(`review 1094-2: one snapshot cannot cover two ${identity} identities of the same URI`, () => {
+  const uri = 'fixture://versioned-output';
+  const first: Artifact = { uri, ...(identity === 'digest' ? { digest: digestText('first output') } : { revision: 'first-revision' }) };
+  const second: Artifact = { uri, ...(identity === 'digest' ? { digest: digestText('second output') } : { revision: 'second-revision' }) };
+  const flow = setup({ dependencies: true, editRecords: (records) => {
+    const plan = records.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+    const dependency = plan.dependencies[0]!;
+    plan.dependencies = [{ ...dependency, needs: { kind: 'artifact', artifact: first } },
+      { ...dependency, needs: { kind: 'artifact', artifact: second } }];
+  } });
+  try {
+    const file = flow.sourceFiles.find((entry) => entry.source.uri === uri)!; writeFileSync(file.path, 'first output');
+    const report = flow.prepare(); assert.equal(report.ok, false, JSON.stringify(report));
+    assert.ok(report.findings.some((finding) => finding.code === 'missing_required_context' && finding.message.includes(uri) &&
+      finding.message.includes(identity === 'digest' ? second.digest! : second.revision!)), JSON.stringify(report));
+    assert.equal(flow.check().ok, false);
+  } finally { flow.close(); }
+});
+
+for (const via of ['designRefs', 'reuseTargets', 'sourceRefs'] as const) test(`review 1094-3: ${via}-only record originals are bundled at the selected revision`, () => {
+  const flow = setup({ editRecords: (records) => {
+    const design = records.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+    const original = { ...structuredClone(design), id: 'source-only-design', technicalDesign: 'Large original design. '.repeat(2000) };
+    records.push(original, { ...original, revision: 2, technicalDesign: 'Later unrelated design revision' });
+    const source = { uri: 'factory:reference/source-only-design', record: ref(original) };
+    if (via === 'sourceRefs') design.sourceRefs.push(source);
+    else {
+      const task = records.find((record) => record.kind === 'detailed_plan_task'); assert.ok(task?.kind === 'detailed_plan_task');
+      task[via]!.push(source);
+    }
+  } });
+  try {
+    flow.input.maxSourceChars = 80;
+    const report = flow.prepare(); assert.equal(report.ok, true, JSON.stringify(report));
+    const context = flow.assignment().selectedContext.find((context) => context.source.record?.id === 'source-only-design')!;
+    assert.equal(context.truncated, true);
+    const coverage = JSON.parse(readFileSync(report.sidecarPath, 'utf8'));
+    assert.ok(coverage.revisions.some((record: { id: string; revision: number }) => record.id === 'source-only-design' && record.revision === 1));
+    assert.ok(!coverage.revisions.some((record: { id: string; revision: number }) => record.id === 'source-only-design' && record.revision === 2));
+    assert.equal(coverage.records.find((record: { id: string }) => record.id === 'source-only-design').technicalDesign,
+      'Large original design. '.repeat(2000));
+    assert.equal(flow.check().ok, true);
+  } finally { flow.close(); }
+});
+
+for (const faithful of [
+  'Feature X works for every connected system, with ERPNext only an example.',
+  'Feature X is not limited to ERPNext.',
+  'Implement the general feature; do not implement only ERPNext.',
+]) test(`review 1094-4: faithful instructions dispatch: ${faithful}`, () => {
+  const records = structuredClone(baseline);
+  const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
+  assignment.instructionText = faithful;
+  const report = validateAssignmentForDispatch(records, ref(assignment));
+  assert.equal(report.ok, true, JSON.stringify(report));
+});
+
+for (const identity of ['digest', 'revision'] as const) test(`review 1094-2: distinct snapshots satisfy both ${identity} versions without collapsing coverage`, () => {
+  const uri = 'fixture://versioned-output';
+  const versions: Artifact[] = ['first', 'second'].map((version) => ({ uri,
+    ...(identity === 'digest' ? { digest: digestText(`${version} output`) } : { revision: `${version}-revision` }) }));
+  const flow = setup({ dependencies: true, editRecords: (records) => {
+    const plan = records.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+    plan.dependencies = versions.map((artifact) => ({ ...plan.dependencies[0]!, needs: { kind: 'artifact', artifact } }));
+  } });
+  try {
+    const snapshots = versions.map((artifact, index) => {
+      const path = join(flow.directory, `version-${index}.txt`); writeFileSync(path, `${index === 0 ? 'first' : 'second'} output`);
+      return { source: { uri }, artifact, path };
+    });
+    const report = prepareWorkerBrief(flow.store, { ...flow.input,
+      sourceFiles: [...flow.sourceFiles.filter((entry) => entry.source.uri !== uri), ...snapshots] });
+    assert.equal(report.ok, true, JSON.stringify(report));
+    const contexts = flow.assignment().selectedContext.filter((context) => context.source.uri === uri);
+    assert.equal(contexts.length, 2);
+    for (const version of versions) assert.ok(contexts.some((context) => context.artifact?.revision === version.revision &&
+      (!version.digest || context.artifact?.digest === version.digest)));
+    assert.equal(flow.check().ok, true);
+    // The presence of the URI alone cannot satisfy the second pinned version.
+    const records = flow.store.history(projectId);
+    const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
+    assignment.selectedContext = assignment.selectedContext.filter((context) => context.source.uri !== uri || context.artifact?.uri === snapshots[0]!.path);
+    assert.equal(validateAssignmentForDispatch(records, ref(assignment)).ok, false);
+    const missing = prepareWorkerBrief(flow.store, { ...flow.input, expectedRevision: 1, idempotencyKey: 'missing-second-version',
+      sourceFiles: [...flow.sourceFiles.filter((entry) => entry.source.uri !== uri), snapshots[0]!] });
+    assert.equal(missing.ok, false);
+    const missingVersions = missing.findings.filter((finding) => finding.code === 'missing_required_context' && finding.message.includes(uri));
+    assert.ok(missingVersions.length > 0);
+    assert.ok(missingVersions.every((finding) => finding.message.includes(identity === 'digest' ? versions[1]!.digest! : versions[1]!.revision!)));
+  } finally { flow.close(); }
+});
+
+test('review 1094-1: quoted source restrictions do not become operative task instructions', () => {
+  const flow = setup();
+  try {
+    writeFileSync(flow.sourceFiles[1]!.path, 'Rejected draft instructions: Implement feature X for ERPNext only.');
+    const report = flow.prepare(); assert.equal(report.ok, true, JSON.stringify(report));
+    assert.equal(flow.check().ok, true);
+  } finally { flow.close(); }
+});
+
+for (const restriction of [
+  'Implement feature X for ERPNext only.',
+  'Implement feature X only ERPNext.',
+  'Feature X is limited to ERPNext.',
+  'Feature X must not be limited to ERPNext; implement ERPNext only.',
+  'ERPNext is only an example, but implement only ERPNext.',
+]) test(`review 1094-4: actual restrictions remain blocked: ${restriction}`, () => {
+  const records = structuredClone(baseline);
+  const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
+  assignment.instructionText = restriction;
+  const report = validateAssignmentForDispatch(records, ref(assignment)); assert.equal(report.ok, false);
+  if (!report.ok) assert.ok(report.issues.some((finding) => finding.code === 'narrowed_generality'));
 });

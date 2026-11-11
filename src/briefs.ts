@@ -6,18 +6,19 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { PrepareAssignmentCommandSchema } from './commands.js';
 import { ref } from './intake.js';
-import { IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
+import { ArtifactSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
 import { AssignmentSchema, DetailedPlanTaskSchema, type Assignment, type FactoryRecord } from './records.js';
 import { planningRecord } from './planning-checks.js';
 import { assignmentCriteria, digestText, missingAssignmentContext, recordSource, requiredAssignmentContext,
-  sameSource, selectAssignmentContext } from './instruction-context.js';
+  sameSource, sameArtifactIdentity, selectAssignmentContext } from './instruction-context.js';
 import { instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, type InstructionFinding } from './instructions.js';
 import { validateAssignmentForDispatch } from './rules.js';
 import { ProjectStore, StoreError } from './store.js';
 
 const SourceFileSchema = z.strictObject({ source: SourceRefSchema, path: TextSchema,
+  artifact: ArtifactSchema.optional(),
   start: z.number().int().nonnegative().optional(), end: z.number().int().positive().optional(),
-});
+}).refine((value) => !value.artifact || value.artifact.uri === value.source.uri, 'Snapshot artifact URI must match its source');
 export const PrepareWorkerBriefInputSchema = z.strictObject({
   projectId: IdSchema, assignmentId: IdSchema, attemptId: IdSchema,
   expectedRevision: z.number().int().nonnegative(), idempotencyKey: IdSchema, issuedAt: TimestampSchema,
@@ -105,14 +106,17 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
       findings: [], reviewerSession: 'factory:deterministic-instruction-fidelity', comparedAt: data.issuedAt },
     brief: { path: briefPath, sidecarPath, scaffold, sidecarDigest: 'pending' },
   });
-  const selection = selectAssignmentContext(records, assignment, (source) => {
-    const file = sourceFiles.find((entry) => sameSource(entry.source, source));
+  const selection = selectAssignmentContext(records, assignment, (source, artifact) => {
+    const file = sourceFiles.find((entry) => sameSource(entry.source, source) && entry.artifact &&
+      artifact && sameArtifactIdentity(entry.artifact, artifact)) ??
+      sourceFiles.find((entry) => sameSource(entry.source, source) && !entry.artifact);
     const uri = file?.path ?? source.uri;
     // Record refs must resolve locally; never substitute an unrelated file for a
     // missing record revision. External sources require a readable local copy.
     if (source.record) return undefined;
     const text = localText(uri);
     return text === undefined ? undefined : { text, uri,
+      ...(file?.artifact ? { identity: file.artifact } : {}),
       ...(file?.start !== undefined ? { start: file.start } : {}), ...(file?.end !== undefined ? { end: file.end } : {}) };
   }, data.maxSourceChars);
   if (selection.selectedContext.some((context) => context.artifact &&

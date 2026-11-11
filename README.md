@@ -792,7 +792,15 @@ is read directly. Other external references require a `sourceFiles` entry matchi
 the complete `SourceRef` (URI, optional record and excerpt); no network retrieval
 occurs. Snapshots must be readable UTF-8 text. Unsupported/binary or unavailable
 sources are explicit missing context. Record references resolve at their exact
-revision from the project store and are included in the sidecar.
+revision from the project store and are included in the sidecar, including records
+selected only through design, reuse or source references.
+
+When several prerequisite versions share a URI, supply one snapshot per complete
+artifact identity. Add `artifact: {uri, revision?, digest?}` to each `sourceFiles`
+entry, matching that prerequisite's exact declared fields. A lone unversioned
+snapshot cannot establish which version it represents. Each version is selected
+and checked separately; missing-context findings include its revision/digest.
+The supplied snapshot retains the declared revision and a verified content digest.
 
 `selectAssignmentContext` selects the feature, design, plan, detailed task,
 original requests and sources, assigned criteria, decisions, exclusions, dependency
@@ -835,7 +843,11 @@ The check is deterministic and conservative. Exact generated content must surviv
 even an apparently harmless paraphrase requires regeneration. A bounded linguistic
 check also rejects explicit example-only restrictions such as the BUILD-02
 “Implement feature X for ERPNext only” scenario, including when all criterion IDs
-and a claimed fidelity pass remain. Explicit example roles come from BUILD-06
+and a claimed fidelity pass remain. Task behavior and boundaries are checked even
+when a brief exactly matches the generator; quoted source context is excluded
+from this operative-scope check. Example declarations such as “ERPNext only an
+example” and negated restrictions such as “not limited to ERPNext” remain faithful.
+Explicit example roles come from BUILD-06
 understanding records or the captured request's `X is an example` wording. This
 cannot establish the semantic completeness of arbitrary prose or detect a
 requirement never represented by source analysis; original sources remain available

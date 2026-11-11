@@ -71,6 +71,7 @@ export const PrepareAssignmentCommandSchema = z.strictObject({
       attemptId: IdSchema, briefPath: TextSchema, sidecarPath: TextSchema,
       scaffold: TextSchema, maxSourceChars: z.number().int().positive(),
       sourceFiles: z.array(z.strictObject({ source: SourceRefSchema, path: TextSchema,
+        artifact: ArtifactSchema.optional(),
         start: z.number().int().nonnegative().optional(), end: z.number().int().positive().optional() })),
     }).optional(),
   }),

@@ -12,8 +12,20 @@ export const recordSource = (record: Ref): Source => ({
 });
 export const sameSource = (a: Source, b: Source) => a.uri === b.uri && a.excerpt === b.excerpt &&
   (a.record ? !!b.record && samePlanningRef(a.record, b.record) : !b.record);
+export const sameArtifactIdentity = (a: Artifact, b: Artifact) =>
+  a.uri === b.uri && a.revision === b.revision && a.digest === b.digest;
+export type MissingContext = Source & { artifact?: Artifact };
+type ContextRequirement = { source: Source; artifact?: Artifact };
 const unique = <T>(items: T[], equal: (a: T, b: T) => boolean) =>
   items.filter((item, index) => items.findIndex((other) => equal(item, other)) === index);
+function contextRequirements(sources: Source[], artifacts: Artifact[]): ContextRequirement[] {
+  return sources.flatMap((source) => {
+    const versions = source.record ? [] : unique(artifacts.filter((artifact) => artifact.uri === source.uri), sameArtifactIdentity);
+    return versions.length ? versions.map((artifact) => ({ source, artifact })) : [{ source }];
+  });
+}
+const missingContext = ({ source, artifact }: ContextRequirement): MissingContext =>
+  ({ ...source, ...(artifact ? { artifact } : {}) });
 
 export function assignmentCriteria(records: FactoryRecord[], plan: ImplementationPlanRevision, task: Ref): Ref[] {
   const detailTask = planningRecord(records, task);
@@ -74,9 +86,7 @@ export function requiredAssignmentContext(records: FactoryRecord[], assignment: 
       record?.kind === 'stage_revision' ? [record.artifact, ...(record.previousStage ? [record.previousStage] : [])] : [];
     for (const link of links) if (!refs.some((ref) => samePlanningRef(ref, link))) refs.push(link);
   }
-  const selectedRecords = unique(refs, samePlanningRef).flatMap((ref) => {
-    const record = planningRecord(records, ref); return record ? [record] : [];
-  });
+  const selectedRecords: FactoryRecord[] = [];
   const sources: Source[] = unique(refs, samePlanningRef).map(recordSource);
   if (design?.kind === 'design_revision') sources.push(...design.sourceRefs);
   if (task?.kind === 'detailed_plan_task') sources.push(...task.designRefs ?? [], ...task.reuseTargets ?? []);
@@ -94,16 +104,24 @@ export function requiredAssignmentContext(records: FactoryRecord[], assignment: 
       sources.push({ uri: `factory:criterion-output/${encodeURIComponent(dependency.prerequisiteTaskId)}/${encodeURIComponent(criterion.id)}@${criterion.revision}` });
     }
   }
-  for (const record of selectedRecords) {
+  // Collect source-linked record originals before finalizing sidecar coverage.
+  // Follow source references at exact revisions, including reused designs that
+  // are not a primary assignment/design/plan pointer.
+  for (let index = 0; index < sources.length; index++) {
+    const source = sources[index]!;
+    const record = source.record && planningRecord(records, source.record);
+    if (!record || selectedRecords.some((selected) => samePlanningRef(selected, record))) continue;
+    selectedRecords.push(record);
     if (record.kind === 'request') { sources.push(record.source); artifacts.push(...record.attachments); }
-    if (record.kind === 'criterion' || record.kind === 'decision_change') sources.push(...record.sourceRefs);
+    if (record.kind === 'criterion' || record.kind === 'decision_change' || record.kind === 'design_revision') sources.push(...record.sourceRefs);
+    if (record.kind === 'detailed_plan_task') sources.push(...record.designRefs ?? [], ...record.reuseTargets ?? []);
   }
   sources.push(...artifacts.map((artifact) => ({ uri: artifact.uri })));
   return { requests, records: selectedRecords, sources: unique(sources, sameSource), prerequisites, artifacts, dependencies };
 }
 
-export type LoadedSource = { text: string; uri: string; start?: number; end?: number };
-export type SourceLoader = (source: Source) => LoadedSource | undefined;
+export type LoadedSource = { text: string; uri: string; start?: number; end?: number; identity?: Artifact };
+export type SourceLoader = (source: Source, artifact?: Artifact) => LoadedSource | undefined;
 
 /** Extracts are verbatim UTF-16 slices. A caller can select a task-relevant range;
  * otherwise the beginning is supplied with an explicit truncation flag. Full
@@ -113,13 +131,16 @@ export function selectAssignmentContext(records: FactoryRecord[], assignment: Pa
   if (!Number.isSafeInteger(maxSourceChars) || maxSourceChars < 1) throw new Error('invalid_context_limit');
   const required = requiredAssignmentContext(records, assignment);
   const selectedContext: Context[] = [];
-  const missing: Source[] = [];
-  for (const source of required.sources) {
+  const missing: MissingContext[] = [];
+  for (const requirement of contextRequirements(required.sources, required.artifacts)) {
+    const { source, artifact } = requirement;
     const record = source.record && planningRecord(records, source.record);
-    if (source.record && !record) { missing.push(source); continue; }
+    if (source.record && !record) { missing.push(missingContext(requirement)); continue; }
     const loaded = record ? { text: record.kind === 'request' ? record.originalText : JSON.stringify(record, null, 2),
-      uri: recordSource(record).uri } : load(source);
-    if (!loaded) { missing.push(source); continue; }
+      uri: recordSource(record).uri } : load(source, artifact);
+    const versions = unique(required.artifacts.filter((candidate) => candidate.uri === source.uri), sameArtifactIdentity);
+    if (!loaded || (artifact && ((loaded.identity && !sameArtifactIdentity(loaded.identity, artifact)) ||
+      (versions.length > 1 && !loaded.identity)))) { missing.push(missingContext(requirement)); continue; }
     const { text, uri } = loaded;
     const start = loaded.start ?? (source.excerpt ? text.indexOf(source.excerpt) : 0);
     const requestedEnd = loaded.end ?? (source.excerpt ? start + source.excerpt.length : text.length);
@@ -129,10 +150,9 @@ export function selectAssignmentContext(records: FactoryRecord[], assignment: Pa
     if (splitsPair(end)) end--;
     if (start < 0 || requestedEnd > text.length || splitsPair(start) || splitsPair(requestedEnd) ||
       end <= start || !text.slice(start, end).trim()) {
-      missing.push(source); continue;
+      missing.push(missingContext(requirement)); continue;
     }
-    const artifact = required.artifacts.find((artifact) => artifact.uri === source.uri);
-    if (artifact?.digest && artifact.digest !== digestText(text)) { missing.push(source); continue; }
+    if (artifact?.digest && artifact.digest !== digestText(text)) { missing.push(missingContext(requirement)); continue; }
     selectedContext.push({ source, extract: text.slice(start, end), truncated: start !== 0 || end !== text.length,
       artifact: { uri, digest: digestText(text), ...(artifact?.revision ? { revision: artifact.revision } : {}) } });
   }
@@ -142,15 +162,16 @@ export function selectAssignmentContext(records: FactoryRecord[], assignment: Pa
 /** Existing assignment contracts also require the essential request/design/plan/
  * task context. Generated assignments additionally account for every selected
  * decision, criterion, original source and dependency artifact. */
-export function missingAssignmentContext(records: FactoryRecord[], assignment: Assignment): Source[] {
+export function missingAssignmentContext(records: FactoryRecord[], assignment: Assignment): MissingContext[] {
   const required = requiredAssignmentContext(records, assignment, assignment.selectedContext);
   const sources = assignment.brief ? required.sources : [assignment.design, assignment.plan, assignment.detailedPlanTask,
     ...required.requests].map(recordSource);
-  return sources.filter((source) => !assignment.selectedContext.some((context) => {
+  return contextRequirements(sources, assignment.brief ? required.artifacts : []).filter(({ source, artifact }) => !assignment.selectedContext.some((context) => {
     const matches = assignment.brief ? sameSource(context.source, source) :
       context.source.record && source.record && samePlanningRef(context.source.record, source.record);
-    return matches && (!assignment.brief || (context.extract !== undefined && context.artifact !== undefined));
-  }));
+    return matches && (!assignment.brief || (context.extract !== undefined && context.artifact !== undefined &&
+      (!artifact || (context.artifact.revision === artifact.revision && (!artifact.digest || context.artifact.digest === artifact.digest)))));
+  })).map(missingContext);
 }
 
 /** Deliberately bounded linguistic check of explicit example-only instructions.
@@ -170,6 +191,12 @@ export function narrowedInstruction(records: FactoryRecord[], assignment: Assign
   }
   return terms.some((term) => {
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(?:${escaped}\\s+(?:only|alone)|only\\s+${escaped}|limited\\s+to\\s+${escaped}|${escaped}[- ]specific)`, 'iu').test(text);
+    const restriction = new RegExp(`(?<![\\p{L}\\p{N}_])(?:${escaped}\\s+(?:only|alone)|only\\s+${escaped}|limited\\s+to\\s+${escaped}|${escaped}[- ]specific)(?![\\p{L}\\p{N}_])`, 'giu');
+    return [...text.matchAll(restriction)].some((match) => {
+      const suffix = text.slice(match.index + match[0].length);
+      if (/^\s+(?:as\s+)?(?:an?\s+)?(?:example|illustration|sample)\b/iu.test(suffix)) return false;
+      const clause = text.slice(0, match.index).split(/[.!?;,\n]|\b(?:but|however|instead)\b/iu).at(-1)!;
+      return !/\b(?:not|never|no|cannot|[\p{L}]+n['’]t)\b(?:\s+[\p{L}]+){0,4}\s*$/iu.test(clause);
+    });
   });
 }
