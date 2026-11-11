@@ -194,14 +194,21 @@ test('1066-4: dispatch requires the current managed mapping to be active and mat
   assert.equal(validateAssignmentForDispatch(remapped, assignment).ok, false);
 });
 
-test('1066-7: standalone maintenance can be planned, mapped and dispatched without a feature', () => {
-  const design = { ...byId('design-1'), feature: null };
-  const plan = { ...byId('plan-1'), feature: null };
-  const task = { ...byId('task-1'), feature: null, criteria: [], maintenanceObjective: 'Remove the obsolete cache' };
-  const mapping = { ...byId('mapping-1'), feature: null, criteria: [] };
-  const assignment = { ...byId('assignment-1'), feature: null, criteria: [] };
-  const request = { ...byId('request-1'), interpretationRefs: [] };
+function maintenanceWorkflow() {
+  const design = RecordSchema.parse({ ...byId('design-1'), feature: null });
+  const plan = RecordSchema.parse({ ...byId('plan-1'), feature: null });
+  const task = RecordSchema.parse({ ...byId('task-1'), feature: null, criteria: [], maintenanceObjective: 'Remove the obsolete cache' });
+  const mapping = RecordSchema.parse({ ...byId('mapping-1'), feature: null, criteria: [] });
+  const assignment = RecordSchema.parse({ ...byId('assignment-1'), feature: null, criteria: [] });
+  const request = RecordSchema.parse({ ...byId('request-1'), interpretationRefs: [] });
+  assert.ok(design.kind === 'design_revision' && plan.kind === 'implementation_plan_revision' &&
+    task.kind === 'detailed_plan_task' && assignment.kind === 'assignment');
   const records = [byId('project-1'), request, design, plan, task, mapping, assignment];
+  return { records, design, plan, task, assignment, request };
+}
+
+test('1066-7: standalone maintenance can be planned, mapped and dispatched without a feature', () => {
+  const { records, design, plan, task, assignment } = maintenanceWorkflow();
   const dispatched = validateAssignmentForDispatch(records, assignment);
   assert.equal(dispatched.ok, true, JSON.stringify(dispatched));
   assert.equal(validateRecords(records.map((record) => record.id === task.id ?
@@ -219,6 +226,66 @@ test('1066-7: standalone maintenance can be planned, mapped and dispatched witho
       assert.equal(CommandEnvelopeSchema.safeParse({ ...command, payload: { ...command.payload, feature: null, design, plan, tasks: [task] } }).success, true);
     }
   }
+});
+
+test('1090-1: maintenance preserves original requests through design, plan and instruction comparisons', () => {
+  const { records, design, plan, assignment, request } = maintenanceWorkflow();
+  assert.equal(validateAssignmentForDispatch(records, assignment).ok, true);
+  const omitRequest = (sources: typeof design.sourceRefs) => sources.filter((source) => source.record?.id !== request.id);
+  for (const changed of [
+    { ...assignment, instructionFidelity: { ...assignment.instructionFidelity,
+      sourceRefs: omitRequest(assignment.instructionFidelity.sourceRefs) } },
+    { ...design, sourceRefs: [...omitRequest(design.sourceRefs), { uri: 'repo://maintenance' }] },
+    { ...design, sourceComparison: { ...design.sourceComparison,
+      sourceRefs: [...omitRequest(design.sourceComparison.sourceRefs), { uri: 'repo://maintenance' }] } },
+    { ...plan, readiness: { ...plan.readiness, comparison: { ...plan.readiness.comparison,
+      sourceRefs: omitRequest(plan.readiness.comparison.sourceRefs) } } },
+  ]) {
+    const result = validateAssignmentForDispatch(records.map((record) => record.id === changed.id ? changed : record), assignment);
+    assert.equal(result.ok, false, `Accepted omitted original request on ${changed.kind}`);
+    if (!result.ok) assert.ok(result.issues.some((issue) => issue.code === 'omitted_source' && issue.recordId === changed.id));
+  }
+});
+
+test('1090-3: maintenance results and review retain the objective and artifact evidence', () => {
+  const { records, assignment, task, request } = maintenanceWorkflow();
+  const template = byId('result-general');
+  assert.ok(template.kind === 'criterion_result');
+  const result = { ...template, criterion: null, accomplishedBehavior: task.maintenanceObjective! };
+  const reviewTemplate = byId('review-1');
+  assert.ok(reviewTemplate.kind === 'product_review');
+  const review = { ...reviewTemplate, feature: null, results: [{ id: result.id, revision: result.revision }] };
+  const otherRequest = { ...request, id: 'other-request', clientRequestId: 'other-client' };
+  const history = [...records, otherRequest, result, review];
+  const checked = validateReviewForCompletion(history, review);
+  assert.equal(checked.ok, true, JSON.stringify(checked));
+  const command = commandFixtures.map((fixture) => fixture.input).find((input) =>
+    (input as { command?: string }).command === 'record_review_result') as Record<string, unknown>;
+  const payload = command.payload as Record<string, unknown>;
+  assert.equal(CommandEnvelopeSchema.safeParse({ ...command, payload: { ...payload,
+    feature: null, results: [result], review } }).success, true);
+  for (const changed of [
+    { ...result, artifact: null }, { ...result, evidence: [] }, { ...result, result: 'untested' },
+    { ...review, results: [] }, { ...review, baselineEvidence: [] }, { ...review, improvementEvidence: [] },
+    { ...review, reviewedArtifacts: [{ uri: 'fixture:another-artifact', revision: '2' }] },
+    { ...review, originalRequests: [{ id: 'other-request', revision: 1 }] },
+    { ...review, instructionFidelity: { ...review.instructionFidelity,
+      sourceRefs: review.instructionFidelity.sourceRefs.filter((source) => source.record?.id !== request.id) } },
+    { ...review, instructionFidelity: { ...review.instructionFidelity, result: 'untested' } },
+  ]) {
+    const invalid = history.map((record) => record.id === changed.id ? changed : record);
+    assert.equal(validateReviewForCompletion(invalid, review).ok, false, `Accepted incomplete maintenance evidence on ${changed.id}`);
+  }
+  const failed = { ...result, result: 'failed', artifact: null, evidence: [] };
+  const failedReview = { ...review, outcome: 'failed' };
+  assert.equal(validateRecords([...records, failed, failedReview]).ok, true);
+  const product = baseline.find((record) => record.id === assignment.id)!;
+  const invalidProduct = validateRecords([...baseline.filter((record) => record.id !== result.id),
+    { ...result, assignment: { id: product.id, revision: product.revision } }]);
+  assert.equal(invalidProduct.ok, false);
+  if (!invalidProduct.ok) assert.ok(invalidProduct.issues.some((issue) => issue.code === 'unassigned_criterion'));
+  assert.equal(records.some((record) => record.kind === 'feature_revision'), false);
+  assert.equal(request.id, review.originalRequests[0]!.id);
 });
 test('requested criteria default to required without mutating captured source text', () => {
   const original = byId('criterion-general');

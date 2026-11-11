@@ -616,6 +616,7 @@ function replan(flow: ReturnType<typeof setup>, selected: ImplementationPlanRevi
   designMap: NonNullable<StageRevision['reuse']>['criterionMap'];
   planMap?: NonNullable<StageRevision['reuse']>['criterionMap'];
   criteria: Ref[];
+  refineReady?: boolean;
 }) {
   const prior = flow.store.get(base.projectId, feature.id);
   assert.ok(prior?.kind === 'feature_revision');
@@ -633,12 +634,15 @@ function replan(flow: ReturnType<typeof setup>, selected: ImplementationPlanRevi
   const currentFields = { revision, feature: ref(current), criteria: current.criteria };
   const understanding = { ...flow.understanding, ...currentFields };
   const understand = { ...flow.understandStage, ...currentFields, artifact: ref(understanding) };
+  const revisedDesign = { ...flow.design, revision: 2, feature: ref(current),
+    workflow: { ...flow.design.workflow!, understanding: ref(understanding), changeReason: 'Refine the implementation design' } };
   const design = { ...flow.designStage, ...currentFields, previousStage: ref(understand),
-    reuse: { check: comparison([request, flow.design]), criterionMap: options.designMap } };
+    ...(options.refineReady ? { artifact: ref(revisedDesign) } :
+      { reuse: { check: comparison([request, flow.design]), criterionMap: options.designMap } }) };
   const plan = { ...flow.planStage, ...currentFields, artifact: ref(selected), previousStage: ref(design),
     ...(options.planMap ? { reuse: { check: comparison([request, selected]), criterionMap: options.planMap } } : {}) };
   flow.write(understand, [understanding]);
-  flow.write(design, []);
+  flow.write(design, options.refineReady ? [revisedDesign] : []);
   const tasks = options.planMap ? [] : flow.detailedTasks.map((task, index) => ({
     ...task, revision: task.revision + 1, feature: ref(current), plan: ref(selected), criteria: [options.criteria[index]!],
   }));
@@ -646,10 +650,16 @@ function replan(flow: ReturnType<typeof setup>, selected: ImplementationPlanRevi
     workflow: { ...selected.workflow!, slices: selected.workflow!.slices.map((slice, index) => ({ ...slice,
       criteria: tasks[index]!.criteria, tasks: [ref(tasks[index]!)] })) } }, ...tasks];
   flow.write(plan, authored);
-  const detail = { ...flow.detailStage, ...currentFields, artifact: ref(selected), previousStage: ref(plan) };
-  flow.write(detail, []);
+  const refined = { ...selected, revision: selected.revision + 1, feature: ref(current), design: ref(revisedDesign),
+    readiness: { ready: false, comparison: comparison([request, revisedDesign]) },
+    workflow: { ...selected.workflow!, readinessCheck: undefined,
+      changeReason: 'Refine the reused plan while retaining unchanged tasks',
+      retainedTasks: selected.deliverySequence.map((task) => ({ task, reason: 'Task behavior remains valid' })) } };
+  const detailedPlan = options.refineReady ? ImplementationPlanRevisionSchema.parse(refined) : selected;
+  const detail = { ...flow.detailStage, ...currentFields, artifact: ref(detailedPlan), previousStage: ref(plan) };
+  flow.write(detail, options.refineReady ? [detailedPlan] : []);
   const result = checkPlanReadiness(flow.store, { projectId: base.projectId, detailStage: ref(detail),
-    idempotencyKey: `check-replan-${revision}`, issuedAt: time, expectedPlanRevision: selected.revision });
+    idempotencyKey: `check-replan-${revision}`, issuedAt: time, expectedPlanRevision: detailedPlan.revision });
   return { current, tasks, result };
 }
 
@@ -722,5 +732,42 @@ test('1069-4: repeated checked reuse carries prior criterion translations for re
       selected = ready;
       existing = current;
     }
+  } finally { flow.store.close(); }
+});
+
+test('1090-2: Detail can refine a reused ready plan and retain its prior criterion mappings', () => {
+  const flow = setup(true);
+  try {
+    flow.start(); flow.finish();
+    const original = flow.criteria[0]!;
+    const second = { ...original, revision: 2 };
+    const initial = replan(flow, flow.detailedPlan, { criteria: [second],
+      designMap: [{ existing: original, current: second }], planMap: [{ existing: original, current: second }] });
+    assert.ok(initial.result.readyPlan);
+    const selected = flow.store.get(base.projectId, initial.result.readyPlan.id, initial.result.readyPlan.revision);
+    assert.ok(selected?.kind === 'implementation_plan_revision');
+    const third = { ...original, revision: 3 };
+    const refined = replan(flow, selected, { criteria: [third], refineReady: true,
+      designMap: [], planMap: [{ existing: second, current: third }] });
+    assert.ok(refined.result.readyPlan, JSON.stringify(refined.result.check));
+    const ready = flow.store.get(base.projectId, refined.result.readyPlan.id, refined.result.readyPlan.revision);
+    assert.ok(ready?.kind === 'implementation_plan_revision');
+    assert.deepEqual(ready.deliverySequence, flow.detailedTasks.map(ref));
+    assert.deepEqual(ready.workflow!.slices, selected.workflow!.slices);
+    const task = flow.detailedTasks[0]!;
+    const mapping = { ...baseline.find((record) => record.kind === 'task_mapping')!, feature: ref(refined.current),
+      detailedPlanTask: ref(task), criteria: [third] };
+    const assignment = { ...baseline.find((record) => record.kind === 'assignment')!, feature: ref(refined.current),
+      design: ready.design, plan: ref(ready), detailedPlanTask: ref(task), criteria: [third],
+      sourceRefs: [request, ready.design, ready, task].map(source), selectedContext: [{ source: source(task), truncated: false }],
+      instructionFidelity: comparison([request, ready.design, ready, task]) };
+    const dispatch = validateAssignmentForDispatch([...flow.store.history(base.projectId), mapping, assignment], assignment);
+    assert.equal(dispatch.ok, true, JSON.stringify(dispatch));
+    const withoutRetention = flow.store.history(base.projectId);
+    const detail = withoutRetention.find((record) => record.kind === 'stage_revision' && record.stage === 'detail' && record.revision === 3);
+    const refinedPlan = withoutRetention.find((record) => record.kind === 'implementation_plan_revision' && record.revision === selected.revision + 1);
+    assert.ok(detail?.kind === 'stage_revision' && refinedPlan?.kind === 'implementation_plan_revision');
+    refinedPlan.workflow!.retainedTasks = [];
+    assert.ok(planReadinessFindings(withoutRetention, detail).some((finding) => finding.code === 'invented_scope'));
   } finally { flow.store.close(); }
 });

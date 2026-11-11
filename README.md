@@ -67,6 +67,15 @@ Its design, plan, managed mapping and assignment also use `feature: null` and li
 the exact applicable revisions. Legacy mappings can also omit the detailed task
 reference. Unclassified requests remain representable.
 
+A standalone maintenance design links its original request revisions through
+`sourceRefs[].record`. Its source comparison, the plan comparison and assignment
+instruction comparison must cite those requests. A maintenance result uses
+`criterion: null` and links its objective through the assignment's exact detailed
+task revision. Its product review and `record_review_result` command use
+`feature: null`. Passing maintenance reviews require passing results for every
+reviewed assignment, reviewed artifact identities, source comparisons and
+baseline/improvement evidence.
+
 The named state enums are exported from `src/primitives.ts`. Wire values use
 underscores for spaces. Feature progress (`requested` through `complete`) and method
 stage (`understanding` through `product_review`) are separate from observed execution.
@@ -662,6 +671,8 @@ the generated ready plan. A prerequisite must supply every criterion a dependenc
 translates to. Repeated reuse composes the prior checked plan's mappings for
 retained tasks and slices. Tasks authored against the current feature keep their
 explicit criteria.
+When Detail revises a reused ready plan, verified task retention links preserve
+the selected plan's earlier criterion mappings across that refinement.
 Earlier designs with prose reuse findings can be selected through this check;
 plans need structured slices and feature-verification steps to pass readiness.
 

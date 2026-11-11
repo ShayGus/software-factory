@@ -79,7 +79,7 @@ export const DeliverCorrectionCommandSchema = z.strictObject({
 export const RecordReviewResultCommandSchema = z.strictObject({
   ...mutation, command: z.literal('record_review_result'),
   payload: z.strictObject({
-    originalRequests: z.array(RefSchema).min(1), feature: RefSchema, design: RefSchema, plan: RefSchema,
+    originalRequests: z.array(RefSchema).min(1), feature: RefSchema.nullable(), design: RefSchema, plan: RefSchema,
     assignment: RefSchema, deliveredArtifact: ArtifactSchema,
     results: z.array(CriterionResultSchema), review: ProductReviewSchema.optional(),
   }),

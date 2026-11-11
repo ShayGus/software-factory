@@ -103,7 +103,7 @@ function carriesCompletionEvidence(ctx: Context, feature: FeatureRevision) {
   const evidence = feature.completionEvidence;
   if (!evidence) return false;
   const review = ctx.get(feature, evidence.review, 'product_review', 'completionEvidence.review');
-  if (review?.outcome !== 'passed' || review.feature.id !== feature.id || review.feature.revision >= feature.revision) return false;
+  if (review?.outcome !== 'passed' || !review.feature || review.feature.id !== feature.id || review.feature.revision >= feature.revision) return false;
   const content = canonical(featureContent(feature));
   for (let revision = feature.revision - 1; revision >= review.feature.revision; revision--) {
     const predecessor = ctx.index.get(key({ id: feature.id, revision }));
@@ -135,7 +135,7 @@ function checkScopeTransition(ctx: Context, before: FeatureRevision, after: Feat
 function currentPlanCriteria(ctx: Context, plan: ImplementationPlanRevision, task: DetailedPlanTask): Ref[] {
   const check = plan.workflow?.readinessCheck && ctx.index.get(key(plan.workflow.readinessCheck));
   const detail = check?.kind === 'plan_readiness_revision' && check.ready && ctx.index.get(key(check.detailStage));
-  return detail && detail.kind === 'stage_revision' ? stageCriteria(ctx.records, detail, task.criteria, task.feature) : task.criteria;
+  return detail && detail.kind === 'stage_revision' ? stageCriteria(ctx.records, detail, task.criteria, task.feature, [task]) : task.criteria;
 }
 
 function retainedTask(ctx: Context, plan: ImplementationPlanRevision, task: DetailedPlanTask): boolean {
@@ -175,6 +175,11 @@ function matchesAssignment(mapping: OfKind<'task_mapping'>, assignment: Assignme
     sameRef(mapping.feature, assignment.feature);
 }
 
+function designRequests(ctx: Context, design: OfKind<'design_revision'> | undefined): Ref[] {
+  return design?.sourceRefs.flatMap((source) => source.record && ctx.index.get(key(source.record))?.kind === 'request' ?
+    [source.record] : []) ?? [];
+}
+
 function checkAssignment(ctx: Context, assignment: Assignment) {
   const feature = assignment.feature ? ctx.get(assignment, assignment.feature, 'feature_revision', 'feature') : undefined;
   const design = ctx.get(assignment, assignment.design, 'design_revision', 'design');
@@ -183,7 +188,7 @@ function checkAssignment(ctx: Context, assignment: Assignment) {
   ctx.criteria(assignment, assignment.criteria, feature);
   ctx.comparison(assignment, assignment.instructionFidelity, feature);
   ctx.sources(assignment, assignment.instructionFidelity, [
-    ...(feature?.sourceRequests ?? []), assignment.design, assignment.plan, assignment.detailedPlanTask,
+    ...(feature?.sourceRequests ?? designRequests(ctx, design)), assignment.design, assignment.plan, assignment.detailedPlanTask,
   ]);
   if (design && !reusedDesign(ctx, design, assignment.feature)) ctx.equal(assignment, design.feature, assignment.feature, 'design.feature');
   if (plan) {
@@ -208,7 +213,7 @@ function checkAssignment(ctx: Context, assignment: Assignment) {
 }
 
 function checkReview(ctx: Context, review: ProductReview) {
-  const feature = ctx.get(review, review.feature, 'feature_revision', 'feature');
+  const feature = review.feature ? ctx.get(review, review.feature, 'feature_revision', 'feature') : undefined;
   const design = ctx.get(review, review.design, 'design_revision', 'design');
   const plan = ctx.get(review, review.plan, 'implementation_plan_revision', 'plan');
   if (design && !reusedDesign(ctx, design, review.feature)) ctx.equal(review, design.feature, review.feature, 'design.feature');
@@ -217,7 +222,7 @@ function checkReview(ctx: Context, review: ProductReview) {
     ctx.equal(review, plan.feature, review.feature, 'plan.feature');
   }
   for (const request of review.originalRequests) ctx.get(review, request, 'request', 'originalRequests');
-  if (feature) for (const source of feature.sourceRequests) {
+  for (const source of feature?.sourceRequests ?? designRequests(ctx, design)) {
     if (!review.originalRequests.some((ref) => sameRef(source, ref))) {
       ctx.add(review, 'omitted_source', 'originalRequests', `Review omitted original request ${source.id}`);
     }
@@ -243,7 +248,7 @@ function checkReview(ctx: Context, review: ProductReview) {
     if (!review.assignments.some((assignment) => sameRef(assignment, result.assignment))) {
       ctx.add(review, 'unreviewed_assignment', 'results', 'Result is from an unreviewed assignment');
     }
-    ctx.criteria(review, [result.criterion], feature);
+    if (result.criterion) ctx.criteria(review, [result.criterion], feature);
     if (result.artifact && !review.reviewedArtifacts.some((artifact) =>
       artifact.uri === result.artifact!.uri && artifact.revision === result.artifact!.revision &&
       artifact.digest === result.artifact!.digest)) {
@@ -252,7 +257,8 @@ function checkReview(ctx: Context, review: ProductReview) {
   }
   for (const comparison of [review.sourceComparison, review.instructionFidelity, review.planConformance]) {
     ctx.comparison(review, comparison, feature);
-    if (comparison.result === 'passed') ctx.sources(review, comparison, [review.design, review.plan, ...review.detailedPlanTasks]);
+    if (comparison.result === 'passed') ctx.sources(review, comparison, [review.design, review.plan, ...review.detailedPlanTasks,
+      ...(review.feature === null ? review.originalRequests : [])]);
   }
   ctx.sources(review, review.sourceComparison, review.originalRequests);
   // Failed/incomplete reviews are valid records. A passed review makes stronger claims.
@@ -260,8 +266,7 @@ function checkReview(ctx: Context, review: ProductReview) {
 }
 
 function checkCompletion(ctx: Context, review: ProductReview) {
-  const feature = ctx.get(review, review.feature, 'feature_revision', 'feature');
-  if (!feature) return;
+  const feature = review.feature ? ctx.get(review, review.feature, 'feature_revision', 'feature') : undefined;
   for (const [path, comparison] of Object.entries({
     sourceComparison: review.sourceComparison, instructionFidelity: review.instructionFidelity,
     planConformance: review.planConformance,
@@ -273,7 +278,16 @@ function checkCompletion(ctx: Context, review: ProductReview) {
     'Review must compare delivered behavior with the starting baseline');
   if (!review.improvementEvidence.length) ctx.add(review, 'missing_improvement', 'improvementEvidence',
     'Regression success alone cannot demonstrate the requested improvement');
-  for (const ref of feature.criteria) {
+  if (review.feature === null) for (const assignment of review.assignments) {
+    const results = review.results.flatMap((ref) => {
+      const result = ctx.index.get(key(ref));
+      return result?.kind === 'criterion_result' && sameRef(result.assignment, assignment) && result.criterion === null ? [result] : [];
+    });
+    if (!results.length || results.some((result) => result.result !== 'passed')) {
+      ctx.add(review, 'incomplete_maintenance', 'results', `Maintenance assignment ${assignment.id} lacks passing objective evidence`);
+    }
+  }
+  for (const ref of feature?.criteria ?? []) {
     const criterion = ctx.get(review, ref, 'criterion', 'criteria');
     if (criterion?.requirement !== 'required' || criterion.disposition.state !== 'active') continue;
     const results = review.results.flatMap((resultRef) => {
@@ -408,7 +422,10 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       for (const ref of record.decisions) ctx.get(record, ref, 'decision_change', 'decisions');
       if (record.workflow) ctx.get(record, record.workflow.understanding, 'understanding_revision', 'workflow.understanding');
       ctx.comparison(record, record.sourceComparison, feature);
-      ctx.sources(record, record.sourceComparison, feature?.sourceRequests ?? []);
+      const requests = feature?.sourceRequests ?? designRequests(ctx, record);
+      if (record.feature === null && !requests.length) ctx.add(record, 'omitted_source', 'sourceRefs',
+        'Standalone maintenance design must name its original request');
+      ctx.sources(record, record.sourceComparison, requests);
       break;
     }
     case 'implementation_plan_revision': {
@@ -449,7 +466,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
         if (dependency.needs.kind === 'criterion') ctx.criteria(record, [dependency.needs.criterion], feature);
       }
       ctx.comparison(record, record.readiness.comparison, feature);
-      ctx.sources(record, record.readiness.comparison, [...(feature?.sourceRequests ?? []), record.design]);
+      ctx.sources(record, record.readiness.comparison, [...(feature?.sourceRequests ?? designRequests(ctx, design)), record.design]);
       if (record.readiness.ready) {
         if (record.workflow) {
           const check = record.workflow.readinessCheck && ctx.get(record, record.workflow.readinessCheck,
@@ -515,8 +532,12 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
     case 'assignment': checkAssignment(ctx, record); break;
     case 'criterion_result': {
       const assignment = ctx.get(record, record.assignment, 'assignment', 'assignment');
-      ctx.get(record, record.criterion, 'criterion', 'criterion');
-      if (assignment && !assignment.criteria.some((ref) => sameRef(ref, record.criterion))) {
+      if (record.criterion) ctx.get(record, record.criterion, 'criterion', 'criterion');
+      const task = record.criterion === null && assignment ?
+        ctx.get(record, assignment.detailedPlanTask, 'detailed_plan_task', 'assignment.detailedPlanTask') : undefined;
+      const assigned = record.criterion === null ? task?.maintenanceObjective !== undefined && task.criteria.length === 0 :
+        assignment?.criteria.some((ref) => sameRef(ref, record.criterion));
+      if (assignment && !assigned) {
         ctx.add(record, 'unassigned_criterion', 'criterion', 'Result names a criterion/revision outside the assignment');
       }
       break;

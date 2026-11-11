@@ -165,7 +165,7 @@ export const AssignmentSchema = record('assignment', {
   'Standalone maintenance assignments cannot name product criteria');
 
 export const CriterionResultSchema = record('criterion_result', {
-  assignment: RefSchema, criterion: RefSchema, result: CriterionResultStateSchema,
+  assignment: RefSchema, criterion: RefSchema.nullable(), result: CriterionResultStateSchema,
   accomplishedBehavior: TextSchema, artifact: ArtifactSchema.nullable(),
   evidence: z.array(EvidenceSchema), limitations: z.array(TextSchema), suggestions: z.array(TextSchema),
 }).refine((value) => value.result !== 'passed' || (value.artifact !== null && value.evidence.length > 0),
@@ -173,7 +173,7 @@ export const CriterionResultSchema = record('criterion_result', {
 
 export const ProductReviewSchema = record('product_review', {
   originalRequests: z.array(RefSchema).min(1), sourceRefs: z.array(SourceRefSchema).min(1),
-  feature: RefSchema, design: RefSchema, plan: RefSchema, detailedPlanTasks: z.array(RefSchema).min(1),
+  feature: RefSchema.nullable(), design: RefSchema, plan: RefSchema, detailedPlanTasks: z.array(RefSchema).min(1),
   assignments: z.array(RefSchema).min(1), results: z.array(RefSchema),
   reviewedArtifacts: z.array(ArtifactSchema).min(1), technicalReviewRefs: z.array(SourceRefSchema),
   sourceComparison: ComparisonSchema, instructionFidelity: ComparisonSchema, planConformance: ComparisonSchema,
