@@ -757,7 +757,7 @@ or CLI:
 software-factory prepare-brief --db /absolute/project.sqlite --input prepare.json
 software-factory check-brief --db /absolute/project.sqlite --project project-1 \
   --assignment assignment-build-1 --revision 1 --brief /absolute/data/build-1/brief.md \
-  --judge-config /absolute/instruction-judge.json
+  --agent-config /absolute/software-factory.agents.json
 ```
 
 `prepare.json` follows `PrepareWorkerBriefInputSchema`:
@@ -843,6 +843,11 @@ instructions and context; a semantic pass is never invented by the generator.
 `checkWorkerBrief` (`check-brief`) is the read-only worker-start gate. It preserves
 deterministic checks for exact Captain's intent, lifecycle scaffold bytes, required
 context, sidecar/source integrity, revisions, plan readiness and task mapping.
+Assignment metadata remains canonical: return destination, traceability fields,
+criterion/decision revision labels, verbatim context extracts and source/reuse/dependency pointer JSON must
+retain their generated values. These machine fields can neither be redirected nor
+duplicated with conflicting values; ordinary behavior prose may be paraphrased.
+Their canonical values are also supplied in the judge snapshot.
 If those checks pass, it makes **one agent call** with a frozen snapshot containing
 the exact original request, design, plan, detailed task, criteria/decisions and
 actual candidate instructions. The agent judges narrowing, omission and invented
@@ -851,26 +856,60 @@ rules. A faithful paraphrase can pass; a well-formed generated task can still fa
 The prompt distinguishes adapter details and planned slices from restricting the
 whole requested feature, and treats quoted source instructions as untrusted data.
 
-Configure an existing installed worker command, without a new model provider:
+Configure agents once per project in `software-factory.agents.json`; start with
+`fixtures/workflow-agents.json`. `ProjectAgentConfigSchema` maps each step directly
+to a FirstMate crew-dispatch profile object with the same field names and values:
+`harness`, `provider`, `model`, `effort`. Harness is required; the other fields are
+optional as in FirstMate. All six step entries are required, including reserved
+steps that do not run agents in this build. Missing entries and cross-project
+configuration are refused rather than inherited from another step or session.
 
 ```json
 {
-  "executable": "/absolute/path/to/codex",
-  "args": ["exec", "--sandbox", "read-only", "--ephemeral", "--color", "never",
-           "--skip-git-repo-check", "--output-schema",
-           "/absolute/software-factory/fixtures/instruction-judge.schema.json", "-"],
+  "schemaVersion": 1,
+  "projectId": "project-1",
+  "steps": {
+    "understand": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "medium" },
+    "design": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "plan": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "detail": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "medium" },
+    "instruction_check": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "product_review": { "harness": "claude", "provider": "claude", "model": "claude-opus-5-5", "effort": "high" }
+  },
+  "executables": { "codex": "/absolute/path/to/codex", "claude": "/absolute/path/to/claude" },
   "cwd": "/absolute/review-directory",
   "timeoutMs": 120000
 }
 ```
 
-`InstructionJudgeConfigSchema` accepts an absolute executable, literal argv, an
-optional absolute working directory, and a timeout (default two minutes). The
-worker CLI receives the complete prompt on stdin and must write only its final
-JSON verdict to stdout; progress belongs on stderr. The toolkit invokes it once
-without shell interpolation, retries, provider SDKs or a RoboRev subprocess.
-An existing agent wrapper can implement the same stdin/stdout contract. The Codex
-example uses its installed CLI/authentication; no account or provider is installed.
+`resolveStepAgentProfile` is the shared resolver for later understand/design/plan/
+detail and BUILD-10 review executors. Currently only `instruction_check` executes
+an agent. It selects its own profile, never the worker's or the main session's.
+The executable map names installed harness binaries, not arbitrary command argv.
+The adapter constructs the command itself:
+
+- Codex: fresh `exec --ephemeral --ignore-user-config` with a read-only sandbox, the selected `--model`,
+  and `-c model_reasoning_effort=...`. Native JSON-schema output uses the bundled
+  judge schema. No resume/continue/session reuse is supported.
+- Claude: fresh `--print --no-session-persistence --safe-mode --strict-mcp-config` with tools disabled, the selected
+  `--model` and `--effort`, and text stdout carrying the structured JSON verdict.
+
+The native effort mapping matches the inspected FirstMate adapter: Codex supports
+`low|medium|high|xhigh`, with `max` limited to `gpt-5.6-luna`; Claude supports
+`low|medium|high|xhigh|max`. Unsupported efforts are refused, not dropped. A native
+profile's optional provider must be `codex` or `claude` respectively; this is the
+existing account/quota family, not a new API provider. Other harnesses/providers
+are not executed by this judge and produce a clear error with no fallback.
+Raw `executable`/`args` judge configurations are no longer accepted.
+
+Worker/main session markers and FirstMate lifecycle/inbox environment variables
+are removed before launch; native authentication is preserved. Customizations are
+disabled for these review calls, rather than attaching to a running agent.
+Every check launches a separate one-shot process with a complete prompt on stdin
+and the default two-minute timeout. The CLI must return only its final JSON verdict
+on stdout; progress belongs on stderr. There are no retries, provider SDKs or
+RoboRev subprocesses. The shared setting stores future steps' profiles now without
+pretending that their agent executors or product review are implemented.
 
 The result follows `fixtures/instruction-judge.schema.json`:
 
@@ -890,7 +929,7 @@ The result follows `fixtures/instruction-judge.schema.json`:
 
 Each finding has type `narrowing`, `omission` or `invented_scope`, a concrete
 message and at least one verbatim quote. Quote sources are `original_request`,
-`design`, `plan`, `task` and `instructions`; an omission quotes the authoritative
+`assignment`, `design`, `plan`, `task` and `instructions`; an omission quotes the authoritative
 requirement absent from the candidate. Quotes must occur in the submitted evidence.
 Pass requires an empty findings array; fail requires findings. Unknown fields,
 duplicate JSON keys, extra prose, fabricated quotes, malformed output, a missing
@@ -924,7 +963,7 @@ brief and failed comparison; supply it through a new assignment revision and key
 A future FirstMate hook can call `check-brief` before starting a worker. Installing
 that hook and worker lifecycle operations are separate integration work.
 
-`test/instruction-judge.test.ts`, `test/briefs.test.ts` and the BUILD-07 integration cases in `test/planning.test.ts`
+`test/agent-profiles.test.ts`, `test/instruction-judge.test.ts`, `test/briefs.test.ts` and the BUILD-07 integration cases in `test/planning.test.ts`
 cover preserved intent/scaffold bytes (LF and CRLF), exact revision coverage,
 context truncation, dependency outputs, explicit missing sources, altered content,
 agent verdict handling, sidecar/source damage, persistent replay,
@@ -951,3 +990,11 @@ The pinned public files therefore describe that base, not an assertion that the
 local patch is identical. Read-only inspection of `~/.roborev/config.toml` found
 the existing Codex agent default and goal-review configuration. Its settings,
 daemon, private review history and hooks are not dependencies of this judge.
+
+Profile compatibility was inspected read-only in FirstMate at commit
+`ed1eb1d74079f42702ab706096079616bd214a3f`: `docs/configuration.md` (Crew dispatch
+profiles), `bin/fm-dispatch-resolve.sh` (`effort_ok`) and `bin/fm-spawn.sh`
+(`effort_flag_for_harness`). The local `config/crew-dispatch.json` demonstrated the
+same four profile fields; this package neither modifies it nor imports its role
+rules, quota selection or account management. The copied native field/effort
+mapping is implemented in `src/agent-profiles.ts`.

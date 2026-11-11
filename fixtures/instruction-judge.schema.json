@@ -22,7 +22,7 @@
               "additionalProperties": false,
               "required": ["source", "text"],
               "properties": {
-                "source": { "type": "string", "enum": ["original_request", "design", "plan", "task", "instructions"] },
+                "source": { "type": "string", "enum": ["original_request", "assignment", "design", "plan", "task", "instructions"] },
                 "text": { "type": "string", "minLength": 1 }
               }
             }

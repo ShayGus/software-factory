@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { ProjectStore, RecordsSchema, prepareWorkerBrief, checkWorkerBrief, requiredAssignmentContext, ref,
   type Assignment, type FactoryRecord } from '../src/index.js';
-import { fakeJudge, fakeVerdict } from './judge-helper.js';
+import { fakeJudge, fakeVerdict, fakeJudgeOptions } from './judge-helper.js';
 
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 function setup(edit?: (records: FactoryRecord[]) => void) {
@@ -41,7 +41,7 @@ for (const name of ['narrowed-task', 'adapter-boundary']) test(`agent judges the
   try {
     const recordPath = join(flow.directory, 'one-call.jsonl');
     const before = flow.store.exportProject('project-1');
-    const result = flow.check({ ...fakeJudge, args: [...fakeJudge.args!, '--case', fixturePath, '--record', recordPath] });
+    const result = flow.check(fakeJudgeOptions({ case: fixturePath, record: recordPath }));
     assert.equal(result.ok, name === 'adapter-boundary', JSON.stringify(result));
     assert.equal(readFileSync(recordPath, 'utf8').trimEnd().split('\n').length, 1);
     const input = JSON.parse(readFileSync(recordPath, 'utf8'));
@@ -75,7 +75,7 @@ const invalidOutputs = ['', '{}', 'not JSON', '{"verdict":"pass","findings":[]} 
 for (const [index, output] of invalidOutputs.entries()) test(`invalid agent result ${index + 1} fails closed`, () => {
   const flow = setup();
   try {
-    const result = flow.check({ ...fakeJudge, args: [...fakeJudge.args!, '--result', output] });
+    const result = flow.check(fakeJudgeOptions({ result: output }));
     assert.equal(result.ok, false); assert.ok(result.findings.some((finding) => finding.code === 'instruction_judge_unavailable'));
   } finally { flow.close(); }
 });
@@ -83,8 +83,8 @@ for (const [index, output] of invalidOutputs.entries()) test(`invalid agent resu
 for (const mode of ['missing', 'spawn', 'exit', 'timeout'] as const) test(`${mode} judge cannot pass the start gate`, () => {
   const flow = setup();
   try {
-    const config = mode === 'missing' ? undefined : mode === 'spawn' ? { executable: join(flow.directory, 'missing-agent') } :
-      { ...fakeJudge, args: [...fakeJudge.args!, ...(mode === 'exit' ? ['--exit', '4'] : ['--sleep', '2000'])], timeoutMs: 150 };
+    const config = mode === 'missing' ? undefined : mode === 'spawn' ? { ...fakeJudge, executables: { codex: join(flow.directory, 'missing-agent') } } :
+      { ...fakeJudgeOptions(mode === 'exit' ? { exit: '4' } : { sleep: '2000' }), timeoutMs: 150 };
     const result = flow.check(config); assert.equal(result.ok, false);
     assert.ok(result.findings.some((finding) => finding.code === 'instruction_judge_unavailable'));
   } finally { flow.close(); }
@@ -94,7 +94,7 @@ test('each check calls one agent; an earlier pass cannot substitute for a missin
   const flow = setup();
   try {
     const recordPath = join(flow.directory, 'calls.jsonl');
-    const config = { ...fakeJudge, args: [...fakeJudge.args!, '--record', recordPath] };
+    const config = fakeJudgeOptions({ record: recordPath });
     assert.equal(flow.check(config).ok, true); assert.equal(flow.check(config).ok, true);
     assert.equal(flow.check().ok, false);
     assert.equal(readFileSync(recordPath, 'utf8').trimEnd().split('\n').length, 2);
@@ -123,7 +123,7 @@ test('CLI returns nonzero without a configured judge and accepts a configured fa
       '--revision', '1', '--brief', flow.briefPath];
     const missing = spawnSync(process.execPath, args, { encoding: 'utf8' }); assert.equal(missing.status, 1);
     assert.equal(JSON.parse(missing.stdout).ok, false);
-    const configured = spawnSync(process.execPath, [...args, '--judge-config', configPath], { encoding: 'utf8' });
+    const configured = spawnSync(process.execPath, [...args, '--agent-config', configPath], { encoding: 'utf8' });
     assert.equal(configured.status, 0, configured.stderr); assert.equal(JSON.parse(configured.stdout).judgment.verdict.verdict, 'pass');
   } finally { flow.close(); }
 });
@@ -132,9 +132,58 @@ for (const changed of ['brief', 'source'] as const) test(`a passing verdict cann
   const flow = setup();
   try {
     const path = changed === 'brief' ? flow.briefPath : join(flow.directory, 'source-0.txt');
-    const result = flow.check({ ...fakeJudge, args: [...fakeJudge.args!, '--rewrite', path] });
+    const result = flow.check(fakeJudgeOptions({ rewrite: path }));
     assert.equal(result.ok, false);
     assert.ok(result.judgment?.ok && result.judgment.verdict.verdict === 'pass');
     assert.ok(result.findings.some((finding) => finding.code === (changed === 'brief' ? 'candidate_changed' : 'missing_required_context')));
+  } finally { flow.close(); }
+});
+
+for (const field of ['return-location', 'design-revision', 'sidecar-reference', 'source-reference', 'source-extract', 'reuse-reference', 'criterion-revision', 'duplicate-return-location'] as const) {
+  test(`review 1123-1: canonical ${field} is checked before semantic judgment`, () => {
+    const flow = setup();
+    try {
+      const original = readFileSync(flow.briefPath, 'utf8');
+      const edited = field === 'return-location' ? original.replace('Return location: report.md', 'Return location: wrong.md') :
+        field === 'design-revision' ? original.replace('- Design: design-1@1;', '- Design: design-1@99;') :
+        field === 'sidecar-reference' ? original.replace(`Coverage and complete record originals: ${join(flow.directory, 'brief.sf.json')}`, 'Coverage and complete record originals: wrong.sf.json') :
+        field === 'source-reference' ? original.replace('"uri":"factory:record/design-1@1"', '"uri":"factory:record/design-1@99"') :
+        field === 'source-extract' ? original.replace('> Supplied source snapshot.', '> Forged source snapshot.') :
+        field === 'reuse-reference' ? original.replace('- {"uri":"fixture://repository/common-interface"}', '- {"uri":"fixture://repository/wrong-interface"}') :
+        field === 'criterion-revision' ? original.replace('- criterion-general@1:', '- criterion-general@99:') :
+        original.replace('Return location: report.md', 'Return location: report.md\nReturn location: wrong.md');
+      assert.notEqual(edited, original); writeFileSync(flow.briefPath, edited);
+      const result = flow.check(fakeJudge);
+      assert.equal(result.ok, false, JSON.stringify(result));
+      assert.ok(result.findings.some((finding) => finding.code === 'assignment_metadata_mismatch'));
+      assert.equal(result.judgment, null, 'A semantic pass cannot override wrong assignment metadata');
+    } finally { flow.close(); }
+  });
+}
+
+test('review 1123-1: judge snapshot contains canonical assignment destinations and pointers', () => {
+  const flow = setup();
+  try {
+    const recordPath = join(flow.directory, 'metadata-input.jsonl');
+    const result = flow.check(fakeJudgeOptions({ record: recordPath })); assert.equal(result.ok, true);
+    const input = JSON.parse(readFileSync(recordPath, 'utf8'));
+    const assignment = flow.store.get('project-1', flow.prepared.assignment.id); assert.ok(assignment?.kind === 'assignment');
+    assert.equal(input.assignment.returnLocation, assignment.returnLocation);
+    assert.equal(input.assignment.briefPath, flow.briefPath);
+    assert.equal(input.assignment.sidecarPath, assignment.brief?.sidecarPath);
+    assert.deepEqual(input.assignment.sourceRefs, assignment.sourceRefs);
+    assert.deepEqual(input.assignment.contextPointers, assignment.selectedContext.map(({ source, artifact, truncated }) => ({ source, artifact, truncated })));
+  } finally { flow.close(); }
+});
+
+test('the agent can cite the canonical destination when prose contradicts intact metadata', () => {
+  const flow = setup();
+  try {
+    const statement = 'Write the report only to wrong.md.';
+    writeFileSync(flow.briefPath, readFileSync(flow.briefPath, 'utf8').replace('### Worker return', `${statement}\n\n### Worker return`));
+    const result = flow.check(fakeVerdict({ verdict: 'fail', findings: [{ type: 'omission', message: 'The operative prose redirects the assigned return destination',
+      quotes: [{ source: 'assignment', text: 'report.md' }, { source: 'instructions', text: statement }] }] }));
+    assert.equal(result.ok, false); assert.ok(result.judgment?.ok);
+    assert.ok(result.findings.some((finding) => finding.code === 'omitted_behavior'));
   } finally { flow.close(); }
 });

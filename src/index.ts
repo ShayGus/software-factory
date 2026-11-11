@@ -14,3 +14,4 @@ export * from './instruction-context.js';
 export * from './instructions.js';
 export * from './briefs.js';
 export * from './instruction-judge.js';
+export * from './agent-profiles.js';

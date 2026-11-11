@@ -163,7 +163,7 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
 /** Read-only gate for a future worker-start hook. Exit eligibility is based on
  * current files and dispatch rules, never a sidecar's self-reported pass flag. */
 export function checkWorkerBrief(store: ProjectStore, projectId: string, assignmentRef: { id: string; revision: number }, briefPath: string,
-  judgeConfig?: unknown) {
+  agentConfig?: unknown) {
   const records = store.history(projectId);
   const assignment = planningRecord(records, assignmentRef);
   if (assignment?.kind !== 'assignment') throw new StoreError('not_found', 'assignment_not_found');
@@ -187,7 +187,7 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
     issue.code === 'instruction_fidelity' && issue.path === 'instructionFidelity'))
     .map((issue) => ({ code: issue.code, path: issue.path, message: issue.message })));
   if (findings.length) return { ok: false, findings, judgment: null };
-  const judgment = judgeWorkerInstructions(records, assignment, candidate, judgeConfig);
+  const judgment = judgeWorkerInstructions(records, assignment, candidate, agentConfig);
   if (!judgment.ok) findings.push({ code: 'instruction_judge_unavailable', path: 'judge', message: judgment.error });
   else for (const finding of judgment.verdict.findings) findings.push({
     code: finding.type === 'narrowing' ? 'narrowed_generality' : finding.type === 'omission' ? 'omitted_behavior' : 'invented_scope',

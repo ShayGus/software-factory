@@ -3,6 +3,48 @@ import { planningRecord } from './planning-checks.js';
 import { missingAssignmentContext, requiredAssignmentContext } from './instruction-context.js';
 
 export interface InstructionFinding { code: string; path: string; message: string }
+export function workerAssignmentMetadata(assignment: Assignment) {
+  return { id: assignment.id, revision: assignment.revision, attemptId: assignment.attemptId,
+    firstMateTaskId: assignment.firstMateTaskId, feature: assignment.feature, design: assignment.design,
+    plan: assignment.plan, detailedPlanTask: assignment.detailedPlanTask, criteria: assignment.criteria,
+    returnLocation: assignment.returnLocation, briefPath: assignment.brief?.path, sidecarPath: assignment.brief?.sidecarPath,
+    sourceRefs: assignment.sourceRefs, prerequisiteArtifacts: assignment.prerequisiteArtifacts,
+    contextPointers: assignment.selectedContext.map(({ source, artifact, truncated }) => ({ source, artifact, truncated })) };
+}
+function metadataFindings(actual: string, expected: string, assignment: Assignment): InstructionFinding[] {
+  const findings: InstructionFinding[] = [];
+  const section = (text: string, title: string): string[] => {
+    const marker = `### ${title}\n\n`;
+    const start = text.indexOf(marker);
+    if (start < 0) return [];
+    return text.slice(start + marker.length).split(/^### /m)[0]!.split('\n');
+  };
+  const compare = (field: string, received: string[], canonical: string[], ordered = false) => {
+    if (JSON.stringify(ordered ? received : [...received].sort()) !== JSON.stringify(ordered ? canonical : [...canonical].sort())) findings.push({
+      code: 'assignment_metadata_mismatch', path: `brief.spec.${field}`,
+      message: `Assignment ${field} differs from its canonical destination or context references`,
+    });
+  };
+  compare('returnLocation', actual.split('\n').filter((line) => line.startsWith('Return location:')),
+    [`Return location: ${assignment.returnLocation}`]);
+  for (const prefix of ['- Assignment:', '- Design:', '- Feature:', '- Coverage and complete record originals:']) {
+    compare('traceability', section(actual, 'Traceability').filter((line) => line.startsWith(prefix)),
+      section(expected, 'Traceability').filter((line) => line.startsWith(prefix)));
+  }
+  compare('contextPointers', section(actual, 'Required context').filter((line) => line.trim()),
+    section(expected, 'Required context').filter((line) => line.trim()), true);
+  for (const title of ['Reuse targets', 'Dependency outputs and blockers']) {
+    const pointers = (text: string) => section(text, title).filter((line) => line.startsWith('{') || line.startsWith('- {'));
+    compare(title, pointers(actual), pointers(expected));
+  }
+  const criterionIds = (text: string) => section(text, 'Criteria and acceptance cases')
+    .flatMap((line) => /^- (.+@\d+):(?: |$)/u.exec(line)?.slice(1, 2) ?? []);
+  compare('criteria', criterionIds(actual), criterionIds(expected));
+  const decisions = (text: string) => section(text, 'Decisions to keep')
+    .flatMap((line) => /^- (.+@\d+ \[[^\]]+\]):/u.exec(line)?.slice(1, 2) ?? []);
+  compare('decisions', decisions(actual), decisions(expected));
+  return findings;
+}
 export function scaffoldParts(scaffold: string) {
   const headings = [...scaffold.matchAll(/^#{1,2} [^\r\n]*(?:\r?\n|$)/gm)];
   const section = (title: string) => {
@@ -90,9 +132,11 @@ export function instructionFidelityFindings(records: FactoryRecord[], assignment
   }
   const parts = scaffoldParts(assignment.brief.scaffold);
   const expected = instructionBodies(records, assignment);
-  if (brief === renderWorkerBrief(records, assignment, assignment.brief.scaffold)) return findings;
   const intentAndHeading = parts.prefix + expected.intent + parts.newline.repeat(2) + parts.middle;
-  if (brief.startsWith(intentAndHeading) && brief.endsWith(parts.suffix)) return findings;
+  if (brief.startsWith(intentAndHeading) && brief.endsWith(parts.suffix)) {
+    const actualSpec = brief.slice(intentAndHeading.length, parts.suffix ? -parts.suffix.length : undefined);
+    return [...findings, ...metadataFindings(actualSpec, expected.spec, assignment)];
+  }
   const middle = brief.indexOf(parts.middle, parts.prefix.length);
   if (!brief.startsWith(parts.prefix) || !brief.endsWith(parts.suffix) || middle < parts.prefix.length) {
     add('damaged_scaffold', 'brief', 'Content outside Captain’s intent and Firstmate spec differs from the saved scaffold');

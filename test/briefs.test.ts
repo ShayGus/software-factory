@@ -203,7 +203,7 @@ test('CLI preparation and pre-dispatch gate return JSON and fail closed on chang
     assert.equal(prepared.status, 0, prepared.stderr); const result = JSON.parse(prepared.stdout);
     const judgePath = join(flow.directory, 'judge.json'); writeFileSync(judgePath, JSON.stringify(fakeJudge));
     const args = ['check-brief', '--db', flow.database, '--project', projectId, '--assignment', result.assignment.id,
-      '--revision', String(result.assignment.revision), '--brief', flow.briefPath, '--judge-config', judgePath];
+      '--revision', String(result.assignment.revision), '--brief', flow.briefPath, '--agent-config', judgePath];
     assert.equal(run(args).status, 0);
     writeFileSync(flow.briefPath, readFileSync(flow.briefPath, 'utf8').replace('Second-system case', 'ERPNext only'));
     writeFileSync(judgePath, JSON.stringify(fakeVerdict({ verdict: 'fail', findings: [{ type: 'narrowing', message: 'Example-only scope', quotes: [{ source: 'instructions', text: 'ERPNext only' }] }] })));
