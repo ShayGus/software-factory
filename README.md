@@ -8,7 +8,10 @@ BUILD-04 adds CLI intake, source mapping, a standalone Claude Code chat hook,
 configuration-based capture coverage and an explicit FirstMate inbox delivery adapter.
 BUILD-06 adds staged understanding, design, planning, detail, reuse and readiness checks.
 BUILD-08 connects managed tasks and product prerequisites to FirstMate's existing task wrappers.
-It does not schedule workers or implement a production UI/HTTP service, tasks-axi changes or a Beads backend.
+The [one-feature run path](docs/one-feature-run.md) connects these commands to real
+FirstMate brief/start wrappers and its worker-start hook. It does not implement a
+scheduler, production UI/HTTP service, tasks-axi changes or a Beads adapter; the parallel
+Software Factory home selects Beads through FirstMate's existing task wrapper.
 
 Node.js 22.13.0 or later is required. Install and verify with:
 
@@ -883,8 +886,10 @@ Configure agents once per project in `software-factory.agents.json`; start with
 `fixtures/workflow-agents.json`. `ProjectAgentConfigSchema` maps each step directly
 to a FirstMate crew-dispatch profile object with the same field names and values:
 `harness`, `provider`, `model`, `effort`. Harness is required; the other fields are
-optional as in FirstMate. All seven step entries are required, including reserved
-steps that do not run agents in this build. Missing entries and cross-project
+optional as in FirstMate. The seven base step entries, including
+`learning_consolidation`, remain required; the connected run path also requires
+`plan_check` and `build`. Understand, Design, Plan and Detail execute agents in that
+run path. Missing entries and cross-project
 configuration are refused rather than inherited from another step or session.
 
 ```json
@@ -906,8 +911,9 @@ configuration are refused rather than inherited from another step or session.
 }
 ```
 
-`resolveStepAgentProfile` is the shared resolver for later understand/design/plan/
-detail executors and the implemented `instruction_check`, `product_review`, and `learning_consolidation` steps.
+`resolveStepAgentProfile` is the shared resolver for understand/design/plan/detail,
+independent `plan_check`, `instruction_check`, `build`, `product_review` and
+`learning_consolidation` profiles.
 Each review step selects its own profile, never the worker's or the main session's.
 The executable map names installed harness binaries, not arbitrary command argv.
 The adapter constructs the command itself:
@@ -984,8 +990,9 @@ materializing each file. Retrying the same key repairs interrupted file writes;
 a changed payload cannot reuse the key. An old assignment revision cannot dispatch
 or overwrite newer prepared files. Missing source context produces an inspectable
 brief and failed comparison; supply it through a new assignment revision and key.
-A future FirstMate hook can call `check-brief` before starting a worker. Installing
-that hook and worker lifecycle operations are separate integration work.
+The [worker-start hook adapter](docs/one-feature-run.md#worker-start-hook) invokes
+the same instruction check for FirstMate's evaluated launch candidate. Installing
+the sample hook entry remains an explicit operator action in the parallel home.
 
 `test/agent-profiles.test.ts`, `test/instruction-judge.test.ts`, `test/briefs.test.ts` and the BUILD-07 integration cases in `test/planning.test.ts`
 cover preserved intent/scaffold bytes (LF and CRLF), exact revision coverage,

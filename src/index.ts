@@ -25,3 +25,5 @@ export * from './learning-context.js';
 export * from './learning.js';
 export * from './learning-schedule.js';
 export * from './ui-spike.js';
+export * from './worker-start-hook.js';
+export * from './feature-run.js';

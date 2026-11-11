@@ -172,21 +172,34 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
     instructionFidelity: saved.instructionFidelity.result, dispatchReady: false as const };
 }
 
-/** Read-only gate for a future worker-start hook. Exit eligibility is based on
+/** Read-only gate shared by the CLI and worker-start hook. Exit eligibility is based on
  * current files and dispatch rules, never a sidecar's self-reported pass flag. */
 export function checkWorkerBrief(store: ProjectStore, projectId: string, assignmentRef: { id: string; revision: number }, briefPath: string,
-  agentConfig?: unknown) {
+  agentConfig?: unknown, launchCandidate?: { sourceBriefPath: string; sha256: string }) {
   const records = store.history(projectId);
   const assignment = planningRecord(records, assignmentRef);
   if (assignment?.kind !== 'assignment') throw new StoreError('not_found', 'assignment_not_found');
   const findings: InstructionFinding[] = [];
   const path = resolve(briefPath);
-  if (assignment.brief?.path !== path) findings.push({ code: 'brief_path_mismatch', path: 'brief', message: 'Brief path differs from the prepared assignment' });
+  if (assignment.brief?.path !== (launchCandidate ? resolve(launchCandidate.sourceBriefPath) : path)) findings.push({ code: 'brief_path_mismatch', path: 'brief', message: 'Brief path differs from the prepared assignment' });
   let candidate = '';
   let candidateRead = false;
   let sidecarFields: unknown;
   try { candidate = readFileSync(path, 'utf8'); candidateRead = true; }
   catch (error) { findings.push({ code: 'damaged_scaffold', path: 'brief', message: String(error) }); }
+  // FirstMate prepends its role contract and may append a delivery overlay.
+  // Check the preserved source mechanically, and judge the ENTIRE evaluated
+  // candidate semantically: overlays must not be able to narrow the task.
+  let sourceCandidate = candidate;
+  if (launchCandidate && candidateRead) {
+    try {
+      sourceCandidate = readFileSync(launchCandidate.sourceBriefPath, 'utf8');
+      if (!sourceCandidate || candidate.split(sourceCandidate).length !== 2 ||
+        digestText(candidate) !== `sha256:${launchCandidate.sha256}`) {
+        findings.push({ code: 'candidate_mismatch', path: 'brief', message: 'Launch candidate does not preserve exactly one source brief or its event digest' });
+      }
+    } catch { findings.push({ code: 'damaged_scaffold', path: 'brief', message: 'Launch source brief is unavailable' }); }
+  }
   if (assignment.brief) {
     try {
       const coverage = readFileSync(assignment.brief.sidecarPath, 'utf8');
@@ -199,7 +212,7 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
     findings.push(...fileFindings(records, assignment));
   }
   if (candidateRead) {
-    try { findings.push(...instructionFidelityFindings(records, assignment, candidate, sidecarFields)); }
+    try { findings.push(...instructionFidelityFindings(records, assignment, sourceCandidate, sidecarFields)); }
     catch (error) { findings.push({ code: 'damaged_scaffold', path: 'brief', message: String(error) }); }
   }
   const dispatch = validateAssignmentForDispatch(records, assignmentRef);
@@ -218,6 +231,9 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
     // candidate and still-current assignment/context, never to a changed file.
     try {
       if (readFileSync(path, 'utf8') !== candidate) findings.push({ code: 'candidate_changed', path: 'brief', message: 'Brief changed during judgment' });
+      if (launchCandidate && readFileSync(launchCandidate.sourceBriefPath, 'utf8') !== sourceCandidate) {
+        findings.push({ code: 'candidate_changed', path: 'brief', message: 'Source brief changed during judgment' });
+      }
       if (assignment.brief && readFileSync(assignment.brief.sidecarPath, 'utf8') !== sidecar(records, assignment)) {
         findings.push({ code: 'sidecar_mismatch', path: 'sidecar', message: 'Coverage changed during judgment' });
       }

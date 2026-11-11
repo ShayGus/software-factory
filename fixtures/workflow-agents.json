@@ -6,6 +6,8 @@
     "design": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
     "plan": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
     "detail": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "medium" },
+    "plan_check": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
+    "build": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
     "instruction_check": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
     "product_review": { "harness": "claude", "provider": "claude", "model": "claude-opus-5-5", "effort": "high" },
     "learning_consolidation": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" }
