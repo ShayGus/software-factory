@@ -843,11 +843,26 @@ instructions and context; a semantic pass is never invented by the generator.
 `checkWorkerBrief` (`check-brief`) is the read-only worker-start gate. It preserves
 deterministic checks for exact Captain's intent, lifecycle scaffold bytes, required
 context, sidecar/source integrity, revisions, plan readiness and task mapping.
-Assignment metadata remains canonical: return destination, traceability fields,
-criterion/decision revision labels, verbatim context extracts and source/reuse/dependency pointer JSON must
-retain their generated values. These machine fields can neither be redirected nor
-duplicated with conflicting values; ordinary behavior prose may be paraphrased.
-Their canonical values are also supplied in the judge snapshot.
+All toolkit-written machine fields are in exactly one JSON block delimited by
+`<!-- software-factory-assignment:v1:begin -->` and
+`<!-- software-factory-assignment:v1:end -->`. It contains the return destination,
+assignment/design/plan/task identities, criterion and decision references, source
+and reuse pointers, dependency outputs, selected extracts, and coverage references.
+The sidecar carries the same fields plus complete original records. The checker
+requires one complete block, decodes strict JSON, rejects duplicate keys, and
+compares every field with the canonical assignment and received sidecar. Missing,
+duplicated, malformed or edited data fails before any judge call.
+
+The toolkit does not repeat authoritative fields in prose sections or infer them
+from headings, code fences or labels such as `Traceability` and `Return location:`.
+Those words elsewhere are ordinary text for the semantic judge; examples and
+quoted designs can use them freely. Reserved marker examples in source prose are
+escaped on rendering, while original source data is retained in the JSON/sidecar.
+Only the marked block is machine authority. Behavior prose can be paraphrased.
+The canonical assignment values are also supplied in the judge snapshot.
+Older briefs without a marked block must be regenerated with a new preparation
+revision/key; they are not accepted as an unmarked fallback.
+
 If those checks pass, it makes **one agent call** with a frozen snapshot containing
 the exact original request, design, plan, detailed task, criteria/decisions and
 actual candidate instructions. The agent judges narrowing, omission and invented

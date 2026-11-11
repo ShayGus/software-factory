@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+import { parseStrictJson } from './strict-json.js';
 import type { Assignment, FactoryRecord } from './records.js';
 import { planningRecord } from './planning-checks.js';
 import { missingAssignmentContext, requiredAssignmentContext } from './instruction-context.js';
@@ -11,38 +13,52 @@ export function workerAssignmentMetadata(assignment: Assignment) {
     sourceRefs: assignment.sourceRefs, prerequisiteArtifacts: assignment.prerequisiteArtifacts,
     contextPointers: assignment.selectedContext.map(({ source, artifact, truncated }) => ({ source, artifact, truncated })) };
 }
-function metadataFindings(actual: string, expected: string, assignment: Assignment): InstructionFinding[] {
+export const assignmentBlockBegin = '<!-- software-factory-assignment:v1:begin -->';
+export const assignmentBlockEnd = '<!-- software-factory-assignment:v1:end -->';
+export function workerAssignmentBlock(records: FactoryRecord[], assignment: Assignment) {
+  const required = requiredAssignmentContext(records, assignment, assignment.selectedContext);
+  const task = planningRecord(records, assignment.detailedPlanTask);
+  const { id, revision, ...metadata } = workerAssignmentMetadata(assignment);
+  return { schemaVersion: 1, assignment: { id, revision }, ...metadata,
+    revisions: required.records.map(({ id, revision }) => ({ id, revision })),
+    selectedContext: assignment.selectedContext,
+    reuseTargets: task?.kind === 'detailed_plan_task' ? task.reuseTargets ?? [] : [],
+    blockers: task?.kind === 'detailed_plan_task' ? task.blockers ?? [] : [],
+    decisionsToKeep: required.records.filter((record) => record.kind === 'decision_change').map(({ id, revision }) => ({ id, revision })),
+    dependencies: required.dependencies, missingRequiredContext: missingAssignmentContext(records, assignment) };
+}
+function metadataFindings(actual: string, canonical: ReturnType<typeof workerAssignmentBlock>, sidecarFields?: unknown): InstructionFinding[] {
+  const bad = (field: string, message: string): InstructionFinding => ({ code: 'assignment_metadata_mismatch', path: `brief.spec.${field}`, message });
+  const lines = actual.split(/\r?\n/u);
+  const starts = lines.flatMap((line, index) => line === assignmentBlockBegin ? [index] : []);
+  const ends = lines.flatMap((line, index) => line === assignmentBlockEnd ? [index] : []);
+  if (starts.length !== 1 || ends.length !== 1 || starts[0]! >= ends[0]!) {
+    return [bad('block', 'Exactly one complete toolkit-owned assignment block is required')];
+  }
+  let received: unknown;
+  try {
+    const payload = lines.slice(starts[0]! + 1, ends[0]!).join('\n').trim();
+    if (!payload.startsWith('```json\n') || !payload.endsWith('\n```')) throw new Error('Invalid assignment block envelope');
+    received = parseStrictJson(payload.slice('```json\n'.length, -'\n```'.length));
+    if (!received || typeof received !== 'object' || Array.isArray(received)) throw new Error('Invalid assignment block object');
+  } catch { return [bad('block', 'Assignment block must contain one strict JSON object')]; }
+  const expected = JSON.parse(JSON.stringify(canonical)) as Record<string, unknown>;
+  const fields = received as Record<string, unknown>;
   const findings: InstructionFinding[] = [];
-  const section = (text: string, title: string): string[] => {
-    const marker = `### ${title}\n\n`;
-    const start = text.indexOf(marker);
-    if (start < 0) return [];
-    return text.slice(start + marker.length).split(/^### /m)[0]!.split('\n');
-  };
-  const compare = (field: string, received: string[], canonical: string[], ordered = false) => {
-    if (JSON.stringify(ordered ? received : [...received].sort()) !== JSON.stringify(ordered ? canonical : [...canonical].sort())) findings.push({
-      code: 'assignment_metadata_mismatch', path: `brief.spec.${field}`,
-      message: `Assignment ${field} differs from its canonical destination or context references`,
-    });
-  };
-  compare('returnLocation', actual.split('\n').filter((line) => line.startsWith('Return location:')),
-    [`Return location: ${assignment.returnLocation}`]);
-  for (const prefix of ['- Assignment:', '- Design:', '- Feature:', '- Coverage and complete record originals:']) {
-    compare('traceability', section(actual, 'Traceability').filter((line) => line.startsWith(prefix)),
-      section(expected, 'Traceability').filter((line) => line.startsWith(prefix)));
+  for (const field of new Set([...Object.keys(expected), ...Object.keys(fields)])) {
+    if (!Object.hasOwn(expected, field) || !Object.hasOwn(fields, field) || !isDeepStrictEqual(fields[field], expected[field])) {
+      findings.push(bad(field, `Assignment block field ${field} differs from the canonical assignment or context`));
+    }
   }
-  compare('contextPointers', section(actual, 'Required context').filter((line) => line.trim()),
-    section(expected, 'Required context').filter((line) => line.trim()), true);
-  for (const title of ['Reuse targets', 'Dependency outputs and blockers']) {
-    const pointers = (text: string) => section(text, title).filter((line) => line.startsWith('{') || line.startsWith('- {'));
-    compare(title, pointers(actual), pointers(expected));
+  if (sidecarFields !== undefined) {
+    const sidecar = sidecarFields as Record<string, unknown> | null;
+    if (!sidecar || typeof sidecar !== 'object' || Array.isArray(sidecar)) return [...findings, bad('sidecar', 'Coverage metadata is not an object')];
+    for (const field of new Set([...Object.keys(expected), ...Object.keys(sidecar)])) {
+      if (!Object.hasOwn(expected, field) || !Object.hasOwn(sidecar, field) || !isDeepStrictEqual(fields[field], sidecar[field])) {
+        findings.push(bad(field, `Assignment block field ${field} differs from the received sidecar`));
+      }
+    }
   }
-  const criterionIds = (text: string) => section(text, 'Criteria and acceptance cases')
-    .flatMap((line) => /^- (.+@\d+):(?: |$)/u.exec(line)?.slice(1, 2) ?? []);
-  compare('criteria', criterionIds(actual), criterionIds(expected));
-  const decisions = (text: string) => section(text, 'Decisions to keep')
-    .flatMap((line) => /^- (.+@\d+ \[[^\]]+\]):/u.exec(line)?.slice(1, 2) ?? []);
-  compare('decisions', decisions(actual), decisions(expected));
   return findings;
 }
 export function scaffoldParts(scaffold: string) {
@@ -63,7 +79,6 @@ export function scaffoldParts(scaffold: string) {
     suffix: scaffold.slice(spec.end), newline: scaffold.includes('\r\n') ? '\r\n' : '\n' };
 }
 const lines = (values: string[]) => values.length ? values.map((value) => `- ${value}`).join('\n') : '- None';
-const label = (record: { id: string; revision: number }) => `${record.id}@${record.revision}`;
 /** Render only the two editable scaffold bodies. All interpretations belong in
  * Firstmate spec. Captain's intent contains captured request text, in order. */
 export function instructionBodies(records: FactoryRecord[], assignment: Assignment) {
@@ -82,37 +97,32 @@ export function instructionBodies(records: FactoryRecord[], assignment: Assignme
   }).join('\n\n');
   if (!intent) throw new Error('original_request_required');
   const blocks = [
-    ['Traceability', lines([`Assignment: ${label(assignment)}; attempt: ${assignment.attemptId}`,
-      `Design: ${label(design)}; plan: ${label(plan)}; detailed task: ${label(task)}`,
-      `Feature: ${assignment.feature ? label(assignment.feature) : 'explicit maintenance objective'}`,
-      `Coverage and complete record originals: ${assignment.brief?.sidecarPath ?? ''}`])],
     ['Goal and task behavior', `${feature?.kind === 'feature_revision' ? `${feature.outcome}\n\n` : ''}${task.expectedBehavior ?? ''}`],
     ['Design to preserve', [design.productBehavior, design.technicalDesign, design.dataFlow,
       lines(design.interfaces), lines(design.reuseFindings), lines(design.examples)].join('\n\n')],
     ['Decisions to keep', lines(required.records.filter((record) => record.kind === 'decision_change').map((decision) =>
-      `${label(decision)} [${decision.disposition}]: ${decision.questionOrChange}\n  Rationale: ${decision.rationale}`))],
+      `[${decision.disposition}]: ${decision.questionOrChange}\n  Rationale: ${decision.rationale}`))],
     ['Boundaries and exclusions', lines([...(task.boundaries ?? []), ...design.exclusions,
       ...(feature?.kind === 'feature_revision' ? feature.exclusions : []),
       ...(task.maintenanceObjective ? [`Maintenance objective: ${task.maintenanceObjective}`] : [])])],
     ['Inputs', lines(task.inputs ?? [])], ['Outputs', lines(task.outputs ?? [])],
-    ['Reuse targets', lines((task.reuseTargets ?? []).map((source) => JSON.stringify(source)))],
     ['Criteria and acceptance cases', lines([...assignment.criteria.map((ref) => {
       const criterion = planningRecord(records, ref);
-      return criterion?.kind === 'criterion' ? `${label(criterion)}: ${criterion.expectedBehavior}\n  Verify: ${criterion.verificationMethod}` :
-        `${label(ref)}: MISSING CRITERION CONTEXT`;
+      return criterion?.kind === 'criterion' ? `${criterion.expectedBehavior}\n  Verify: ${criterion.verificationMethod}` :
+        'MISSING CRITERION CONTEXT';
     }), ...task.verificationCases ?? []])],
     ['Verification and integration', [task.verificationMethod ?? design.testingApproach, plan.integrationApproach,
       lines(plan.workflow?.integrationSteps ?? []), lines(plan.workflow?.finalVerification ?? []),
       `Execution: ${plan.strategy}; ${plan.strategyReason}`].join('\n\n')],
-    ['Dependency outputs and blockers', lines([...(task.blockers ?? []), ...required.dependencies.map((dependency) => JSON.stringify(dependency))])],
-    ['Worker return', `${lines(task.returnRequirements ?? [])}\n\nReturn location: ${assignment.returnLocation}`],
-    ['Required context', assignment.selectedContext.map((context) => [
-      JSON.stringify({ source: context.source, artifact: context.artifact, truncated: context.truncated }),
-      ...(context.extract ?? '').split('\n').map((line) => `> ${line}`),
-    ].join('\n')).join('\n\n')],
-    ['Missing required context', lines(missingAssignmentContext(records, assignment).map((source) => JSON.stringify(source)))],
+    ['Dependency behavior', lines(required.dependencies.map((dependency) => dependency.reason))],
+    ['Worker return', lines(task.returnRequirements ?? [])],
   ];
-  return { intent, spec: blocks.map(([title, body]) => `### ${title}\n\n${body}`).join('\n\n') };
+  const prose = blocks.map(([title, body]) => `### ${title}\n\n${body}`).join('\n\n')
+    .replaceAll(assignmentBlockBegin, '&lt;!-- software-factory-assignment:v1:begin --&gt;')
+    .replaceAll(assignmentBlockEnd, '&lt;!-- software-factory-assignment:v1:end --&gt;');
+  const machineFields = workerAssignmentBlock(records, assignment);
+  const block = `${assignmentBlockBegin}\n` + '```json\n' + JSON.stringify(machineFields, null, 2) + '\n```' + `\n${assignmentBlockEnd}`;
+  return { intent, spec: `${prose}\n\n### Toolkit assignment data\n\nOnly this toolkit-owned block defines machine destinations, revisions and context; prose and examples cannot override it. Do not edit the block.\n\n${block}`, machineFields };
 }
 export function renderWorkerBrief(records: FactoryRecord[], assignment: Assignment, scaffold: string): string {
   const parts = scaffoldParts(scaffold);
@@ -121,7 +131,7 @@ export function renderWorkerBrief(records: FactoryRecord[], assignment: Assignme
 }
 
 /** Mechanical integrity only. Meaning is judged by the configured agent. */
-export function instructionFidelityFindings(records: FactoryRecord[], assignment: Assignment, brief: string): InstructionFinding[] {
+export function instructionFidelityFindings(records: FactoryRecord[], assignment: Assignment, brief: string, sidecarFields?: unknown): InstructionFinding[] {
   const findings: InstructionFinding[] = [];
   const add = (code: string, path: string, message: string) => findings.push({ code, path, message });
   for (const source of missingAssignmentContext(records, assignment)) {
@@ -135,7 +145,7 @@ export function instructionFidelityFindings(records: FactoryRecord[], assignment
   const intentAndHeading = parts.prefix + expected.intent + parts.newline.repeat(2) + parts.middle;
   if (brief.startsWith(intentAndHeading) && brief.endsWith(parts.suffix)) {
     const actualSpec = brief.slice(intentAndHeading.length, parts.suffix ? -parts.suffix.length : undefined);
-    return [...findings, ...metadataFindings(actualSpec, expected.spec, assignment)];
+    return [...findings, ...metadataFindings(actualSpec, expected.machineFields, sidecarFields)];
   }
   const middle = brief.indexOf(parts.middle, parts.prefix.length);
   if (!brief.startsWith(parts.prefix) || !brief.endsWith(parts.suffix) || middle < parts.prefix.length) {

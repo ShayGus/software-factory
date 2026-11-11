@@ -120,7 +120,7 @@ test('missing original source is explicit and blocks managed dispatch; a new rev
     assert.ok(report.findings.some((finding) => finding.code === 'missing_required_context' && finding.message.includes(flow.sourceFiles[0]!.source.uri)));
     assert.equal(flow.assignment().instructionFidelity.result, 'failed');
     assert.equal(validateAssignmentForDispatch(flow.store.history(projectId), ref(flow.assignment())).ok, false);
-    assert.match(readFileSync(flow.briefPath, 'utf8'), /### Missing required context/);
+    assert.match(readFileSync(flow.briefPath, 'utf8'), /"missingRequiredContext":/);
     const corrected = prepareWorkerBrief(flow.store, { ...flow.input, expectedRevision: 1, idempotencyKey: 'supply-source', sourceFiles: flow.sourceFiles });
     assert.equal(corrected.ok, true, JSON.stringify(corrected));
     assert.equal(flow.assignment().revision, 2);

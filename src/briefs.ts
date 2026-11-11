@@ -9,9 +9,9 @@ import { ref } from './intake.js';
 import { ArtifactSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
 import { AssignmentSchema, DetailedPlanTaskSchema, type Assignment, type FactoryRecord } from './records.js';
 import { planningRecord } from './planning-checks.js';
-import { assignmentCriteria, digestText, missingAssignmentContext, recordSource, requiredAssignmentContext,
+import { assignmentCriteria, digestText, recordSource, requiredAssignmentContext,
   sameSource, sameArtifactIdentity, selectAssignmentContext } from './instruction-context.js';
-import { instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, type InstructionFinding } from './instructions.js';
+import { instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, workerAssignmentBlock, type InstructionFinding } from './instructions.js';
 import { validateAssignmentForDispatch } from './rules.js';
 import { judgeWorkerInstructions } from './instruction-judge.js';
 import { ProjectStore, StoreError } from './store.js';
@@ -41,12 +41,7 @@ function localText(uri: string): string | undefined {
 }
 function sidecar(records: FactoryRecord[], assignment: Assignment) {
   const required = requiredAssignmentContext(records, assignment, assignment.selectedContext);
-  return JSON.stringify({ schemaVersion: 1, assignment: ref(assignment),
-    revisions: required.records.map(ref), records: required.records, sourceRefs: assignment.sourceRefs,
-    selectedContext: assignment.selectedContext, criteria: assignment.criteria,
-    prerequisiteArtifacts: assignment.prerequisiteArtifacts,
-    missingRequiredContext: missingAssignmentContext(records, assignment),
-  }, null, 2) + '\n';
+  return JSON.stringify({ ...workerAssignmentBlock(records, assignment), records: required.records }, null, 2) + '\n';
 }
 function atomicWrite(path: string, text: string) {
   mkdirSync(dirname(path), { recursive: true });
@@ -171,16 +166,24 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
   const path = resolve(briefPath);
   if (assignment.brief?.path !== path) findings.push({ code: 'brief_path_mismatch', path: 'brief', message: 'Brief path differs from the prepared assignment' });
   let candidate = '';
-  try { candidate = readFileSync(path, 'utf8'); findings.push(...instructionFidelityFindings(records, assignment, candidate)); }
+  let candidateRead = false;
+  let sidecarFields: unknown;
+  try { candidate = readFileSync(path, 'utf8'); candidateRead = true; }
   catch (error) { findings.push({ code: 'damaged_scaffold', path: 'brief', message: String(error) }); }
   if (assignment.brief) {
     try {
       const coverage = readFileSync(assignment.brief.sidecarPath, 'utf8');
+      const { records: _records, ...metadata } = JSON.parse(coverage) as Record<string, unknown>;
+      sidecarFields = metadata;
       if (digestText(coverage) !== assignment.brief.sidecarDigest || coverage !== sidecar(records, assignment)) {
         findings.push({ code: 'sidecar_mismatch', path: 'sidecar', message: 'Coverage differs from the committed assignment and source revisions' });
       }
     } catch { findings.push({ code: 'missing_required_context', path: 'sidecar', message: 'Coverage sidecar is missing or unreadable' }); }
     findings.push(...fileFindings(records, assignment));
+  }
+  if (candidateRead) {
+    try { findings.push(...instructionFidelityFindings(records, assignment, candidate, sidecarFields)); }
+    catch (error) { findings.push({ code: 'damaged_scaffold', path: 'brief', message: String(error) }); }
   }
   const dispatch = validateAssignmentForDispatch(records, assignmentRef);
   if (!dispatch.ok) findings.push(...dispatch.issues.filter((issue) => !(issue.recordId === assignment.id &&

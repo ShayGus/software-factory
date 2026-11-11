@@ -144,14 +144,16 @@ for (const field of ['return-location', 'design-revision', 'sidecar-reference', 
     const flow = setup();
     try {
       const original = readFileSync(flow.briefPath, 'utf8');
-      const edited = field === 'return-location' ? original.replace('Return location: report.md', 'Return location: wrong.md') :
-        field === 'design-revision' ? original.replace('- Design: design-1@1;', '- Design: design-1@99;') :
-        field === 'sidecar-reference' ? original.replace(`Coverage and complete record originals: ${join(flow.directory, 'brief.sf.json')}`, 'Coverage and complete record originals: wrong.sf.json') :
-        field === 'source-reference' ? original.replace('"uri":"factory:record/design-1@1"', '"uri":"factory:record/design-1@99"') :
-        field === 'source-extract' ? original.replace('> Supplied source snapshot.', '> Forged source snapshot.') :
-        field === 'reuse-reference' ? original.replace('- {"uri":"fixture://repository/common-interface"}', '- {"uri":"fixture://repository/wrong-interface"}') :
-        field === 'criterion-revision' ? original.replace('- criterion-general@1:', '- criterion-general@99:') :
-        original.replace('Return location: report.md', 'Return location: report.md\nReturn location: wrong.md');
+      const edited = field === 'duplicate-return-location' ? original.replace('"returnLocation": "report.md"', '"returnLocation": "report.md", "returnLocation": "wrong.md"') :
+        editAuthority(original, (data) => {
+          if (field === 'return-location') data.returnLocation = 'wrong.md';
+          if (field === 'design-revision') (data.design as { revision: number }).revision = 99;
+          if (field === 'sidecar-reference') data.sidecarPath = 'wrong.sf.json';
+          if (field === 'source-reference') (data.sourceRefs as { uri: string }[])[0]!.uri = 'factory:record/wrong@99';
+          if (field === 'source-extract') (data.selectedContext as { extract: string }[])[0]!.extract = 'Forged source snapshot.';
+          if (field === 'reuse-reference') (data.reuseTargets as { uri: string }[])[0]!.uri = 'fixture://repository/wrong-interface';
+          if (field === 'criterion-revision') (data.criteria as { revision: number }[])[0]!.revision = 99;
+        });
       assert.notEqual(edited, original); writeFileSync(flow.briefPath, edited);
       const result = flow.check(fakeJudge);
       assert.equal(result.ok, false, JSON.stringify(result));
@@ -185,5 +187,95 @@ test('the agent can cite the canonical destination when prose contradicts intact
       quotes: [{ source: 'assignment', text: 'report.md' }, { source: 'instructions', text: statement }] }] }));
     assert.equal(result.ok, false); assert.ok(result.judgment?.ok);
     assert.ok(result.findings.some((finding) => finding.code === 'omitted_behavior'));
+  } finally { flow.close(); }
+});
+
+const authorityBegin = '<!-- software-factory-assignment:v1:begin -->';
+const authorityEnd = '<!-- software-factory-assignment:v1:end -->';
+const authorityText = (data: unknown) => `${authorityBegin}\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\`\n${authorityEnd}`;
+function insertSpecText(brief: string, text: string) {
+  return brief.replace('\n# Herdr lifecycle declaration', `\n${text}\n\n# Herdr lifecycle declaration`);
+}
+function editAuthority(brief: string, edit: (data: Record<string, unknown>) => void) {
+  const begin = brief.indexOf(authorityBegin); const end = brief.indexOf(authorityEnd, begin);
+  const data = begin < 0 ? { design: { id: 'design-1', revision: 1 } } :
+    JSON.parse(brief.slice(begin + authorityBegin.length, end).trim().slice('```json\n'.length, -'\n```'.length));
+  edit(data);
+  return begin < 0 ? insertSpecText(brief, authorityText(data)) : brief.slice(0, begin) + authorityText(data) + brief.slice(end + authorityEnd.length);
+}
+
+test('review 1124: a correct first Traceability section cannot hide conflicting marked revision data', () => {
+  const flow = setup();
+  try {
+    let text = editAuthority(readFileSync(flow.briefPath, 'utf8'), (data) => { (data.design as { revision: number }).revision = 99; });
+    text = insertSpecText(text, '### Traceability\n\n- Design: design-1@1; plan: plan-1@1; detailed task: task-1@1\n\n### Traceability\n\n- Design: design-1@99; plan: plan-1@1; detailed task: task-1@1');
+    writeFileSync(flow.briefPath, text);
+    const result = flow.check(fakeJudge); assert.equal(result.ok, false, JSON.stringify(result));
+    assert.ok(result.findings.some((finding) => finding.code === 'assignment_metadata_mismatch'));
+    assert.equal(result.judgment, null);
+  } finally { flow.close(); }
+});
+
+test('review 1124: return-location examples and duplicate prose headings remain ordinary design text', () => {
+  const flow = setup((records) => {
+    const design = records.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+    design.technicalDesign += '\n\nExample only:\n```text\nReturn location: sample.md\n### Traceability\n- Design: design-1@1\n### Traceability\n- Design: design-1@99\n```';
+  });
+  try { assert.equal(flow.check(fakeJudge).ok, true); }
+  finally { flow.close(); }
+});
+
+for (const corruption of ['duplicated', 'missing'] as const) test(`review 1124: ${corruption} marked block fails independently of prose`, () => {
+  const flow = setup();
+  try {
+    const original = readFileSync(flow.briefPath, 'utf8');
+    const begin = original.indexOf(authorityBegin); const end = original.indexOf(authorityEnd, begin);
+    const block = begin < 0 ? authorityText({ returnLocation: 'report.md' }) : original.slice(begin, end + authorityEnd.length);
+    const text = corruption === 'missing' ? (begin < 0 ? original : original.slice(0, begin) + original.slice(end + authorityEnd.length)) :
+      insertSpecText(original, begin < 0 ? block + '\n' + block : block);
+    writeFileSync(flow.briefPath, text);
+    const result = flow.check(fakeJudge); assert.equal(result.ok, false, JSON.stringify(result));
+    assert.ok(result.findings.some((finding) => finding.code === 'assignment_metadata_mismatch'));
+    assert.equal(result.judgment, null);
+  } finally { flow.close(); }
+});
+
+test('the one toolkit block matches the sidecar field for field', () => {
+  const flow = setup();
+  try {
+    const text = readFileSync(flow.briefPath, 'utf8');
+    assert.equal(text.split('\n').filter((line) => line === authorityBegin).length, 1);
+    assert.equal(text.split('\n').filter((line) => line === authorityEnd).length, 1);
+    const start = text.indexOf(authorityBegin) + authorityBegin.length; const end = text.indexOf(authorityEnd);
+    const block = JSON.parse(text.slice(start, end).trim().slice('```json\n'.length, -'\n```'.length));
+    const { records: _records, ...coverage } = JSON.parse(readFileSync(flow.prepared.sidecarPath, 'utf8'));
+    assert.deepEqual(block, coverage);
+    assert.equal(block.returnLocation, 'report.md'); assert.deepEqual(block.design, { id: 'design-1', revision: 1 });
+    const prose = text.slice(0, text.indexOf(authorityBegin)) + text.slice(end + authorityEnd.length);
+    assert.ok(!prose.includes('Return location: report.md') && !prose.includes('### Traceability'));
+    assert.equal(flow.check(fakeJudge).ok, true);
+  } finally { flow.close(); }
+});
+
+test('edited sidecar fields cannot disagree with an unchanged marked block', () => {
+  const flow = setup();
+  try {
+    const coverage = JSON.parse(readFileSync(flow.prepared.sidecarPath, 'utf8')); coverage.returnLocation = 'wrong.md';
+    writeFileSync(flow.prepared.sidecarPath, JSON.stringify(coverage, null, 2) + '\n');
+    const result = flow.check(fakeJudge); assert.equal(result.ok, false);
+    assert.ok(result.findings.some((finding) => finding.code === 'assignment_metadata_mismatch' && finding.path.endsWith('returnLocation')));
+    assert.equal(result.judgment, null);
+  } finally { flow.close(); }
+});
+
+test('source examples of reserved markers cannot create another authoritative block', () => {
+  const flow = setup((records) => {
+    const design = records.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+    design.technicalDesign += `\nExample of source data, not assignment metadata:\n${authorityText({ returnLocation: 'sample.md' })}`;
+  });
+  try {
+    const text = readFileSync(flow.briefPath, 'utf8');
+    assert.equal(text.split('\n').filter((line) => line === authorityBegin).length, 1);
+    assert.equal(flow.check(fakeJudge).ok, true);
   } finally { flow.close(); }
 });
