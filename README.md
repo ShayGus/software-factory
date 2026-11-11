@@ -1064,7 +1064,8 @@ Both the managed graph and the observed native prerequisite graph reject cycles.
 An artifact requirement needs evidence of that exact artifact identity from a current result belonging to the mapped producer's current assignment.
 An artifact may be available even when its associated criterion failed.
 A criterion requirement additionally needs a passing result for the current criterion revision.
-Attempt chronology uses the latest assignment revision's update time and revision number, including revisions of an older assignment ID; equally current competing assignments remain unresolved.
+The latest record revision is selected independently within each assignment ID; attempt chronology then uses those revisions' update times.
+Distinct assignment IDs tied for the latest time remain unresolved because their local revision numbers do not establish a task-wide attempt order.
 Evidence must name that exact current assignment revision.
 Ordinary native task completion alone never supplies either product fact.
 Additional readiness conditions use `payload.readiness: [{id, reason, evidence: []}]`; an empty evidence list means unresolved, and supplied versioned evidence records the observation that clears the condition.

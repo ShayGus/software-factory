@@ -583,3 +583,33 @@ test('review 8: padded title receipts converge and allow a later pause', (t) => 
   flow.succeeded(flow.existing({ action: 'pause' }));
   assert.equal(flow.fake.read().tasks['managed-task']!.held, true);
 });
+
+function equalTimeAttemptRecords(records: FactoryRecord[], competingId: boolean) {
+  const { result } = productPrerequisiteRecords(records, 'criterion', true);
+  const first = records.find((record) => record.kind === 'assignment');
+  if (first?.kind !== 'assignment') assert.fail();
+  const at = '2026-11-11T18:00:00Z';
+  first.updatedAt = at;
+  const revised = { ...structuredClone(first), revision: 2, attemptId: 'attempt-revision-2', updatedAt: at };
+  records.push(revised, { ...structuredClone(result), id: 'result-revision-2', assignment: ref(revised) });
+  if (competingId) records.push({ ...structuredClone(first), id: 'competing-assignment', attemptId: 'competing-attempt',
+    createdAt: at, updatedAt: at });
+}
+
+test('review 1176 finding 6: tied assignment IDs stay unresolved despite different local revisions', (t) => {
+  const flow = setup(t, false, (records) => equalTimeAttemptRecords(records, true));
+  flow.fake.edit((state) => { state.tasks['pilot-build'] = fakeTask('pilot-build', { state: 'done' }); });
+  flow.succeeded(flow.command({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, true, 'A@2 cannot outrank competing B@1 at the same time');
+  assertNeverReady(flow.fake.read());
+});
+
+test('review 1176 finding 6: revisions are collapsed within one assignment ID before comparing attempts', (t) => {
+  const flow = setup(t, false, (records) => equalTimeAttemptRecords(records, false));
+  flow.fake.edit((state) => { state.tasks['pilot-build'] = fakeTask('pilot-build', { state: 'done' }); });
+  flow.succeeded(flow.command({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, false, 'Evidence for the sole current assignment revision is sufficient');
+  const records = flow.store.records(projectId);
+  records.push(flow.store.get(projectId, 'assignment-1', 1)!);
+  assert.deepEqual(taskReadinessReasons(records, flow.mapping()), [], 'An older revision of the same ID is not a competing attempt');
+});

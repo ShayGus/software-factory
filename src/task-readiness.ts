@@ -68,20 +68,20 @@ export function taskReadinessReasons(records: FactoryRecord[], mapping: TaskMapp
       reasons.push(`Unresolved prerequisite ${requirement.prerequisiteTaskId}: ${requirement.reason}`);
       continue;
     }
-    const assignments = records.filter((record) => record.kind === 'assignment' &&
+    const byAssignmentId = new Map<string, Extract<FactoryRecord, { kind: 'assignment' }>>();
+    for (const record of records) if (record.kind === 'assignment' &&
+      record.revision > (byAssignmentId.get(record.id)?.revision ?? 0)) byAssignmentId.set(record.id, record);
+    const assignments = [...byAssignmentId.values()].filter((record) =>
       record.firstMateTaskId === producer.firstMateTaskId &&
       record.detailedPlanTask.id === producer.detailedPlanTask?.id &&
       record.detailedPlanTask.revision === producer.detailedPlanTask.revision &&
       record.feature?.id === producer.feature?.id && record.feature?.revision === producer.feature?.revision &&
       record.criteria.length === producer.criteria.length && record.criteria.every((criterion) =>
         producer.criteria.some((entry) => entry.id === criterion.id && entry.revision === criterion.revision)));
-    // Both a new assignment ID and a revision of an existing assignment can
-    // introduce a newer attempt. Equal-time, equal-revision competing attempts
-    // have no certain current owner.
+    // Revisions order records only within one assignment ID. Distinct IDs tied
+    // at the latest time remain unresolved without a task-wide attempt order.
     const latestTime = Math.max(...assignments.map((assignment) => Date.parse(assignment.updatedAt)));
-    const atTime = assignments.filter((assignment) => Date.parse(assignment.updatedAt) === latestTime);
-    const latestRevision = Math.max(...atTime.map((assignment) => assignment.revision));
-    const latest = atTime.filter((assignment) => assignment.revision === latestRevision);
+    const latest = assignments.filter((assignment) => Date.parse(assignment.updatedAt) === latestTime);
     const available = records.some((result) => result.kind === 'criterion_result' && result.artifact &&
       result.evidence.length > 0 && latest.length === 1 && latest.some((assignment) =>
         assignment.id === result.assignment.id && assignment.revision === result.assignment.revision) &&
