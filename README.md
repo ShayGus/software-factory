@@ -10,8 +10,8 @@ BUILD-06 adds staged understanding, design, planning, detail, reuse and readines
 BUILD-08 connects managed tasks and product prerequisites to FirstMate's existing task wrappers.
 The [one-feature run path](docs/one-feature-run.md) connects these commands to real
 FirstMate brief/start wrappers and its worker-start hook. It does not implement a
-scheduler, production UI/HTTP service, tasks-axi changes or a Beads adapter; the parallel
-Software Factory home selects Beads through FirstMate's existing task wrapper.
+scheduler, production UI/HTTP service, tasks-axi changes or a Beads adapter; the
+FirstMate home given in the settings selects Beads through FirstMate's existing task wrapper.
 
 Node.js 22.13.0 or later is required. Install and verify with:
 
@@ -992,7 +992,7 @@ or overwrite newer prepared files. Missing source context produces an inspectabl
 brief and failed comparison; supply it through a new assignment revision and key.
 The [worker-start hook adapter](docs/one-feature-run.md#worker-start-hook) invokes
 the same instruction check for FirstMate's evaluated launch candidate. Installing
-the sample hook entry remains an explicit operator action in the parallel home.
+the sample hook entry remains an explicit operator action in the FirstMate home given in the settings.
 
 `test/agent-profiles.test.ts`, `test/instruction-judge.test.ts`, `test/briefs.test.ts` and the BUILD-07 integration cases in `test/planning.test.ts`
 cover preserved intent/scaffold bytes (LF and CRLF), exact revision coverage,

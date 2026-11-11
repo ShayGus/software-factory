@@ -12,7 +12,7 @@ import { AssignmentSchema, DetailedPlanTaskSchema, type Assignment, type Factory
 import { planningRecord } from './planning-checks.js';
 import { assignmentCriteria, digestText, recordSource, requiredAssignmentContext,
   sameSource, sameArtifactIdentity, selectAssignmentContext } from './instruction-context.js';
-import { instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, workerAssignmentBlock, type InstructionFinding } from './instructions.js';
+import { assignmentMetadataFindings, instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, workerAssignmentBlock, type InstructionFinding } from './instructions.js';
 import { validateAssignmentForDispatch } from './rules.js';
 import { judgeWorkerInstructions } from './instruction-judge.js';
 import { ProjectStore, StoreError } from './store.js';
@@ -174,11 +174,21 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
 
 /** Read-only gate shared by the CLI and worker-start hook. Exit eligibility is based on
  * current files and dispatch rules, never a sidecar's self-reported pass flag. */
+export const briefPreparationGateId = (taskId: string) => `factory:brief-preparation/${taskId}`;
+
 export function checkWorkerBrief(store: ProjectStore, projectId: string, assignmentRef: { id: string; revision: number }, briefPath: string,
-  agentConfig?: unknown, launchCandidate?: { sourceBriefPath: string; sha256: string }) {
+  agentConfig?: unknown, launchCandidate?: { sourceBriefPath: string; sha256: string }, preparationGate?: string) {
   const records = store.history(projectId);
   const assignment = planningRecord(records, assignmentRef);
   if (assignment?.kind !== 'assignment') throw new StoreError('not_found', 'assignment_not_found');
+  // Pre-release checking may defer ONLY the reserved brief-preparation condition.
+  // The native task remains held; hook calls never set this preparation option.
+  if (preparationGate && (launchCandidate || preparationGate !== briefPreparationGateId(assignment.firstMateTaskId))) {
+    throw new StoreError('validation', 'invalid_brief_preparation_gate');
+  }
+  const eligibilityContext = (context: FactoryRecord[]) => preparationGate ? context.map((record) =>
+    record.kind === 'task_mapping' && record.firstMateTaskId === assignment.firstMateTaskId && record.management ?
+      { ...record, management: { ...record.management, readiness: record.management.readiness.filter((condition) => condition.id !== preparationGate) } } : record) : context;
   const findings: InstructionFinding[] = [];
   const path = resolve(briefPath);
   if (assignment.brief?.path !== (launchCandidate ? resolve(launchCandidate.sourceBriefPath) : path)) findings.push({ code: 'brief_path_mismatch', path: 'brief', message: 'Brief path differs from the prepared assignment' });
@@ -214,8 +224,9 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
   if (candidateRead) {
     try { findings.push(...instructionFidelityFindings(records, assignment, sourceCandidate, sidecarFields)); }
     catch (error) { findings.push({ code: 'damaged_scaffold', path: 'brief', message: String(error) }); }
+    if (launchCandidate) findings.push(...assignmentMetadataFindings(candidate, workerAssignmentBlock(records, assignment), sidecarFields));
   }
-  const dispatch = validateAssignmentForDispatch(records, assignmentRef);
+  const dispatch = validateAssignmentForDispatch(eligibilityContext(records), assignmentRef);
   if (!dispatch.ok) findings.push(...dispatch.issues.filter((issue) => !(issue.recordId === assignment.id &&
     issue.code === 'instruction_fidelity' && issue.path === 'instructionFidelity'))
     .map((issue) => ({ code: issue.code, path: issue.path, message: issue.message })));
@@ -239,14 +250,14 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
       }
     } catch { findings.push({ code: 'candidate_changed', path: 'brief', message: 'Brief or coverage became unreadable during judgment' }); }
     const current = store.history(projectId);
-    const fresh = validateAssignmentForDispatch(current.map((record) => record.kind === 'assignment' && record.id === assignment.id &&
-      record.revision === assignment.revision ? { ...record, instructionFidelity: judgment.comparison } : record), assignmentRef);
+    const fresh = validateAssignmentForDispatch(eligibilityContext(current.map((record) => record.kind === 'assignment' && record.id === assignment.id &&
+      record.revision === assignment.revision ? { ...record, instructionFidelity: judgment.comparison } : record)), assignmentRef);
     if (!fresh.ok) findings.push(...fresh.issues.map((issue) => ({ code: issue.code, path: issue.path, message: issue.message })));
     findings.push(...fileFindings(current, assignment));
   }
   // The fresh semantic comparison is returned with its input digest, not written
   // over assignment history by this read-only worker-start gate.
-  return { ok: findings.length === 0, findings, judgment };
+  return { ok: findings.length === 0, findings, judgment, ...(preparationGate ? { dispatchReady: false as const, preparationGate } : {}) };
 }
 
 export type PrepareWorkerBriefInput = z.input<typeof PrepareWorkerBriefInputSchema>;

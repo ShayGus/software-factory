@@ -95,12 +95,28 @@ export class ProjectStore {
   readonly #path: string;
   readonly #taskLocks = new Set<string>();
   #transactionOpen = false;
-  constructor(path: string) {
-    this.#db = new DatabaseSync(path);
+  constructor(path: string, options: { readOnly?: boolean } = {}) {
+    this.#db = new DatabaseSync(path, { readOnly: options.readOnly ?? false });
     this.#path = path === ':memory:' ? path : realpathSync(path);
     try {
       this.#db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
       const version = this.#db.prepare('PRAGMA user_version').get()?.user_version;
+      if (options.readOnly) {
+        if (version !== 1) fail('unsupported_database_version');
+        // A gate may read only an already initialized store, never repair one.
+        const columns = {
+          record_history: [['project_id', 'TEXT', 1, 0], ['id', 'TEXT', 1, 1], ['revision', 'INTEGER', 1, 2], ['kind', 'TEXT', 1, 0], ['body', 'TEXT', 1, 0]],
+          command_receipts: [['project_id', 'TEXT', 1, 1], ['idempotency_key', 'TEXT', 1, 2], ['body', 'TEXT', 1, 0]],
+        };
+        const tables = this.#db.prepare('PRAGMA table_list').all();
+        for (const [table, expected] of Object.entries(columns)) {
+          const actual = this.#db.prepare(`PRAGMA table_info(${table})`).all()
+            .map((column) => [column.name, column.type, column.notnull, column.pk]);
+          if (!tables.some((entry) => entry.schema === 'main' && entry.name === table && entry.type === 'table' && entry.strict === 1) ||
+            JSON.stringify(actual) !== JSON.stringify(expected)) fail('invalid_database_schema');
+        }
+        return;
+      }
       if (version !== 0 && version !== 1) fail('unsupported_database_version');
       this.#db.exec(`
         CREATE TABLE IF NOT EXISTS record_history (

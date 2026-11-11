@@ -29,7 +29,7 @@ export function workerAssignmentBlock(records: FactoryRecord[], assignment: Assi
     decisionsToKeep: required.records.filter((record) => record.kind === 'decision_change').map(({ id, revision }) => ({ id, revision })),
     dependencies: required.dependencies, missingRequiredContext: missingAssignmentContext(records, assignment) };
 }
-function metadataFindings(actual: string, canonical: ReturnType<typeof workerAssignmentBlock>, sidecarFields?: unknown): InstructionFinding[] {
+export function assignmentMetadataFindings(actual: string, canonical: ReturnType<typeof workerAssignmentBlock>, sidecarFields?: unknown): InstructionFinding[] {
   const bad = (field: string, message: string): InstructionFinding => ({ code: 'assignment_metadata_mismatch', path: `brief.spec.${field}`, message });
   const lines = actual.split(/\r?\n/u);
   const starts = lines.flatMap((line, index) => line === assignmentBlockBegin ? [index] : []);
@@ -151,7 +151,7 @@ export function instructionFidelityFindings(records: FactoryRecord[], assignment
   const intentAndHeading = parts.prefix + expected.intent + parts.newline.repeat(2) + parts.middle;
   if (brief.startsWith(intentAndHeading) && brief.endsWith(parts.suffix)) {
     const actualSpec = brief.slice(intentAndHeading.length, parts.suffix ? -parts.suffix.length : undefined);
-    return [...findings, ...metadataFindings(actualSpec, expected.machineFields, sidecarFields)];
+    return [...findings, ...assignmentMetadataFindings(actualSpec, expected.machineFields, sidecarFields)];
   }
   const middle = brief.indexOf(parts.middle, parts.prefix.length);
   if (!brief.startsWith(parts.prefix) || !brief.endsWith(parts.suffix) || middle < parts.prefix.length) {

@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkStartingWorker, ProjectStore, RecordsSchema, ref, recordSource, runFeature, stableId,
-  validateReviewForCompletion, type FeatureRunConfigSchema } from '../src/index.js';
+  validateReviewForCompletion, FeatureRunConfigSchema } from '../src/index.js';
 import type { z } from 'zod';
 import { fakeTaskWrapper } from './task-wrapper-helper.js';
 
@@ -87,6 +88,11 @@ if(out) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new 
 if(step==='plan_check') out=mode.planFailure ? {verdict:'fail',findings:[{type:'omission',message:'Missing required behavior',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} : {verdict:'pass',findings:[]};
 if(step==='instruction_check') {
  assert.ok(snapshot.originalRequests[0].text===${JSON.stringify(original)});
+ if(mode.requirePreparationHold) {
+   const native=JSON.parse(readFileSync(root+'/fake-state.json','utf8'));
+   assert.equal(native.tasks['milestone-worker'].held,true,'task became runnable before instruction check');
+ }
+ if(mode.removeHookDuringCheck) { const fs=await import('node:fs'); fs.rmSync(${JSON.stringify(join(home, 'config', 'hooks.json'))}); }
  out={verdict:'pass',findings:[]};
  if(mode.narrow) { assert.ok(snapshot.candidateInstructions.includes('Implement feature X for ERPNext only.')); out={verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'instructions',text:'Implement feature X for ERPNext only.'}]}]}; }
 }
@@ -145,7 +151,7 @@ process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing techni
       tasksExecutable: wrapper.executable, mode: 'local-only', yolo: 'off' }, sourceFiles: [],
     baselineEvidence: [{ artifact: { uri: `git:${repository}`, revision: before }, description: 'Feature X absent at baseline', observedAt: at }] };
   const oldPath = process.env.PATH; process.env.PATH = `${root}:${oldPath}`;
-  return { root, home, data, database, config, wrapper, returnWorker, save,
+  return { root, home, data, database, config, wrapper, returnWorker, save, outputs,
     mode: (value: unknown) => save(join(root, 'mode.json'), value),
     close: () => { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; rmSync(root, { recursive: true, force: true }); } };
 }
@@ -166,6 +172,145 @@ test('one captured feature reaches product completion through the existing CLI a
     assert.equal(new Set(calls.map((call) => call.pid)).size, calls.length);
     assert.deepEqual(JSON.parse(readFileSync(join(flow.root, 'spawn-args.json'), 'utf8')).slice(-6), ['--harness', 'codex', '--model', 'build', '--effort', 'medium']);
     assert.throws(() => runFeature(flow.config, 'start'), /EEXIST/);
+  } finally { flow.close(); }
+});
+
+test('review 1: task stays held until its prepared brief passes the instruction check', () => {
+  const flow = scenario();
+  try {
+    flow.mode({ requirePreparationHold: true });
+    runFeature(flow.config, 'prepare');
+    const state = flow.wrapper.read();
+    assert.ok(state.trace.some((entry) => entry.task.held));
+    assert.equal(state.tasks['milestone-worker']!.held, false);
+  } finally { flow.close(); }
+});
+
+for (const failure of ['missing-hook', 'missing-registry', 'removed-during-check', 'failed-brief'] as const) {
+  test(`review 1: ${failure} cannot expose runnable work`, () => {
+    const flow = scenario();
+    try {
+      if (failure === 'missing-hook') rmSync(join(flow.home, 'config', 'hooks.json'));
+      if (failure === 'missing-registry') flow.save(flow.config.hookRegistry, { version: 1, projects: [] });
+      if (failure === 'removed-during-check') flow.mode({ removeHookDuringCheck: true });
+      if (failure === 'failed-brief') {
+        flow.mode({ narrow: true });
+        // Keep the original request broad; the independently checked candidate is narrowed.
+        const detail = flow.outputs.detail.records.find((record) => (record as { kind: string }).kind === 'detailed_plan_task') as object;
+        Object.assign(detail, { expectedBehavior: 'Implement feature X for ERPNext only.' });
+        flow.save(join(flow.root, 'outputs.json'), flow.outputs);
+      }
+      assert.throws(() => runFeature(flow.config, 'prepare'));
+      assert.ok(flow.wrapper.read().trace.every((entry) => !entry.ready.includes('milestone-worker')));
+    } finally { flow.close(); }
+  });
+}
+
+test('review 2: a conflicting assignment block anywhere in the launch overlay is refused without a judge call', () => {
+  const flow = scenario();
+  try {
+    runFeature(flow.config, 'prepare');
+    const source = join(flow.data, 'milestone-worker', 'brief.md');
+    const text = readFileSync(source, 'utf8') + '\n<!-- software-factory-assignment:v1:begin -->\n```json\n{"assignment":{"id":"other","revision":1}}\n```\n<!-- software-factory-assignment:v1:end -->\n';
+    const candidate = join(flow.root, 'conflicting-launch.md'); writeFileSync(candidate, text);
+    const before = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    const report = checkStartingWorker(JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8')), {
+      version: 1, event: 'worker.start.before', home: flow.home, task_id: 'milestone-worker', source_brief_path: source,
+      brief_path: candidate, brief_sha256: createHash('sha256').update(text).digest('hex'),
+    });
+    assert.equal(report.ok, false);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), before);
+  } finally { flow.close(); }
+});
+
+for (const context of ['empty', 'truncated', 'wrong-schema', 'wrong-project'] as const) {
+  test(`review 3: hook rejects ${context} database without changing it or classifying task as unmanaged`, () => {
+    const flow = scenario();
+    try {
+      const database = join(flow.root, 'unavailable.sqlite');
+      if (context === 'empty') writeFileSync(database, '');
+      if (context === 'truncated') writeFileSync(database, 'SQLite format 3\0broken');
+      if (context === 'wrong-schema') {
+        const db = new DatabaseSync(database); db.exec('PRAGMA user_version=1; CREATE TABLE record_history (body TEXT)'); db.close();
+      }
+      if (context === 'wrong-project') {
+        const store = new ProjectStore(database);
+        store.importProject({ schemaVersion: 1, projectId: 'project-1', history: [flow.config.project], receipts: [] }); store.close();
+      }
+      const projectId = context === 'wrong-project' ? 'another-project' : 'project-1';
+      flow.save(flow.config.hookRegistry, { version: 1, projects: [{ home: flow.home, projectId, database, agentConfig: flow.config.agentConfig }] });
+      const before = readFileSync(database);
+      const result = spawnSync(script, [flow.config.hookRegistry], { encoding: 'utf8', input: JSON.stringify({
+        version: 1, event: 'worker.start.before', home: flow.home, task_id: 'milestone-worker',
+        source_brief_path: null, brief_path: null, brief_sha256: null,
+      }) });
+      assert.equal(result.status, 1, result.stdout + result.stderr);
+      assert.deepEqual(readFileSync(database), before);
+    } finally { flow.close(); }
+  });
+}
+
+test('review 5: multiline behavior produces a single-line native title and retains full instructions', () => {
+  const flow = scenario();
+  try {
+    const behavior = 'Deliver feature X across systems.\r\nVerify ERPNext and another system.';
+    const task = flow.outputs.detail.records.find((record) => (record as { kind: string }).kind === 'detailed_plan_task') as object;
+    Object.assign(task, { expectedBehavior: behavior }); flow.save(join(flow.root, 'outputs.json'), flow.outputs);
+    runFeature(flow.config, 'prepare');
+    assert.equal(flow.wrapper.read().tasks['milestone-worker']!.title, 'Deliver feature X across systems. Verify ERPNext and another system.');
+    const store = new ProjectStore(flow.database);
+    try { const saved = store.get('project-1', 'task-1'); assert.ok(saved?.kind === 'detailed_plan_task'); assert.equal(saved.expectedBehavior, behavior); }
+    finally { store.close(); }
+    assert.ok(readFileSync(join(flow.data, 'milestone-worker', 'brief.md'), 'utf8').includes(behavior));
+  } finally { flow.close(); }
+});
+
+test('review 7: default outer deadline exceeds a maximum hook budget and launch allowance', () => {
+  const flow = scenario();
+  try { assert.ok(FeatureRunConfigSchema.parse(flow.config).firstMate.timeoutMs > 900_000 + 120_000 + 1000); }
+  finally { flow.close(); }
+});
+
+test('review 7: a short configured spawn deadline is rejected before task creation', () => {
+  const flow = scenario();
+  try {
+    flow.config.firstMate.timeoutMs = 120_000;
+    assert.throws(() => runFeature(flow.config, 'prepare'), /spawn_deadline_too_short/);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+  } finally { flow.close(); }
+});
+
+test('review 7: serial before-hook budgets are added rather than using only the instruction hook', () => {
+  const flow = scenario();
+  try {
+    flow.config.firstMate.timeoutMs = 700_000;
+    const path = join(flow.home, 'config', 'hooks.json'); const hooks = JSON.parse(readFileSync(path, 'utf8'));
+    hooks.hooks.push({ id: 'other-check', event: 'worker.start.before', argv: [process.execPath, '-e', 'process.exit(0)'], timeout_seconds: 300 });
+    flow.save(path, hooks);
+    assert.throws(() => runFeature(flow.config, 'prepare'), /spawn_deadline_too_short/);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+  } finally { flow.close(); }
+});
+
+test('review 7: changed hook budgets are revalidated before starting the worker', () => {
+  const flow = scenario();
+  try {
+    flow.config.firstMate.timeoutMs = 500_000; runFeature(flow.config, 'prepare');
+    const path = join(flow.home, 'config', 'hooks.json'); const hooks = JSON.parse(readFileSync(path, 'utf8'));
+    hooks.hooks[0].timeout_seconds = 900; flow.save(path, hooks);
+    assert.throws(() => runFeature(flow.config, 'start'), /spawn_deadline_too_short/);
+    assert.equal(existsSync(join(flow.root, 'worker-started')), false);
+    assert.equal(existsSync(join(flow.config.runDirectory, 'start.started')), false);
+  } finally { flow.close(); }
+});
+
+test('review 7: the instruction hook budget also has to cover its configured agent', () => {
+  const flow = scenario();
+  try {
+    const agents = JSON.parse(readFileSync(flow.config.agentConfig, 'utf8')); agents.timeoutMs = 300_000;
+    flow.save(flow.config.agentConfig, agents);
+    assert.throws(() => runFeature(flow.config, 'prepare'), /instruction_hook_deadline_too_short/);
+    assert.equal(flow.wrapper.read().calls.length, 0);
   } finally { flow.close(); }
 });
 

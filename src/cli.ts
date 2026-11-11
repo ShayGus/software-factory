@@ -34,6 +34,7 @@ All commands print JSON; chat-hook is silent on success. No settings are install
   check-brief    --db <sqlite> --project <id> --assignment <id>
                  --revision <integer> --brief <already scaffolded brief path>
                  --agent-config <ProjectAgentConfig JSON file>
+                 [--preparation-gate <reserved brief-preparation condition ID>]
   review-product --db <sqlite> --input <ReviewProductInput JSON file>
                  --agent-config <ProjectAgentConfig JSON file>
   learning-capture --db <sqlite> --input <CaptureLearningInput JSON file>
@@ -83,7 +84,7 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   detail: { db: valueOption, input: valueOption },
   'check-plan': { db: valueOption, input: valueOption },
   'prepare-brief': { db: valueOption, input: valueOption },
-  'check-brief': { db: valueOption, project: valueOption, assignment: valueOption, revision: valueOption, brief: valueOption, 'agent-config': valueOption },
+  'check-brief': { db: valueOption, project: valueOption, assignment: valueOption, revision: valueOption, brief: valueOption, 'agent-config': valueOption, 'preparation-gate': valueOption },
   'review-product': { db: valueOption, input: valueOption, 'agent-config': valueOption },
   findings: { db: valueOption, project: valueOption, plan: valueOption },
   stages: { db: valueOption, project: valueOption, feature: valueOption },
@@ -162,7 +163,8 @@ export function runCli(args: string[]): number {
         case 'check-brief': {
           const revision = z.coerce.number().int().positive().parse(required('revision'));
           const agentConfig = optional('agent-config') ? jsonFile('agent-config') : undefined;
-          const report = checkWorkerBrief(store, required('project'), { id: required('assignment'), revision }, required('brief'), agentConfig);
+          const report = checkWorkerBrief(store, required('project'), { id: required('assignment'), revision }, required('brief'), agentConfig,
+            undefined, optional('preparation-gate'));
           output(report); return report.ok ? 0 : 1;
         }
         case 'review-product': {

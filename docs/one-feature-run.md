@@ -1,15 +1,19 @@
 # One feature through FirstMate
 
 This milestone connects the existing commands for one captured request, one feature,
-and one independent implementation task. Software Factory runs alongside the existing
-workspace in its **own FirstMate operational home**, using the FirstMate fork's code
-and a Beads backlog selected from that home's own configuration. No workspace,
+and one independent implementation task. Software Factory is a parallel project
+and uses **the FirstMate home given in the settings**, with the FirstMate fork's
+code and a Beads backlog selected from that home's configuration. No workspace,
 backlog, settings or existing tasks are copied or migrated from another home.
+
+Install the sample hook and matching project registry in the configured home before
+preparation; preparation validates them before creating a native task.
 
 Build this package with `npm ci` and `npm run build`. Keep the checkout available
 at a stable absolute path: both entry scripts load its compiled modules. The
-operator provisions the parallel home, registers its target project and selects
-its runtime before a live run. This repository neither creates nor configures homes.
+operator configures the chosen home, registers its target project and selects
+its runtime before a live run; an existing home can be used. This repository neither
+creates nor configures homes.
 
 ## Run configuration
 
@@ -25,8 +29,8 @@ configuration, with no machine-specific defaults. A minimal `run.json` is:
     "createdAt": "2026-11-12T00:00:00Z", "updatedAt": "2026-11-12T00:00:00Z",
     "goal": "Deliver a connection label through the product workflow",
     "intendedUser": "One operator", "priorities": [], "exclusions": [],
-    "vocabulary": {}, "repositories": [{ "uri": "/absolute/parallel-home/projects/pilot" }],
-    "designRefs": [], "firstMateHomeRef": "/absolute/parallel-home", "timezone": "Asia/Jerusalem"
+    "vocabulary": {}, "repositories": [{ "uri": "/absolute/firstmate-home/projects/pilot" }],
+    "designRefs": [], "firstMateHomeRef": "/absolute/firstmate-home", "timezone": "Asia/Jerusalem"
   },
   "database": "/absolute/pilot-proof/project.sqlite",
   "runDirectory": "/absolute/pilot-proof/run",
@@ -35,22 +39,22 @@ configuration, with no machine-specific defaults. A minimal `run.json` is:
   "requestFile": "/absolute/pilot-proof/request.txt",
   "clientRequestId": "connection-label-1",
   "taskId": "connection-label-1",
-  "repository": "/absolute/parallel-home/projects/pilot",
+  "repository": "/absolute/firstmate-home/projects/pilot",
   "firstMate": {
-    "home": "/absolute/parallel-home",
-    "dataDirectory": "/absolute/parallel-home/data",
+    "home": "/absolute/firstmate-home",
+    "dataDirectory": "/absolute/firstmate-home/data",
     "briefExecutable": "/absolute/firstmate-fork/bin/fm-brief.sh",
     "spawnExecutable": "/absolute/firstmate-fork/bin/fm-spawn.sh",
     "inboxExecutable": "/absolute/firstmate-fork/bin/fm-inbox.sh",
     "tasksExecutable": "/absolute/firstmate-fork/bin/fm-tasks-axi.sh",
-    "mode": "local-only", "yolo": "off", "timeoutMs": 120000
+    "mode": "local-only", "yolo": "off", "timeoutMs": 1080000, "launchTimeoutMs": 120000
   },
   "sourceFiles": [{
     "source": { "uri": "/absolute/pilot-proof/research.txt" },
     "path": "/absolute/pilot-proof/research.txt"
   }],
   "baselineEvidence": [{
-    "artifact": { "uri": "git:/absolute/parallel-home/projects/pilot", "revision": "FULL_BASELINE_COMMIT_SHA" },
+    "artifact": { "uri": "git:/absolute/firstmate-home/projects/pilot", "revision": "FULL_BASELINE_COMMIT_SHA" },
     "description": "At this commit the requested connection-label behavior was absent",
     "observedAt": "2026-11-12T00:00:00Z"
   }]
@@ -99,7 +103,7 @@ The phases call the existing CLI and FirstMate commands in this order:
 
 | Phase | Commands and evidence |
 | --- | --- |
-| Prepare | `init`, `capture`; `understand` agent generates a full-request `map` and the `understand` input; `design`; `plan`; `detail`; independent `plan_check` agent; `check-plan`; `queue-task`; `reconcile-task` through the configured real `fm-tasks-axi.sh`; real `fm-brief.sh`; `prepare-brief`; independent `check-brief` |
+| Prepare | `init`, `capture`; `understand` agent generates a full-request `map` and the `understand` input; `design`; `plan`; `detail`; independent `plan_check` agent; `check-plan`; verify hook/registry and time budgets; `queue-task` with a pending preparation condition; `reconcile-task` creates a held native task through real `fm-tasks-axi.sh`; real `fm-brief.sh`; `prepare-brief`; independent preparation `check-brief`; verify hook/registry again; `manage-task` records the passing evidence and releases the hold |
 | Start | Verify the operator-installed hook and project registry; `deliver` through real `fm-inbox.sh` to announce the captured request; real `fm-spawn.sh` with the `build` profile; FirstMate invokes a fresh `worker.start.before` instruction check before starting its worker |
 | Worker return | Worker commits code, verifies acceptance and writes `worker-return.json` at the assignment's return location, preserving the scaffold's delivery contract; FirstMate owns worker supervision, task state and delivery |
 | Review | `review-product` imports worker results, reads the actual committed code and existing exact-commit technical evidence, then calls a separate `product_review` agent against the original request, design and detailed plan |
@@ -108,8 +112,14 @@ Stage agents return the existing `RecordStageInputSchema`; Understand also retur
 `MapRequestInputSchema`. Their prompts include the runtime JSON schemas and complete
 record context. The run path rejects multiple features, multiple tasks and plan
 dependencies; use the existing individual commands for larger plans. A failed plan
-review stops before queueing. Readiness, context and semantic checks retain their
-existing failure behavior. No UI, scheduler or alternate record store is added.
+review stops before queueing. The native task stays held until brief preparation,
+instruction checking and hook/registry verification succeed.
+`check-brief --preparation-gate factory:brief-preparation/<task-id>` is a read-only preparation
+check: it defers only that reserved condition and reports `dispatchReady: false`.
+All other readiness rules still apply. This option is never used by the start hook.
+After success, `manage-task` records the check evidence and reconciles the release;
+a failed check or unavailable hook leaves the native task held. Other readiness,
+context and semantic checks retain their existing failure behavior. No UI, scheduler or alternate record store is added.
 
 The worker return matches `FeatureWorkerReturnSchema`:
 
@@ -164,7 +174,7 @@ version 1 event JSON from stdin. Create the registry outside the repository:
 {
   "version": 1,
   "projects": [{
-    "home": "/absolute/parallel-home",
+    "home": "/absolute/firstmate-home",
     "projectId": "pilot",
     "database": "/absolute/pilot-proof/project.sqlite",
     "agentConfig": "/absolute/pilot-proof/agents.json"
@@ -172,7 +182,7 @@ version 1 event JSON from stdin. Create the registry outside the repository:
 }
 ```
 
-The operator can add this entry to **that parallel home's** `config/hooks.json`:
+The operator can add this entry to **the configured home's** `config/hooks.json`:
 
 ```json
 {
@@ -191,13 +201,24 @@ The operator can add this entry to **that parallel home's** `config/hooks.json`:
 
 This is a sample only; no installation is performed. Use FirstMate's hook config
 ownership/permission rules. Choose a hook timeout longer than `agents.timeoutMs`
-plus local checks, within FirstMate's 900-second before-hook limit. Each dispatching
-home needs its own entry. For the scripted start, the entry must use these exact
+plus at least five seconds for local checks, within FirstMate's 900-second before-hook limit.
+`firstMate.timeoutMs` is the outer spawn deadline (default 1,080,000 ms, maximum
+3,600,000 ms). It must exceed the sum of every configured `worker.start.before`
+hook budget (120 seconds when omitted, plus one second termination grace each),
+plus `firstMate.launchTimeoutMs` (default 120,000 ms, maximum 600,000 ms).
+The instruction hook itself must have more than `agents.timeoutMs + 5000` ms.
+Preparation and start both validate these budgets; a short deadline fails before
+a task is created or released. Non-spawn FirstMate calls use `launchTimeoutMs`.
+Each dispatching home needs its own entry. For the scripted start, the entry must use these exact
 two absolute argv paths; the full hook runner still validates the configuration.
 
 Lookup canonicalizes home paths (including symlink aliases) and uses the event's
 `home` and `task_id` against canonical task mappings and
-assignments in configured project databases. The brief cannot label itself unmanaged.
+assignments in configured project databases. Databases are opened read-only without creation
+or initialization; schema version, strict table columns and configured project
+identity must be available before any task can be classified as unmanaged. An
+empty, truncated, incompatible or wrong-project database causes a nonzero refusal.
+The brief cannot label itself unmanaged.
 A task with no matching managed records passes without calling an agent. A managed
 task with missing/ambiguous assignment, unavailable database, stale context, altered
 sidecar/source, invalid event or unavailable reviewer fails closed. Registry entries
@@ -205,7 +226,9 @@ must remain available while their managed tasks can launch or relaunch.
 
 The hook reads `source_brief_path` and the **actual** `brief_path` candidate and
 verifies its `brief_sha256`. It requires exactly one preserved source brief and
-checks its saved scaffold, assignment metadata, sidecar and source revisions. It
+checks its saved scaffold, assignment metadata, sidecar and source revisions.
+The whole launch candidate must contain exactly one canonical assignment block;
+additional or conflicting blocks fail before the judge is called. It
 then semantically judges the entire candidate, including FirstMate's prepended role
 and appended delivery overlays. A narrowed overlay cannot inherit a pass from the
 source brief. Candidate, source and authoritative context are checked again after
@@ -224,7 +247,7 @@ step profiles, plan rejection, unmanaged tasks, corrupt digests and missing cont
 It uses temporary git repositories and makes no live model or FirstMate call.
 
 A separate live script and needs list are prepared under the task's external proof
-directory, `sf-milestone-1/`. They take the parallel home, FirstMate fork, project,
+directory, `sf-milestone-1/`. They take the FirstMate home, fork, project,
 profiles and delivery settings from configuration. The live script is deliberately
 not run as part of this milestone; it creates no home, enables no hook and migrates
 no existing workspace. A successful fake test is not evidence of a live model or

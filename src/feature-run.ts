@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { ProjectAgentConfigSchema, nativeStepProfile, stepAgentCommand } from './agent-profiles.js';
 import { runStepAgent } from './agent-runner.js';
-import { PrepareWorkerBriefInputSchema } from './briefs.js';
+import { briefPreparationGateId, PrepareWorkerBriefInputSchema } from './briefs.js';
 import { MapRequestInputSchema, ref } from './intake.js';
 import { InstructionJudgeVerdictSchema } from './instruction-judge.js';
 import { digestText } from './instruction-context.js';
@@ -28,7 +28,8 @@ export const FeatureRunConfigSchema = z.strictObject({
     briefExecutable: absolute, spawnExecutable: absolute, inboxExecutable: absolute,
     tasksExecutable: absolute, guardTaskId: safeId.optional(),
     mode: z.enum(['local-only', 'direct-PR', 'no-mistakes']), yolo: z.enum(['on', 'off']),
-    timeoutMs: z.number().int().positive().max(600_000).default(120_000),
+    timeoutMs: z.number().int().positive().max(3_600_000).default(1_080_000),
+    launchTimeoutMs: z.number().int().positive().max(600_000).default(120_000),
   }),
   sourceFiles: PrepareWorkerBriefInputSchema.shape.sourceFiles,
   baselineEvidence: z.array(EvidenceSchema).min(1),
@@ -54,6 +55,23 @@ export function runFeature(configInput: unknown, phase: 'prepare' | 'start' | 'r
   }
   const { profile: build } = nativeStepProfile(agents, project.id, 'build');
   TaskAdapterOptionsSchema.parse({ fmHome: fm.home, tasksExecutable: fm.tasksExecutable });
+  const verifyDispatchConfiguration = () => {
+    const hookExecutable = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
+    const hooks = z.object({ version: z.literal(1), hooks: z.array(z.object({ event: z.string(), argv: z.array(z.string()),
+      timeout_seconds: z.number().int().positive().max(900).optional() })) }).parse(json(join(fm.home, 'config', 'hooks.json')));
+    const beforeHooks = hooks.hooks.filter((hook) => hook.event === 'worker.start.before');
+    const instructionHook = beforeHooks.find((hook) =>
+      JSON.stringify(hook.argv) === JSON.stringify([hookExecutable, config.hookRegistry]));
+    if (!instructionHook) throw new Error('required_worker_hook_not_configured');
+    if ((instructionHook.timeout_seconds ?? 120) * 1000 <= agents.timeoutMs + 5000) throw new Error('instruction_hook_deadline_too_short');
+    // Before hooks execute serially and each has one second of termination grace.
+    const hookBudget = beforeHooks.reduce((sum, hook) => sum + (hook.timeout_seconds ?? 120) * 1000 + 1000, 0);
+    if (fm.timeoutMs <= hookBudget + fm.launchTimeoutMs) throw new Error('spawn_deadline_too_short');
+    const registry = WorkerHookConfigSchema.parse(json(config.hookRegistry));
+    if (!registry.projects.some((entry) => entry.home === fm.home && entry.database === config.database &&
+      entry.projectId === project.id && entry.agentConfig === config.agentConfig)) throw new Error('run_missing_from_hook_registry');
+  };
+  if (phase !== 'review') verifyDispatchConfiguration();
   mkdirSync(directory, { recursive: true });
   // Exclusive marker prevents a retry from silently launching a second worker.
   const begin = () => writeFileSync(join(directory, `${phase}.started`), new Date().toISOString(), { flag: 'wx' });
@@ -66,7 +84,8 @@ export function runFeature(configInput: unknown, phase: 'prepare' | 'start' | 'r
       !key.startsWith('FM_') && !key.startsWith('TASKS_AXI_')));
     if (firstMate) env.FM_HOME = fm.home;
     const result = spawnSync(executable, args, { encoding: 'utf8', env, cwd: firstMate ? fm.home : directory,
-      timeout: firstMate ? fm.timeoutMs : 600_000, maxBuffer: 4 * 1024 * 1024, killSignal: 'SIGKILL', shell: false });
+      timeout: firstMate ? label === 'firstmate-spawn' ? fm.timeoutMs : fm.launchTimeoutMs : 600_000,
+      maxBuffer: 4 * 1024 * 1024, killSignal: 'SIGKILL', shell: false });
     writeFileSync(join(directory, `${label}.stdout`), result.stdout ?? '');
     writeFileSync(join(directory, `${label}.stderr`), result.stderr ?? '');
     if (result.error || result.status !== 0 || result.signal) throw new Error(`${label}_failed: ${result.stderr?.slice(-8192) || result.error?.message || result.signal || result.status}; inspect ${directory}/${label}.stdout and .stderr; reconcile before retry`);
@@ -128,15 +147,19 @@ The detailed task must require the worker to commit its code, verify each criter
     if (plan?.kind !== 'implementation_plan_revision' || plan.deliverySequence.length !== 1 || plan.dependencies.length) throw new Error('run_requires_one_independent_task');
     const task = history().find((record) => record.id === plan.deliverySequence[0]!.id && record.revision === plan.deliverySequence[0]!.revision);
     if (task?.kind !== 'detailed_plan_task') throw new Error('run_task_missing');
+    verifyDispatchConfiguration();
+    const preparationGate = briefPreparationGateId(config.taskId);
     const queued = inputCommand('queue-task', { schemaVersion: 1, id: `${config.taskId}-queue`, projectId: project.id,
       issuedAt: issuedAt(), idempotencyKey: `${config.taskId}-queue`, command: 'map_manage_execution_task',
       targetId: `${config.taskId}-mapping`, expectedRevision: 0,
       payload: { action: 'create', feature: plan.feature, criteria: task.criteria, detailedPlanTask: ref(task),
-        task: { kind: 'new', firstMateTaskId: config.taskId, title: task.expectedBehavior!, repo: basename(config.repository) },
+        task: { kind: 'new', firstMateTaskId: config.taskId, title: task.expectedBehavior!.replace(/\s+/gu, ' ').trim(), repo: basename(config.repository) },
+        readiness: [{ id: preparationGate, reason: 'Brief preparation and instruction check pending', evidence: [] }],
         dependencies: [], reason: 'Deliver the checked feature plan' } });
+    const taskAdapter = save('task-adapter', { fmHome: fm.home, tasksExecutable: fm.tasksExecutable,
+      ...(fm.guardTaskId ? { guardTaskId: fm.guardTaskId } : {}) });
     command('reconcile-task', ['--project', project.id, '--operation', queued.operation.id,
-      '--adapter-config', save('task-adapter', { fmHome: fm.home, tasksExecutable: fm.tasksExecutable,
-        ...(fm.guardTaskId ? { guardTaskId: fm.guardTaskId } : {}) })]);
+      '--adapter-config', taskAdapter]);
     invoke(fm.briefExecutable, [config.taskId, basename(config.repository), '--mode', fm.mode], 'firstmate-brief', true);
     const briefPath = join(fm.dataDirectory, config.taskId, 'brief.md');
     const prepared = inputCommand('prepare-brief', { projectId: project.id, assignmentId: `${config.taskId}-assignment`,
@@ -144,7 +167,21 @@ The detailed task must require the worker to commit its code, verify each criter
       detailedPlanTask: ref(task), plan: ref(plan), firstMateTaskId: config.taskId,
       returnLocation: join(directory, 'worker-return.json'), briefPath, sourceFiles: config.sourceFiles });
     command('check-brief', ['--project', project.id, '--assignment', prepared.assignment.id, '--revision', String(prepared.assignment.revision),
-      '--brief', briefPath, '--agent-config', config.agentConfig]);
+      '--brief', briefPath, '--agent-config', config.agentConfig, '--preparation-gate', preparationGate]);
+    // Preserve the native hold through the check and revalidate the hook/registry
+    // immediately before recording readiness and reconciling its release.
+    verifyDispatchConfiguration();
+    const mapping = history().filter((record) => record.id === queued.mapping.id).at(-1);
+    if (mapping?.kind !== 'task_mapping' || !mapping.management) throw new Error('run_mapping_missing');
+    command('manage-task', ['--input', save('manage-task-input', { schemaVersion: 1, id: `${config.taskId}-release`, projectId: project.id,
+      issuedAt: issuedAt(), idempotencyKey: `${config.taskId}-release`, command: 'map_manage_execution_task',
+      targetId: mapping.id, expectedRevision: mapping.revision,
+      payload: { action: 'map', feature: mapping.feature, criteria: mapping.criteria, detailedPlanTask: mapping.detailedPlanTask,
+        task: { kind: 'existing', firstMateTaskId: config.taskId }, dependencies: mapping.dependencies,
+        readiness: mapping.management.readiness.map((condition) => condition.id === preparationGate ? { ...condition,
+          evidence: [{ artifact: { uri: join(directory, 'check-brief.stdout'), digest: digestText(readFileSync(join(directory, 'check-brief.stdout'), 'utf8')) },
+            description: 'Prepared brief passed its instruction check with the launch hook and registry verified', observedAt: issuedAt() }] } : condition),
+        reason: 'Release the preparation hold after successful brief and hook verification' } }), '--adapter-config', taskAdapter]);
     const result = PreparedSchema.parse({ requestId: captured.request.id, assignment: prepared.assignment, briefPath,
       configDigest: digestText(JSON.stringify(config)) });
     save('prepared', result); return result;
@@ -152,14 +189,6 @@ The detailed task must require the worker to commit its code, verify each criter
   const prepared = PreparedSchema.parse(json(join(directory, 'prepared.json')));
   if (prepared.configDigest !== digestText(JSON.stringify(config))) throw new Error('prepared_run_config_changed');
   if (phase === 'start') {
-    const hookExecutable = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
-    const hooks = z.object({ version: z.literal(1), hooks: z.array(z.object({ event: z.string(), argv: z.array(z.string()) })) })
-      .parse(json(join(fm.home, 'config', 'hooks.json')));
-    if (!hooks.hooks.some((hook) => hook.event === 'worker.start.before' &&
-      JSON.stringify(hook.argv) === JSON.stringify([hookExecutable, config.hookRegistry]))) throw new Error('required_worker_hook_not_configured');
-    const registry = WorkerHookConfigSchema.parse(json(config.hookRegistry));
-    if (!registry.projects.some((entry) => entry.home === fm.home && entry.database === config.database &&
-      entry.projectId === project.id && entry.agentConfig === config.agentConfig)) throw new Error('run_missing_from_hook_registry');
     begin();
     command('deliver', ['--project', project.id, '--request', prepared.requestId, '--fm-home', fm.home, '--inbox-executable', fm.inboxExecutable]);
     invoke(fm.spawnExecutable, [config.taskId, config.repository, '--mode', fm.mode, '--yolo', fm.yolo,

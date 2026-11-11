@@ -26,8 +26,12 @@ export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
   const home = realpathSync(event.home);
   for (const project of config.projects.filter((entry) => realpathSync(entry.home) === home)) {
     if (!existsSync(project.database)) throw new Error(`hook_database_unavailable: ${project.database}`);
-    const store = new ProjectStore(project.database);
+    const store = new ProjectStore(project.database, { readOnly: true });
     try {
+      const identity = store.get(project.projectId, project.projectId);
+      if (identity?.kind !== 'project' || identity.id !== project.projectId || identity.projectId !== project.projectId) {
+        throw new Error(`hook_project_context_unavailable: ${project.projectId}`);
+      }
       const records = store.records(project.projectId);
       const mapping = records.filter((record) => record.kind === 'task_mapping' && record.firstMateTaskId === event.task_id);
       const assignments = records.filter((record) => record.kind === 'assignment' && record.firstMateTaskId === event.task_id);
@@ -39,7 +43,7 @@ export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
   const { project, assignments } = matches[0]!;
   const assignment = assignments[0]!;
   if (!event.brief_path || !event.source_brief_path || !event.brief_sha256) throw new Error('hook_candidate_missing');
-  const store = new ProjectStore(project.database);
+  const store = new ProjectStore(project.database, { readOnly: true });
   try {
     return { ...checkWorkerBrief(store, project.projectId, assignment, event.brief_path,
       parseStrictJson(readFileSync(project.agentConfig, 'utf8')),
