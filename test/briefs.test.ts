@@ -446,3 +446,46 @@ for (const restriction of [
   const report = validateAssignmentForDispatch(records, ref(assignment)); assert.equal(report.ok, false);
   if (!report.ok) assert.ok(report.issues.some((finding) => finding.code === 'narrowed_generality'));
 });
+
+for (const labelled of [false, true]) test(`review 1102-3: excerpt context is independent of artifact versions (${labelled ? 'labelled' : 'plain'} excerpt snapshot)`, () => {
+  const uri = 'fixture://excerpted-versioned-output';
+  const source = { uri, excerpt: 'first output' };
+  const versions: Artifact[] = ['first', 'second'].map((version) => ({ uri, revision: `${version}-revision`, digest: digestText(`${version} output`) }));
+  const flow = setup({ dependencies: true, editRecords: (records) => {
+    const design = records.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+    design.sourceRefs.push(source);
+    const plan = records.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+    plan.dependencies = versions.map((artifact) => ({ ...plan.dependencies[0]!, needs: { kind: 'artifact', artifact } }));
+  } });
+  try {
+    const snapshots = versions.map((artifact, index) => {
+      const path = join(flow.directory, `excerpt-version-${index}.txt`); writeFileSync(path, `${index === 0 ? 'first' : 'second'} output`);
+      return { source: { uri }, artifact, path };
+    });
+    const otherSources = flow.sourceFiles.filter((entry) => entry.source.uri !== uri);
+    const excerptSnapshot = { source, path: snapshots[0]!.path, ...(labelled ? { artifact: versions[0]! } : {}) };
+    const report = prepareWorkerBrief(flow.store, { ...flow.input, sourceFiles: [...otherSources, ...snapshots, excerptSnapshot] });
+    assert.equal(report.ok, true, JSON.stringify(report));
+    const contexts = flow.assignment().selectedContext.filter((context) => context.source.uri === uri);
+    assert.equal(contexts.length, 3);
+    assert.equal(contexts.filter((context) => context.source.excerpt).length, 1);
+    assert.equal(contexts.find((context) => context.source.excerpt)?.extract, 'first output');
+    for (const version of versions) assert.ok(contexts.some((context) => !context.source.excerpt &&
+      context.artifact?.revision === version.revision && context.artifact?.digest === version.digest));
+    assert.equal(flow.check().ok, true);
+    // Both the quote and each complete version remain independently required.
+    for (const remove of ['excerpt', 'second-version'] as const) {
+      const records = flow.store.history(projectId);
+      const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
+      assignment.selectedContext = assignment.selectedContext.filter((context) => context.source.uri !== uri ||
+        (remove === 'excerpt' ? !context.source.excerpt : context.artifact?.revision !== versions[1]!.revision));
+      const dispatch = validateAssignmentForDispatch(records, ref(assignment)); assert.equal(dispatch.ok, false);
+      if (!dispatch.ok) assert.ok(dispatch.issues.some((finding) => finding.code === 'missing_required_context' &&
+        finding.message.includes(remove === 'excerpt' ? source.excerpt : versions[1]!.revision!)));
+    }
+    const wrongExcerpt = prepareWorkerBrief(flow.store, { ...flow.input, expectedRevision: 1, idempotencyKey: 'wrong-excerpt-snapshot',
+      sourceFiles: [...otherSources, ...snapshots, { source, path: snapshots[1]!.path, ...(labelled ? { artifact: versions[1]! } : {}) }] });
+    assert.equal(wrongExcerpt.ok, false);
+    assert.ok(wrongExcerpt.findings.some((finding) => finding.code === 'missing_required_context' && finding.message.includes(source.excerpt)));
+  } finally { flow.close(); }
+});

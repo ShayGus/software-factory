@@ -801,6 +801,10 @@ entry, matching that prerequisite's exact declared fields. A lone unversioned
 snapshot cannot establish which version it represents. Each version is selected
 and checked separately; missing-context findings include its revision/digest.
 The supplied snapshot retains the declared revision and a verified content digest.
+An excerpted source is checked separately against its selected snapshot; it does
+not require that quote to appear in every artifact version sharing the URI.
+Provide its snapshot under the complete source reference, including `excerpt`,
+alongside the separate versioned artifact snapshots.
 
 `selectAssignmentContext` selects the feature, design, plan, detailed task,
 original requests and sources, assigned criteria, decisions, exclusions, dependency

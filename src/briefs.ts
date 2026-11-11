@@ -107,9 +107,10 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
     brief: { path: briefPath, sidecarPath, scaffold, sidecarDigest: 'pending' },
   });
   const selection = selectAssignmentContext(records, assignment, (source, artifact) => {
-    const file = sourceFiles.find((entry) => sameSource(entry.source, source) && entry.artifact &&
-      artifact && sameArtifactIdentity(entry.artifact, artifact)) ??
-      sourceFiles.find((entry) => sameSource(entry.source, source) && !entry.artifact);
+    const file = artifact ? sourceFiles.find((entry) => sameSource(entry.source, source) && entry.artifact &&
+      sameArtifactIdentity(entry.artifact, artifact)) ??
+      sourceFiles.find((entry) => sameSource(entry.source, source) && !entry.artifact) :
+      sourceFiles.find((entry) => sameSource(entry.source, source));
     const uri = file?.path ?? source.uri;
     // Record refs must resolve locally; never substitute an unrelated file for a
     // missing record revision. External sources require a readable local copy.

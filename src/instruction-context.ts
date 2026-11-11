@@ -20,7 +20,10 @@ const unique = <T>(items: T[], equal: (a: T, b: T) => boolean) =>
   items.filter((item, index) => items.findIndex((other) => equal(item, other)) === index);
 function contextRequirements(sources: Source[], artifacts: Artifact[]): ContextRequirement[] {
   return sources.flatMap((source) => {
-    const versions = source.record ? [] : unique(artifacts.filter((artifact) => artifact.uri === source.uri), sameArtifactIdentity);
+    // A quoted source identifies content to receive, not a quote required from
+    // every version at that URI. Bare artifact sources are added separately.
+    const versions = source.record || source.excerpt !== undefined ? [] :
+      unique(artifacts.filter((artifact) => artifact.uri === source.uri), sameArtifactIdentity);
     return versions.length ? versions.map((artifact) => ({ source, artifact })) : [{ source }];
   });
 }
