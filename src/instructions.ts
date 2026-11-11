@@ -1,16 +1,8 @@
 import type { Assignment, FactoryRecord } from './records.js';
 import { planningRecord } from './planning-checks.js';
-import { missingAssignmentContext, narrowedInstruction, requiredAssignmentContext } from './instruction-context.js';
+import { missingAssignmentContext, requiredAssignmentContext } from './instruction-context.js';
 
 export interface InstructionFinding { code: string; path: string; message: string }
-/** Check operative task scope separately from quoted sources and acceptance
- * examples. Exact rendering cannot make a contradictory task faithful. */
-export function taskScopeFindings(records: FactoryRecord[], assignment: Assignment): InstructionFinding[] {
-  const task = planningRecord(records, assignment.detailedPlanTask);
-  const text = task?.kind === 'detailed_plan_task' ? [task.expectedBehavior ?? '', ...task.boundaries ?? []].join('\n') : '';
-  return narrowedInstruction(records, assignment, text) ? [{ code: 'narrowed_generality', path: 'detailedPlanTask',
-    message: 'Operative task instructions narrow an original example to the entire implementation scope' }] : [];
-}
 export function scaffoldParts(scaffold: string) {
   const headings = [...scaffold.matchAll(/^#{1,2} [^\r\n]*(?:\r?\n|$)/gm)];
   const section = (title: string) => {
@@ -30,16 +22,6 @@ export function scaffoldParts(scaffold: string) {
 }
 const lines = (values: string[]) => values.length ? values.map((value) => `- ${value}`).join('\n') : '- None';
 const label = (record: { id: string; revision: number }) => `${record.id}@${record.revision}`;
-function extraLines(actual: string, expected: string): string[] {
-  const counts = new Map<string, number>();
-  for (const line of expected.split('\n')) counts.set(line, (counts.get(line) ?? 0) + 1);
-  return actual.split('\n').filter((line) => {
-    const count = counts.get(line) ?? 0;
-    if (count) { counts.set(line, count - 1); return false; }
-    return true;
-  });
-}
-
 /** Render only the two editable scaffold bodies. All interpretations belong in
  * Firstmate spec. Captain's intent contains captured request text, in order. */
 export function instructionBodies(records: FactoryRecord[], assignment: Assignment) {
@@ -96,48 +78,26 @@ export function renderWorkerBrief(records: FactoryRecord[], assignment: Assignme
   return parts.prefix + bodies.intent + parts.newline.repeat(2) + parts.middle + bodies.spec + parts.newline.repeat(2) + parts.suffix;
 }
 
-/** Exact derivation is intentionally conservative: an unplanned prose edit is a
- * finding, even if it might be a harmless paraphrase. Amend the plan and regenerate
- * instead of allowing changed prose to approve itself. */
+/** Mechanical integrity only. Meaning is judged by the configured agent. */
 export function instructionFidelityFindings(records: FactoryRecord[], assignment: Assignment, brief: string): InstructionFinding[] {
-  const findings: InstructionFinding[] = taskScopeFindings(records, assignment);
+  const findings: InstructionFinding[] = [];
   const add = (code: string, path: string, message: string) => findings.push({ code, path, message });
   for (const source of missingAssignmentContext(records, assignment)) {
     add('missing_required_context', 'selectedContext', `Missing required context: ${JSON.stringify(source)}`);
   }
   if (!assignment.brief) {
-    add('missing_scaffold', 'brief', 'Assignment has no captured FirstMate scaffold');
-    if (narrowedInstruction(records, assignment, assignment.instructionText)) add('narrowed_generality', 'instructionText', 'An example became the full scope');
-    return findings;
+    add('missing_scaffold', 'brief', 'Assignment has no captured FirstMate scaffold'); return findings;
   }
   const parts = scaffoldParts(assignment.brief.scaffold);
   const expected = instructionBodies(records, assignment);
-  if (assignment.instructionText !== expected.spec) {
-    add('altered_instructions', 'instructionText', 'Assignment instruction text differs from its source-derived task content');
-    if (narrowedInstruction(records, assignment, assignment.instructionText)) add('narrowed_generality', 'instructionText',
-      'Assignment instructions restrict an original example to the full implementation scope');
-  }
   if (brief === renderWorkerBrief(records, assignment, assignment.brief.scaffold)) return findings;
+  const intentAndHeading = parts.prefix + expected.intent + parts.newline.repeat(2) + parts.middle;
+  if (brief.startsWith(intentAndHeading) && brief.endsWith(parts.suffix)) return findings;
   const middle = brief.indexOf(parts.middle, parts.prefix.length);
-  const intact = brief.startsWith(parts.prefix) && brief.endsWith(parts.suffix) && middle >= parts.prefix.length;
-  if (!intact) {
+  if (!brief.startsWith(parts.prefix) || !brief.endsWith(parts.suffix) || middle < parts.prefix.length) {
     add('damaged_scaffold', 'brief', 'Content outside Captain’s intent and Firstmate spec differs from the saved scaffold');
-    return findings;
-  }
-  const actualIntent = brief.slice(parts.prefix.length, middle);
-  const actualSpec = brief.slice(middle + parts.middle.length, parts.suffix ? -parts.suffix.length : undefined);
-  if (actualIntent !== expected.intent + parts.newline.repeat(2)) add('changed_captains_intent', 'brief.intent', 'Captain’s intent differs from the exact original request text');
-  const expectedSpec = expected.spec + parts.newline.repeat(2);
-  const added = extraLines(actualSpec, expectedSpec);
-  if (actualSpec !== expectedSpec) {
-    if (extraLines(expectedSpec, actualSpec).some((line) => line.trim())) {
-      add('omitted_behavior', 'brief.spec', 'Detailed-task behavior, design, verification or required context was omitted or changed');
-    }
-    if (added.some((line) => line.trim())) add('invented_scope', 'brief.spec', 'Instructions contain content not derived from the task/design/source revisions');
-    if (!findings.some((finding) => finding.path === 'brief.spec')) add('altered_instructions', 'brief.spec', 'Generated content order or formatting changed; regenerate the brief');
-  }
-  if (narrowedInstruction(records, assignment, added.join('\n'))) {
-    add('narrowed_generality', 'brief.spec', 'Instructions restrict an original example to the entire implementation scope');
+  } else {
+    add('changed_captains_intent', 'brief.intent', 'Captain’s intent differs from the exact original request text');
   }
   return findings;
 }

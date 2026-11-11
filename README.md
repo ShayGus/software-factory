@@ -138,8 +138,8 @@ Storing them must not accidentally mean dispatch or completion is permitted:
   ready plan, a source-compared design, a matching active current task mapping,
   required request/design/plan/task context, the current assignment revision,
   and an active current feature with unchanged scope for feature assignments.
-  Generated assignments also require their full selected context and unchanged
-  source-derived instruction text. `check-brief` additionally checks actual files.
+  Generated assignments also require their full selected context. `check-brief`
+  additionally checks actual files and obtains a fresh agent judgment for a start.
 - A review claiming `outcome: passed`, and `validateReviewForCompletion`, require
   current passing evidence for every active required criterion, passed source,
   instruction and plan comparisons, no unresolved product questions, and evidence
@@ -151,8 +151,8 @@ Storing them must not accidentally mean dispatch or completion is permitted:
 sources, findings, reviewer session and time. A passing comparison cannot hide
 unresolved findings, and original request references are required. An omitted
 requirement that has never been identified in criteria still requires comparison
-with the original text. BUILD-07 adds conservative exact-derivation checks and a
-bounded example-only scope check below; BUILD-10 owns product review. A schema
+with the original text. BUILD-07 uses an agent to judge instruction meaning, with
+mechanical checks kept separate; BUILD-10 owns product review. A schema
 cannot certify that a reviewer told the truth.
 
 The ERPNext fixtures deliberately keep both criterion IDs in the narrowed assignment.
@@ -341,7 +341,7 @@ results and delivered artifacts. The reason records why that evidence still appl
 
 Durable history, transactions, idempotency and pending-operation storage are implemented.
 Request delivery, staged planning and assignment preparation are implemented below. General operation
-execution/reconciliation, semantic source interpretation and live
+execution/reconciliation and live
 product review remain later builds. No live FirstMate integration or full product milestone is
 claimed by these contract fixtures.
 
@@ -756,7 +756,8 @@ or CLI:
 ```sh
 software-factory prepare-brief --db /absolute/project.sqlite --input prepare.json
 software-factory check-brief --db /absolute/project.sqlite --project project-1 \
-  --assignment assignment-build-1 --revision 1 --brief /absolute/data/build-1/brief.md
+  --assignment assignment-build-1 --revision 1 --brief /absolute/data/build-1/brief.md \
+  --judge-config /absolute/instruction-judge.json
 ```
 
 `prepare.json` follows `PrepareWorkerBriefInputSchema`:
@@ -833,29 +834,87 @@ fidelity comparison, original scaffold, output paths and sidecar digest.
 Use distinct output paths for distinct assignments. An unrelated existing sidecar
 or another assignment's output paths are refused.
 
-Both commands print structured JSON and return 0 only with no open findings.
-`checkWorkerBrief` (`check-brief`) is a read-only pre-dispatch gate: it compares the
-actual brief against the original request, detailed task and design, checks the
-preserved lifecycle scaffold, verifies sidecar coverage and local source integrity,
-and applies existing assignment-dispatch rules. Findings distinguish changed
-Captain's intent, damaged scaffold, narrowed generality, omitted behavior, invented
-scope, missing required context, changed coverage and revision/mapping/readiness
-problems. Pre-existing unmanaged task mappings remain supported. Existing managed
-assignments need their original request, design, plan and task contexts to dispatch.
+Preparation is offline: `prepare-brief` returns 0 when mechanical preparation
+succeeds, with `instructionFidelity: "untested"` and `dispatchReady: false`. It does
+not approve implementation. Missing context still produces a failed comparison
+and nonzero preparation result. The historical assignment stores its generated
+instructions and context; a semantic pass is never invented by the generator.
 
-The check is deterministic and conservative. Exact generated content must survive;
-even an apparently harmless paraphrase requires regeneration. A bounded linguistic
-check also rejects explicit example-only restrictions such as the BUILD-02
-“Implement feature X for ERPNext only” scenario, including when all criterion IDs
-and a claimed fidelity pass remain. Task behavior and boundaries are checked even
-when a brief exactly matches the generator; quoted source context is excluded
-from this operative-scope check. Example declarations such as “ERPNext only an
-example” and negated restrictions such as “not limited to ERPNext” remain faithful.
-Explicit example roles come from BUILD-06
-understanding records or the captured request's `X is an example` wording. This
-cannot establish the semantic completeness of arbitrary prose or detect a
-requirement never represented by source analysis; original sources remain available
-for product review. No model call is part of preparation or checking.
+`checkWorkerBrief` (`check-brief`) is the read-only worker-start gate. It preserves
+deterministic checks for exact Captain's intent, lifecycle scaffold bytes, required
+context, sidecar/source integrity, revisions, plan readiness and task mapping.
+If those checks pass, it makes **one agent call** with a frozen snapshot containing
+the exact original request, design, plan, detailed task, criteria/decisions and
+actual candidate instructions. The agent judges narrowing, omission and invented
+scope by meaning. There are no narrowing word patterns or literal-prose equality
+rules. A faithful paraphrase can pass; a well-formed generated task can still fail.
+The prompt distinguishes adapter details and planned slices from restricting the
+whole requested feature, and treats quoted source instructions as untrusted data.
+
+Configure an existing installed worker command, without a new model provider:
+
+```json
+{
+  "executable": "/absolute/path/to/codex",
+  "args": ["exec", "--sandbox", "read-only", "--ephemeral", "--color", "never",
+           "--skip-git-repo-check", "--output-schema",
+           "/absolute/software-factory/fixtures/instruction-judge.schema.json", "-"],
+  "cwd": "/absolute/review-directory",
+  "timeoutMs": 120000
+}
+```
+
+`InstructionJudgeConfigSchema` accepts an absolute executable, literal argv, an
+optional absolute working directory, and a timeout (default two minutes). The
+worker CLI receives the complete prompt on stdin and must write only its final
+JSON verdict to stdout; progress belongs on stderr. The toolkit invokes it once
+without shell interpolation, retries, provider SDKs or a RoboRev subprocess.
+An existing agent wrapper can implement the same stdin/stdout contract. The Codex
+example uses its installed CLI/authentication; no account or provider is installed.
+
+The result follows `fixtures/instruction-judge.schema.json`:
+
+```json
+{
+  "verdict": "fail",
+  "findings": [{
+    "type": "narrowing",
+    "message": "The candidate restricts the general feature to the example.",
+    "quotes": [
+      { "source": "original_request", "text": "every connected system" },
+      { "source": "instructions", "text": "ERPNext only" }
+    ]
+  }]
+}
+```
+
+Each finding has type `narrowing`, `omission` or `invented_scope`, a concrete
+message and at least one verbatim quote. Quote sources are `original_request`,
+`design`, `plan`, `task` and `instructions`; an omission quotes the authoritative
+requirement absent from the candidate. Quotes must occur in the submitted evidence.
+Pass requires an empty findings array; fail requires findings. Unknown fields,
+duplicate JSON keys, extra prose, fabricated quotes, malformed output, a missing
+command, timeout or nonzero exit all fail closed. There is no cached-pass fallback.
+
+The CLI returns 0 only when mechanical checks and the fresh semantic verdict pass.
+Its JSON contains `judgment.verdict`, the grounded findings, a comparison using the
+existing assignment contract and an input digest identifying the reviewed snapshot.
+`judgment.ok` describes a valid agent response, while top-level `ok` is start
+eligibility. A failure verdict has top-level `ok: false`. The read-only gate returns
+the fresh comparison rather than overwriting assignment history. It rechecks files
+and current dispatch references after the call so a changed candidate, context or
+assignment cannot inherit the earlier snapshot's pass. `validateAssignmentForDispatch`
+remains the pure contract validator for a supplied comparison; use `check-brief`
+for the fresh worker-start decision. Pre-existing unmanaged tasks remain supported.
+
+The judge is an assessment, not proof that arbitrary prose was understood correctly.
+Original source artifacts and quotes remain inspectable for product review.
+Build tests use `fixtures/fake-instruction-judge.mjs` only. The owner examples are
+fixed input/verdict fixtures: `fixtures/instruction-judge/narrowed-task.json` must
+fail, while `fixtures/instruction-judge/adapter-boundary.json` must pass with
+preserved every-system behavior. The fake checks its captured inputs and emits a
+canned verdict; it does not implement another word matcher. A real model proof is
+separate and requires the owner's authorization before running the ready command.
 
 Preparation commits its assignment and idempotency receipt before atomically
 materializing each file. Retrying the same key repairs interrupted file writes;
@@ -865,9 +924,30 @@ brief and failed comparison; supply it through a new assignment revision and key
 A future FirstMate hook can call `check-brief` before starting a worker. Installing
 that hook and worker lifecycle operations are separate integration work.
 
-`test/briefs.test.ts` and the BUILD-07 integration cases in `test/planning.test.ts`
+`test/instruction-judge.test.ts`, `test/briefs.test.ts` and the BUILD-07 integration cases in `test/planning.test.ts`
 cover preserved intent/scaffold bytes (LF and CRLF), exact revision coverage,
 context truncation, dependency outputs, explicit missing sources, altered content,
-the original ERPNext narrowing scenario, sidecar/source damage, persistent replay,
+agent verdict handling, sidecar/source damage, persistent replay,
 stale assignment rejection, CLI exit codes, and preparation from both general and
 narrow BUILD-06 ready plans.
+
+### Judge adaptation sources
+
+The prompt and parser are implemented inside this package. These are the exact
+read-only sources studied and adapted; their surrounding review orchestration,
+interviews, extra approval loops and multi-agent workflows were not imported.
+
+| Source | Adapted part |
+| --- | --- |
+| RoboRev [internal/goalreview/prompt.go](https://github.com/kenn-io/roborev/blob/626dea478c5d5ab5c1d25845ce1474120f9c0f7b/internal/goalreview/prompt.go) and [internal/goalreview/result.go](https://github.com/kenn-io/roborev/blob/626dea478c5d5ab5c1d25845ce1474120f9c0f7b/internal/goalreview/result.go), commit `626dea478c5d5ab5c1d25845ce1474120f9c0f7b` | Frozen authoritative evidence, untrusted embedded instructions, separate mechanical findings, and strict grounded JSON results including duplicate-key rejection. |
+| RoboRev [internal/prompt/custom_review.go](https://github.com/kenn-io/roborev/blob/626dea478c5d5ab5c1d25845ce1474120f9c0f7b/internal/prompt/custom_review.go), same commit | One explicit structured output contract, independent of agent-native schema support. |
+| Installed local `/home/shayg/fm-homes/linux-mate/projects/software-factory/.roborev/task-fit.tmpl`, SHA-256 `a73d54fd32d3e907181d2fb35c825cdb26f3b66e0525685868979b8e667bde2c` | Task fit against originating design/intent, concrete missing/extra behavior, and refusing to infer the request from the candidate alone. This template is untracked, so it has no source commit to cite. |
+| Matt Pocock [write-a-prd/SKILL.md](https://github.com/mattpocock/skills/blob/ab45d5e6e1733b7ae27a0795f2a86418c2d451a0/write-a-prd/SKILL.md), [prd-to-plan/SKILL.md](https://github.com/mattpocock/skills/blob/ab45d5e6e1733b7ae27a0795f2a86418c2d451a0/prd-to-plan/SKILL.md), [prd-to-issues/SKILL.md](https://github.com/mattpocock/skills/blob/ab45d5e6e1733b7ae27a0795f2a86418c2d451a0/prd-to-issues/SKILL.md), commit `ab45d5e6e1733b7ae27a0795f2a86418c2d451a0` | Carry user behavior, implementation/testing decisions and exclusions into source-linked verifiable slices; judge the assigned contribution with its dependencies rather than requiring every task to build the whole feature. |
+| Matt Pocock [skills/engineering/code-review/SKILL.md](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/code-review/SKILL.md), commit `4ae2317ddb22b046e26455e4f9c9b3aaaf62212d` | The spec-review axis: identify missing/partial, unrequested and incorrectly interpreted behavior, with quotations from the authority. |
+
+The inspected installed RoboRev was `0.74.0-fmpatch.1`; its build metadata names
+base commit `626dea478c5d5ab5c1d25845ce1474120f9c0f7b` and marks local modifications.
+The pinned public files therefore describe that base, not an assertion that the
+local patch is identical. Read-only inspection of `~/.roborev/config.toml` found
+the existing Codex agent default and goal-review configuration. Its settings,
+daemon, private review history and hooks are not dependencies of this judge.

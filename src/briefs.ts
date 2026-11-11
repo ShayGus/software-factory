@@ -13,6 +13,7 @@ import { assignmentCriteria, digestText, missingAssignmentContext, recordSource,
   sameSource, sameArtifactIdentity, selectAssignmentContext } from './instruction-context.js';
 import { instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, type InstructionFinding } from './instructions.js';
 import { validateAssignmentForDispatch } from './rules.js';
+import { judgeWorkerInstructions } from './instruction-judge.js';
 import { ProjectStore, StoreError } from './store.js';
 
 const SourceFileSchema = z.strictObject({ source: SourceRefSchema, path: TextSchema,
@@ -103,7 +104,7 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
     selectedContext: [{ source: recordSource(task), truncated: false }],
     criteria: assignmentCriteria(records, plan, task), prerequisiteArtifacts: [], returnLocation: data.returnLocation,
     instructionText: 'Preparation in progress', instructionFidelity: { result: 'untested', sourceRefs: [recordSource(task)],
-      findings: [], reviewerSession: 'factory:deterministic-instruction-fidelity', comparedAt: data.issuedAt },
+      findings: [], reviewerSession: 'factory:structural-instruction-checks', comparedAt: data.issuedAt },
     brief: { path: briefPath, sidecarPath, scaffold, sidecarDigest: 'pending' },
   });
   const selection = selectAssignmentContext(records, assignment, (source, artifact) => {
@@ -132,7 +133,7 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   assignment.instructionText = instructionBodies(records, assignment).spec;
   const text = renderWorkerBrief(records, assignment, scaffold);
   const findings = [...instructionFidelityFindings(records, assignment, text), ...fileFindings(records, assignment)];
-  assignment.instructionFidelity.result = findings.length ? 'failed' : 'passed';
+  assignment.instructionFidelity.result = findings.length ? 'failed' : 'untested';
   assignment.instructionFidelity.findings = findings.map((finding) => ({ result: 'failed', description: `${finding.code}: ${finding.message}`,
     sourceRefs: assignment.instructionFidelity.sourceRefs, evidence: [] }));
   const coverage = sidecar(records, assignment);
@@ -155,19 +156,22 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   // Use the committed record on replay, including its original comparison time.
   atomicWrite(sidecarPath, sidecar(records, saved));
   atomicWrite(briefPath, renderWorkerBrief(records, saved, saved.brief.scaffold));
-  return { assignment: ref(saved), briefPath, sidecarPath, ...checkWorkerBrief(store, data.projectId, ref(saved), briefPath) };
+  return { assignment: ref(saved), briefPath, sidecarPath, ok: findings.length === 0, findings,
+    instructionFidelity: saved.instructionFidelity.result, dispatchReady: false as const };
 }
 
 /** Read-only gate for a future worker-start hook. Exit eligibility is based on
  * current files and dispatch rules, never a sidecar's self-reported pass flag. */
-export function checkWorkerBrief(store: ProjectStore, projectId: string, assignmentRef: { id: string; revision: number }, briefPath: string) {
+export function checkWorkerBrief(store: ProjectStore, projectId: string, assignmentRef: { id: string; revision: number }, briefPath: string,
+  judgeConfig?: unknown) {
   const records = store.history(projectId);
   const assignment = planningRecord(records, assignmentRef);
   if (assignment?.kind !== 'assignment') throw new StoreError('not_found', 'assignment_not_found');
   const findings: InstructionFinding[] = [];
   const path = resolve(briefPath);
   if (assignment.brief?.path !== path) findings.push({ code: 'brief_path_mismatch', path: 'brief', message: 'Brief path differs from the prepared assignment' });
-  try { findings.push(...instructionFidelityFindings(records, assignment, readFileSync(path, 'utf8'))); }
+  let candidate = '';
+  try { candidate = readFileSync(path, 'utf8'); findings.push(...instructionFidelityFindings(records, assignment, candidate)); }
   catch (error) { findings.push({ code: 'damaged_scaffold', path: 'brief', message: String(error) }); }
   if (assignment.brief) {
     try {
@@ -179,8 +183,34 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
     findings.push(...fileFindings(records, assignment));
   }
   const dispatch = validateAssignmentForDispatch(records, assignmentRef);
-  if (!dispatch.ok) findings.push(...dispatch.issues.map((issue) => ({ code: issue.code, path: issue.path, message: issue.message })));
-  return { ok: findings.length === 0, findings };
+  if (!dispatch.ok) findings.push(...dispatch.issues.filter((issue) => !(issue.recordId === assignment.id &&
+    issue.code === 'instruction_fidelity' && issue.path === 'instructionFidelity'))
+    .map((issue) => ({ code: issue.code, path: issue.path, message: issue.message })));
+  if (findings.length) return { ok: false, findings, judgment: null };
+  const judgment = judgeWorkerInstructions(records, assignment, candidate, judgeConfig);
+  if (!judgment.ok) findings.push({ code: 'instruction_judge_unavailable', path: 'judge', message: judgment.error });
+  else for (const finding of judgment.verdict.findings) findings.push({
+    code: finding.type === 'narrowing' ? 'narrowed_generality' : finding.type === 'omission' ? 'omitted_behavior' : 'invented_scope',
+    path: 'brief.spec', message: finding.message,
+  });
+  if (judgment.ok) {
+    // Judgment can take minutes. A fresh verdict applies only to its frozen
+    // candidate and still-current assignment/context, never to a changed file.
+    try {
+      if (readFileSync(path, 'utf8') !== candidate) findings.push({ code: 'candidate_changed', path: 'brief', message: 'Brief changed during judgment' });
+      if (assignment.brief && readFileSync(assignment.brief.sidecarPath, 'utf8') !== sidecar(records, assignment)) {
+        findings.push({ code: 'sidecar_mismatch', path: 'sidecar', message: 'Coverage changed during judgment' });
+      }
+    } catch { findings.push({ code: 'candidate_changed', path: 'brief', message: 'Brief or coverage became unreadable during judgment' }); }
+    const current = store.history(projectId);
+    const fresh = validateAssignmentForDispatch(current.map((record) => record.kind === 'assignment' && record.id === assignment.id &&
+      record.revision === assignment.revision ? { ...record, instructionFidelity: judgment.comparison } : record), assignmentRef);
+    if (!fresh.ok) findings.push(...fresh.issues.map((issue) => ({ code: issue.code, path: issue.path, message: issue.message })));
+    findings.push(...fileFindings(current, assignment));
+  }
+  // The fresh semantic comparison is returned with its input digest, not written
+  // over assignment history by this read-only worker-start gate.
+  return { ok: findings.length === 0, findings, judgment };
 }
 
 export type PrepareWorkerBriefInput = z.input<typeof PrepareWorkerBriefInputSchema>;

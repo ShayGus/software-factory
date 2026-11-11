@@ -176,30 +176,3 @@ export function missingAssignmentContext(records: FactoryRecord[], assignment: A
       (!artifact || (context.artifact.revision === artifact.revision && (!artifact.digest || context.artifact.digest === artifact.digest)))));
   })).map(missingContext);
 }
-
-/** Deliberately bounded linguistic check of explicit example-only instructions.
- * Exact generated-content comparison handles all other unsupported edits. This
- * does not claim to infer arbitrary natural-language semantics. */
-export function narrowedInstruction(records: FactoryRecord[], assignment: Assignment, text: string): boolean {
-  const required = requiredAssignmentContext(records, assignment);
-  const terms = required.requests.flatMap((ref) => {
-    const request = planningRecord(records, ref);
-    return request?.kind === 'request' ? [...request.originalText.matchAll(/([\p{L}\p{N}_+-]+)\s+is\s+(?:only\s+)?an?\s+example/giu)]
-      .map((match) => match[1]!) : [];
-  });
-  const design = planningRecord(records, assignment.design);
-  const understanding = design?.kind === 'design_revision' && design.workflow && planningRecord(records, design.workflow.understanding);
-  if (understanding && understanding.kind === 'understanding_revision') {
-    terms.push(...understanding.scope.filter((scope) => scope.role === 'example').map((scope) => scope.term));
-  }
-  return terms.some((term) => {
-    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const restriction = new RegExp(`(?<![\\p{L}\\p{N}_])(?:${escaped}\\s+(?:only|alone)|only\\s+${escaped}|limited\\s+to\\s+${escaped}|${escaped}[- ]specific)(?![\\p{L}\\p{N}_])`, 'giu');
-    return [...text.matchAll(restriction)].some((match) => {
-      const suffix = text.slice(match.index + match[0].length);
-      if (/^\s+(?:as\s+)?(?:an?\s+)?(?:example|illustration|sample)\b/iu.test(suffix)) return false;
-      const clause = text.slice(0, match.index).split(/[.!?;,\n]|\b(?:but|however|instead)\b/iu).at(-1)!;
-      return !/\b(?:not|never|no|cannot|[\p{L}]+n['’]t)\b(?:\s+[\p{L}]+){0,4}\s*$/iu.test(clause);
-    });
-  });
-}

@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fakeJudge, fakeVerdict } from './judge-helper.js';
 import {
   ProjectStore, RecordsSchema, prepareWorkerBrief, checkWorkerBrief, requiredAssignmentContext,
   scaffoldParts, validateAssignmentForDispatch, validateRecords, ref,
@@ -56,7 +57,7 @@ function setup(options: { omitSource?: boolean; crlf?: boolean; dependencies?: b
     const record = store.get(projectId, input.assignmentId);
     assert.ok(record?.kind === 'assignment'); return record;
   };
-  const check = () => checkWorkerBrief(store, projectId, ref(assignment()), briefPath);
+  const check = (judge: unknown = fakeJudge) => checkWorkerBrief(store, projectId, ref(assignment()), briefPath, judge);
   return { store, records, input, directory, database, briefPath, original, sourceFiles, prepare, assignment, check,
     close: () => { store.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
@@ -81,8 +82,8 @@ for (const crlf of [false, true]) test(`generated brief preserves intent and lif
         context.source.record.revision === ref.revision));
     }
     assert.deepEqual(sidecar.selectedContext, assignment.selectedContext);
-    assert.equal(assignment.instructionFidelity.result, 'passed');
-    assert.equal(validateAssignmentForDispatch(flow.store.history(projectId), ref(assignment)).ok, true);
+    assert.equal(assignment.instructionFidelity.result, 'untested');
+    assert.equal(validateAssignmentForDispatch(flow.store.history(projectId), ref(assignment)).ok, false, 'Preparation does not claim semantic review');
     assert.equal(flow.check().ok, true);
   } finally { flow.close(); }
 });
@@ -104,7 +105,10 @@ for (const mutation of mutations) test(`fidelity rejects ${mutation.name}`, () =
     const edited = mutation.edit(readFileSync(flow.briefPath, 'utf8'));
     assert.match(edited, /criterion-general@1/); assert.match(edited, /criterion-second-system@1/);
     writeFileSync(flow.briefPath, edited);
-    const report = flow.check(); assert.equal(report.ok, false);
+    const semantic = mutation.code === 'narrowed_generality' ? fakeVerdict({ verdict: 'fail', findings: [{ type: 'narrowing', message: 'The brief narrows the general feature', quotes: [{ source: 'instructions', text: scenario.edits[0].value }] }] }) :
+      mutation.code === 'omitted_behavior' ? fakeVerdict({ verdict: 'fail', findings: [{ type: 'omission', message: 'Task behavior was dropped', quotes: [{ source: 'task', text: 'Feature X across connected systems, including a second-system acceptance case.' }] }] }) :
+      mutation.code === 'invented_scope' ? fakeVerdict({ verdict: 'fail', findings: [{ type: 'invented_scope', message: 'Unrequested billing scope', quotes: [{ source: 'instructions', text: 'Also implement billing and payments.' }] }] }) : fakeJudge;
+    const report = flow.check(semantic); assert.equal(report.ok, false);
     assert.ok(report.findings.some((finding) => finding.code === mutation.code), JSON.stringify(report));
   } finally { flow.close(); }
 });
@@ -178,7 +182,7 @@ test('idempotent replay restores interrupted file writes and rejects a changed p
     assert.equal(flow.assignment().revision, 1);
     assert.throws(() => prepareWorkerBrief(flow.store, { ...flow.input, returnLocation: 'different-result.md' }), /idempotency_conflict/);
     const reopened = new ProjectStore(flow.database);
-    try { assert.equal(checkWorkerBrief(reopened, projectId, first.assignment, flow.briefPath).ok, true); }
+    try { assert.equal(checkWorkerBrief(reopened, projectId, first.assignment, flow.briefPath, fakeJudge).ok, true); }
     finally { reopened.close(); }
   } finally { flow.close(); }
 });
@@ -197,10 +201,12 @@ test('CLI preparation and pre-dispatch gate return JSON and fail closed on chang
     const run = (args: string[]) => spawnSync(process.execPath, [cli.pathname, ...args], { encoding: 'utf8' });
     const prepared = run(['prepare-brief', '--db', flow.database, '--input', inputPath]);
     assert.equal(prepared.status, 0, prepared.stderr); const result = JSON.parse(prepared.stdout);
+    const judgePath = join(flow.directory, 'judge.json'); writeFileSync(judgePath, JSON.stringify(fakeJudge));
     const args = ['check-brief', '--db', flow.database, '--project', projectId, '--assignment', result.assignment.id,
-      '--revision', String(result.assignment.revision), '--brief', flow.briefPath];
+      '--revision', String(result.assignment.revision), '--brief', flow.briefPath, '--judge-config', judgePath];
     assert.equal(run(args).status, 0);
     writeFileSync(flow.briefPath, readFileSync(flow.briefPath, 'utf8').replace('Second-system case', 'ERPNext only'));
+    writeFileSync(judgePath, JSON.stringify(fakeVerdict({ verdict: 'fail', findings: [{ type: 'narrowing', message: 'Example-only scope', quotes: [{ source: 'instructions', text: 'ERPNext only' }] }] })));
     const checked = run(args); assert.equal(checked.status, 1);
     assert.ok(JSON.parse(checked.stdout).findings.some((finding: { code: string }) => finding.code === 'narrowed_generality'));
     rmSync(result.sidecarPath); assert.equal(run(args).status, 1);
@@ -278,14 +284,6 @@ test('a passed prerequisite result supplies its recorded output artifact to the 
   assert.ok(!selected.sources.some((source) => source.uri.startsWith('factory:criterion-output/')));
 });
 
-test('BUILD-02 narrowing is rejected even if its stored fidelity flag still claims a pass', () => {
-  const records = structuredClone(baseline);
-  const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
-  assignment.instructionText = scenario.edits[0].value;
-  const report = validateAssignmentForDispatch(records, ref(assignment)); assert.equal(report.ok, false);
-  if (!report.ok) assert.ok(report.issues.some((issue) => issue.code === 'narrowed_generality'));
-});
-
 test('source truncation preserves Unicode code points', () => {
   const flow = setup();
   try {
@@ -311,25 +309,6 @@ test('recorded handover context stays pinned when later dependency results arriv
   assert.ok(pinned.records.some((record) => record.id === previous.id && record.revision === 1));
   assert.ok(!pinned.records.some((record) => record.id === previous.id && record.revision === 2));
   assert.ok(pinned.prerequisites.some((artifact) => artifact.revision === 'fixture-commit-1'));
-});
-
-test('review 1094-1: exact generation cannot approve a task narrowed from the original general design', () => {
-  const flow = setup({ editRecords: (records) => {
-    const task = records.find((record) => record.kind === 'detailed_plan_task'); assert.ok(task?.kind === 'detailed_plan_task');
-    task.expectedBehavior = scenario.edits[0].value;
-  } });
-  try {
-    const report = flow.prepare(); assert.equal(report.ok, false, JSON.stringify(report));
-    assert.ok(report.findings.some((finding) => finding.code === 'narrowed_generality'));
-    assert.equal(flow.check().ok, false);
-    assert.equal(flow.assignment().instructionFidelity.result, 'failed');
-    // A manually asserted pass must not bypass the operative-text check either.
-    const records = flow.store.history(projectId);
-    const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
-    assignment.instructionFidelity = { ...assignment.instructionFidelity, result: 'passed', findings: [] };
-    const dispatch = validateAssignmentForDispatch(records, ref(assignment)); assert.equal(dispatch.ok, false);
-    if (!dispatch.ok) assert.ok(dispatch.issues.some((finding) => finding.code === 'narrowed_generality'));
-  } finally { flow.close(); }
 });
 
 for (const identity of ['digest', 'revision'] as const) test(`review 1094-2: one snapshot cannot cover two ${identity} identities of the same URI`, () => {
@@ -377,18 +356,6 @@ for (const via of ['designRefs', 'reuseTargets', 'sourceRefs'] as const) test(`r
   } finally { flow.close(); }
 });
 
-for (const faithful of [
-  'Feature X works for every connected system, with ERPNext only an example.',
-  'Feature X is not limited to ERPNext.',
-  'Implement the general feature; do not implement only ERPNext.',
-]) test(`review 1094-4: faithful instructions dispatch: ${faithful}`, () => {
-  const records = structuredClone(baseline);
-  const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
-  assignment.instructionText = faithful;
-  const report = validateAssignmentForDispatch(records, ref(assignment));
-  assert.equal(report.ok, true, JSON.stringify(report));
-});
-
 for (const identity of ['digest', 'revision'] as const) test(`review 1094-2: distinct snapshots satisfy both ${identity} versions without collapsing coverage`, () => {
   const uri = 'fixture://versioned-output';
   const versions: Artifact[] = ['first', 'second'].map((version) => ({ uri,
@@ -431,20 +398,6 @@ test('review 1094-1: quoted source restrictions do not become operative task ins
     const report = flow.prepare(); assert.equal(report.ok, true, JSON.stringify(report));
     assert.equal(flow.check().ok, true);
   } finally { flow.close(); }
-});
-
-for (const restriction of [
-  'Implement feature X for ERPNext only.',
-  'Implement feature X only ERPNext.',
-  'Feature X is limited to ERPNext.',
-  'Feature X must not be limited to ERPNext; implement ERPNext only.',
-  'ERPNext is only an example, but implement only ERPNext.',
-]) test(`review 1094-4: actual restrictions remain blocked: ${restriction}`, () => {
-  const records = structuredClone(baseline);
-  const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
-  assignment.instructionText = restriction;
-  const report = validateAssignmentForDispatch(records, ref(assignment)); assert.equal(report.ok, false);
-  if (!report.ok) assert.ok(report.issues.some((finding) => finding.code === 'narrowed_generality'));
 });
 
 for (const labelled of [false, true]) test(`review 1102-3: excerpt context is independent of artifact versions (${labelled ? 'labelled' : 'plain'} excerpt snapshot)`, () => {

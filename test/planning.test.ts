@@ -4,12 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { fakeJudge } from './judge-helper.js';
 import {
   ProjectStore, RecordsSchema, UnderstandingRevisionSchema, DesignRevisionSchema,
   ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, StageRevisionSchema, DecisionChangeSchema,
   recordStage, checkPlanReadiness, planReadinessHistory, ref, validateRecords, validateAssignmentForDispatch, planReadinessFindings,
   type FactoryRecord, type StageRevision, type ImplementationPlanRevision, type Ref,
-  prepareWorkerBrief, requiredAssignmentContext, recordSource,
+  prepareWorkerBrief, checkWorkerBrief, requiredAssignmentContext, recordSource,
 } from '../src/index.js';
 
 const time = '2026-11-10T10:36:43Z';
@@ -809,6 +810,6 @@ for (const narrow of [false, true]) test(`BUILD-07 prepares ${narrow ? 'a correc
     for (const record of [flow.decision, flow.understanding, flow.detailStage]) {
       assert.ok(assignment.selectedContext.some((context) => context.source.uri === recordSource(record).uri));
     }
-    assert.equal(validateAssignmentForDispatch(flow.store.history(base.projectId), ref(assignment)).ok, true);
+    assert.equal(checkWorkerBrief(flow.store, base.projectId, ref(assignment), briefPath, fakeJudge).ok, true);
   } finally { flow.store.close(); rmSync(directory, { recursive: true, force: true }); }
 });

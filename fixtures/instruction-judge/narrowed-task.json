@@ -1,0 +1,17 @@
+{
+  "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+  "designIncludes": "common connected-system interface",
+  "expectedBehavior": "Generalization is not needed because we support ERPNext only.",
+  "candidateIncludes": "Generalization is not needed because we support ERPNext only.",
+  "verdict": {
+    "verdict": "fail",
+    "findings": [{
+      "type": "narrowing",
+      "message": "The task and candidate restrict every-system behavior to the original example.",
+      "quotes": [
+        { "source": "original_request", "text": "every connected system" },
+        { "source": "instructions", "text": "Generalization is not needed because we support ERPNext only." }
+      ]
+    }]
+  }
+}

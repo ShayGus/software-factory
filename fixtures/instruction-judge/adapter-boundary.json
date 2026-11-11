@@ -1,0 +1,7 @@
+{
+  "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+  "designIncludes": "common connected-system interface",
+  "expectedBehavior": "Feature X across connected systems, including a second-system acceptance case.",
+  "candidateIncludes": "Keep ERPNext-specific parsing in the ERPNext adapter.",
+  "verdict": { "verdict": "pass", "findings": [] }
+}
