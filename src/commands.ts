@@ -83,6 +83,10 @@ export const DeliverCorrectionCommandSchema = z.strictObject({
     action: CorrectionActionSchema, sequence: z.number().int().positive(), supersedes: z.array(RefSchema),
   }),
 });
+export const ReviewDeliveryTargetSchema = z.strictObject({
+  assignment: RefSchema, repository: TextSchema, deliveredArtifact: ArtifactSchema,
+  paths: z.array(TextSchema),
+});
 export const RecordReviewResultCommandSchema = z.strictObject({
   ...mutation, command: z.literal('record_review_result'),
   payload: z.strictObject({
@@ -90,7 +94,8 @@ export const RecordReviewResultCommandSchema = z.strictObject({
     assignment: RefSchema, deliveredArtifact: ArtifactSchema,
     results: z.array(CriterionResultSchema), review: ProductReviewSchema.optional(),
     generation: z.strictObject({ repository: TextSchema, paths: z.array(TextSchema), maxSourceChars: z.number().int().positive(),
-      baselineEvidence: z.array(EvidenceSchema), agentConfigDigest: TextSchema }).optional(),
+      baselineEvidence: z.array(EvidenceSchema), agentConfigDigest: TextSchema,
+      additionalDeliveries: z.array(ReviewDeliveryTargetSchema).optional() }).optional(),
   }),
 });
 export const CaptureConsolidateLearningCommandSchema = z.strictObject({

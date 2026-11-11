@@ -280,8 +280,42 @@ function checkCompletion(ctx: Context, review: ProductReview) {
       const assignment = ctx.index.get(key(assignmentRef));
       if (assignment?.kind !== 'assignment') continue;
       for (const criterion of assignment.criteria.length ? assignment.criteria : [null]) {
+        if (!review.results.some((resultRef) => {
+          const result = ctx.index.get(key(resultRef));
+          return result?.kind === 'criterion_result' && sameRef(result.assignment, assignmentRef) && sameRef(result.criterion, criterion);
+        })) ctx.add(review, 'missing_worker_return', 'results', 'Every assigned criterion, including optional criteria, needs a worker return');
         if (proof.verdict?.criteria.filter((outcome) => sameRef(outcome.criterion, criterion)).length !== 1) {
           ctx.add(review, 'incomplete_conformance', 'conformance.verdict.criteria', 'Every assigned criterion needs exactly one reviewer outcome');
+        }
+      }
+    }
+    for (const artifact of review.reviewedArtifacts) if (!proof.technicalReviews.some((result) => result.commit === artifact.revision)) {
+      ctx.add(review, 'missing_quality_evidence', 'conformance.technicalReviews', 'Every delivered commit needs quality evidence');
+    }
+    if (proof.deliveries) for (const assignment of review.assignments) {
+      if (proof.deliveries.filter((delivery) => sameRef(delivery.assignment, assignment)).length !== 1) {
+        ctx.add(review, 'missing_delivery_provenance', 'conformance.deliveries', 'Every reviewed assignment needs exactly one delivery provenance entry');
+      }
+    }
+    for (const delivery of proof.deliveries ?? []) {
+      const assignment = ctx.index.get(key(delivery.assignment));
+      if (assignment?.kind !== 'assignment' || !sameRef(assignment.detailedPlanTask, delivery.detailedPlanTask) ||
+        delivery.fileArtifacts.some((artifact) => artifact.revision !== delivery.artifact.revision ||
+          !artifact.uri.startsWith(`${delivery.artifact.uri}#`) || !proof.deliveredFiles.some((file) =>
+            file.artifact.uri === artifact.uri && file.artifact.revision === artifact.revision && file.artifact.digest === artifact.digest))) {
+        ctx.add(review, 'delivery_context_mismatch', 'conformance.deliveries', 'Delivery files and detailed task must retain their assignment and artifact identity');
+      }
+      if (!review.assignments.some((assignment) => sameRef(assignment, delivery.assignment)) ||
+        !review.detailedPlanTasks.some((task) => sameRef(task, delivery.detailedPlanTask)) ||
+        !review.reviewedArtifacts.some((artifact) => artifact.uri === delivery.artifact.uri && artifact.revision === delivery.artifact.revision && artifact.digest === delivery.artifact.digest)) {
+        ctx.add(review, 'unreviewed_delivery', 'conformance.deliveries', 'Delivery provenance must name reviewed assignments, tasks and artifacts');
+      }
+      for (const resultRef of delivery.results) {
+        const result = ctx.index.get(key(resultRef));
+        if (!review.results.some((ref) => sameRef(ref, resultRef)) || result?.kind !== 'criterion_result' ||
+          !sameRef(result.assignment, delivery.assignment) || (result.artifact &&
+            (result.artifact.uri !== delivery.artifact.uri || result.artifact.revision !== delivery.artifact.revision || result.artifact.digest !== delivery.artifact.digest))) {
+          ctx.add(review, 'delivery_result_mismatch', 'conformance.deliveries.results', 'Worker evidence must retain its exact assignment and delivered artifact');
         }
       }
     }

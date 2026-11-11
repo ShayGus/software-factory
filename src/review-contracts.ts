@@ -37,4 +37,8 @@ export const ProductConformanceSchema = z.strictObject({
   verdict: ProductVerdictSchema.nullable(), error: TextSchema.optional(),
   deliveredFiles: z.array(DeliveredFileSchema).min(1), technicalReviews: z.array(QualityResultSchema),
   qualityError: TextSchema.optional(),
+  deliveries: z.array(z.strictObject({
+    assignment: RefSchema, detailedPlanTask: RefSchema, artifact: ArtifactSchema,
+    results: z.array(RefSchema), fileArtifacts: z.array(ArtifactSchema).min(1),
+  })).optional(),
 });

@@ -320,3 +320,175 @@ test('binary delivery is explicitly unavailable rather than silently absent from
     assert.throws(() => snapshotDelivery(flow.directory, artifact, [], 10_000), /requires_text/);
   } finally { flow.close(); }
 });
+
+function splitAssignments(records: FactoryRecord[]) {
+  const task = records.find((record) => record.kind === 'detailed_plan_task'); assert.ok(task?.kind === 'detailed_plan_task');
+  const assignment = records.find((record) => record.kind === 'assignment'); assert.ok(assignment?.kind === 'assignment');
+  const mapping = records.find((record) => record.kind === 'task_mapping'); assert.ok(mapping?.kind === 'task_mapping');
+  const plan = records.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+  const nextTask = { ...structuredClone(task), id: 'task-2', criteria: [second], verificationCases: ['Second-system case'] };
+  const nextAssignment = JSON.parse(JSON.stringify(assignment).replaceAll('task-1', 'task-2')) as Assignment;
+  nextAssignment.id = 'assignment-2'; nextAssignment.attemptId = 'attempt-2'; nextAssignment.firstMateTaskId = 'pilot-second'; nextAssignment.criteria = [second];
+  const nextMapping = { ...structuredClone(mapping), id: 'mapping-2', firstMateTaskId: 'pilot-second', detailedPlanTask: { id: 'task-2', revision: 1 }, criteria: [second] };
+  task.criteria = [general]; task.verificationCases = ['ERPNext case']; assignment.criteria = [general]; mapping.criteria = [general];
+  plan.deliverySequence.push({ id: 'task-2', revision: 1 }); plan.priorities.push({ taskId: 'task-2', priority: 1 });
+  records.push(nextTask, nextAssignment, nextMapping);
+}
+
+test('review finding 1: two delivered assignments complete one feature with exact task, commit and return provenance', () => {
+  const flow = setup(goodCode, splitAssignments);
+  try {
+    const [firstReturn, template] = flow.input.results; assert.ok(firstReturn && template);
+    flow.input.results = [firstReturn];
+    const firstVerdict = passing(); firstVerdict.criteria = [firstVerdict.criteria[0]!];
+    assert.equal(flow.run(firstVerdict).review.outcome, 'incomplete', 'The first slice cannot complete the whole feature');
+    const nextCode = 'export const secondSystem = "supported";\n';
+    writeFileSync(join(flow.directory, 'second-system.js'), nextCode); flow.git('add', 'second-system.js');
+    flow.git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Second-system delivery');
+    const secondArtifact = { ...flow.input.deliveredArtifact, revision: flow.git('rev-parse', 'HEAD') };
+    const secondReturn = { ...template, assignment: { id: 'assignment-2', revision: 1 }, artifact: secondArtifact,
+      evidence: [{ artifact: secondArtifact, description: 'Second system verified in its delivered revision.', observedAt: at }] };
+    const calls = join(flow.directory, 'aggregate-input.jsonl'); const verdict = passing();
+    verdict.criteria[1]!.quotes = [{ source: 'delivery', text: nextCode.trim() }];
+    const aggregateInput = { ...flow.input, reviewId: 'aggregate-review', idempotencyKey: 'aggregate-op', additionalDeliveries: [{
+      assignment: { id: 'assignment-2', revision: 1 }, repository: flow.directory, deliveredArtifact: secondArtifact, results: [secondReturn],
+    }] };
+    const { review } = reviewProduct(flow.store, aggregateInput, fakeJudgeOptions({ record: calls, result: JSON.stringify(verdict) }), flow.reader);
+    assert.equal(review.outcome, 'passed', JSON.stringify(review));
+    assert.equal(validateReviewForCompletion(flow.store.history('project-1'), review).ok, true);
+    assert.deepEqual(review.assignments, [{ id: 'assignment-1', revision: 1 }, { id: 'assignment-2', revision: 1 }]);
+    assert.deepEqual(review.detailedPlanTasks, [{ id: 'task-1', revision: 1 }, { id: 'task-2', revision: 1 }]);
+    assert.deepEqual(review.reviewedArtifacts, [flow.input.deliveredArtifact, secondArtifact]);
+    assert.deepEqual(review.results, [{ id: firstReturn.id, revision: 1 }, { id: secondReturn.id, revision: 1 }]);
+    assert.deepEqual(review.improvementEvidence.map((evidence) => evidence.artifact), [flow.input.deliveredArtifact, secondArtifact]);
+    assert.deepEqual(review.conformance!.deliveries!.map(({ assignment, detailedPlanTask, artifact, results }) => ({ assignment, detailedPlanTask, artifact, results })), [
+      { assignment: review.assignments[0], detailedPlanTask: review.detailedPlanTasks[0], artifact: flow.input.deliveredArtifact, results: [review.results[0]] },
+      { assignment: review.assignments[1], detailedPlanTask: review.detailedPlanTasks[1], artifact: secondArtifact, results: [review.results[1]] },
+    ]);
+    const snapshot = JSON.parse(readFileSync(calls, 'utf8'));
+    assert.equal(snapshot.tasks.length, 2); assert.equal(snapshot.deliveries[1].deliveredArtifact.revision, secondArtifact.revision);
+    assert.deepEqual(snapshot.workerReturns.map((result: CriterionResult) => result.assignment), review.assignments);
+    assert.equal(flow.qualityReads(), 2, 'The first commit reuses its quality result; only the second commit reads another');
+    const tampered = structuredClone(flow.store.history('project-1'));
+    const saved = tampered.find((record) => record.id === review.id); assert.ok(saved?.kind === 'product_review');
+    saved.conformance!.deliveries![1]!.results = [review.results[0]!];
+    assert.equal(validateReviewForCompletion(tampered, review).ok, false, 'Evidence cannot be reassigned to the other delivery');
+    const wrongDelivery = reviewProduct(flow.store, { ...aggregateInput, reviewId: 'wrong-delivery-review', idempotencyKey: 'wrong-delivery-op' },
+      fakeJudgeOptions({ result: JSON.stringify(passing()) }), flow.reader);
+    assert.equal(wrongDelivery.review.outcome, 'incomplete');
+    assert.match(wrongDelivery.review.conformance?.error ?? '', /accomplishment_requires_delivery_evidence/,
+      'The second criterion cannot borrow code evidence from only the first assignment');
+  } finally { flow.close(); }
+});
+
+test('review finding 2: optional assigned criteria still require a worker return', () => {
+  const flow = setup(goodCode, (records) => {
+    const criterion = records.find((record) => record.id === second.id); assert.ok(criterion?.kind === 'criterion');
+    criterion.requirement = 'optional';
+  });
+  try {
+    const omitted = flow.input.results.pop()!;
+    const { review } = flow.run(passing());
+    assert.equal(review.outcome, 'incomplete');
+    const completion = validateReviewForCompletion(flow.store.history('project-1'), review);
+    assert.equal(completion.ok, false);
+    if (!completion.ok) assert.ok(completion.issues.some((issue) => issue.code === 'missing_worker_return'));
+    const complete = reviewProduct(flow.store, { ...flow.input, reviewId: 'optional-return-present', idempotencyKey: 'optional-return-op',
+      results: [...flow.input.results, omitted] }, fakeJudgeOptions({ result: JSON.stringify(passing()) }), flow.reader);
+    assert.equal(complete.review.outcome, 'passed');
+  } finally { flow.close(); }
+});
+
+function concurrentWriterAgent(flow: ReturnType<typeof setup>, write: FactoryRecord, verdict: ProductVerdict) {
+  const config = fakeJudgeOptions({ result: JSON.stringify(verdict) });
+  const executable = config.executables.codex!;
+  const assignment = flow.records.find((record): record is Assignment => record.kind === 'assignment')!;
+  const command = { schemaVersion: 1, id: 'concurrent-write', projectId: 'project-1', issuedAt: at,
+    idempotencyKey: 'concurrent-write-op', targetId: write.id, expectedRevision: write.revision - 1,
+    ...(write.kind === 'assignment' ? { command: 'prepare_assignment', payload: { detailedPlanTask: assignment.detailedPlanTask,
+      feature: assignment.feature, design: assignment.design, plan: assignment.plan, firstMateTaskId: assignment.firstMateTaskId,
+      selectedContext: assignment.selectedContext, returnLocation: assignment.returnLocation } } :
+      { command: 'record_review_result', payload: { originalRequests: [{ id: 'request-1', revision: 1 }], feature: assignment.feature,
+        design: assignment.design, plan: assignment.plan, assignment: flow.input.assignment, deliveredArtifact: flow.input.deliveredArtifact, results: [write] } }),
+  };
+  const existingAgent = readFileSync(executable, 'utf8').replace('#!/usr/bin/env node\n', '');
+  writeFileSync(executable, `#!/usr/bin/env node\nimport { ProjectStore } from ${JSON.stringify(new URL('../src/index.js', import.meta.url).href)};\nconst store = new ProjectStore(${JSON.stringify(flow.db)});\ntry { store.mutate(${JSON.stringify(command)}, () => [${JSON.stringify(write)}]); } finally { store.close(); }\n${existingAgent}`, { mode: 0o755 });
+  return config;
+}
+
+test('review finding 3: an assignment superseded by another connection during the agent pass remains historical and incomplete', () => {
+  const flow = setup();
+  try {
+    const assignment = flow.records.find((record): record is Assignment => record.kind === 'assignment')!;
+    const next = { ...assignment, revision: 2, attemptId: 'new-attempt', updatedAt: at };
+    const config = concurrentWriterAgent(flow, next, passing());
+    const { review } = reviewProduct(flow.store, flow.input, config, flow.reader);
+    assert.ok(review.conformance?.verdict, JSON.stringify(review));
+    assert.equal(review.outcome, 'incomplete');
+    assert.ok(review.unresolvedQuestions.includes('review_assignment_superseded_during_review'));
+    assert.equal(flow.store.get('project-1', assignment.id)?.revision, 2);
+    assert.equal(flow.store.get('project-1', review.id)?.kind, 'product_review');
+    assert.equal(validateRecords(flow.store.history('project-1')).ok, true, 'The assessment is retained as valid history');
+    assert.equal(validateReviewForCompletion(flow.store.history('project-1'), review).ok, false);
+  } finally { flow.close(); }
+});
+
+for (const change of ['inserted-content', 'newer-revision'] as const) test(`review finding 3: ${change} worker evidence during judgment cannot replace what the reviewer saw`, () => {
+  const flow = setup();
+  try {
+    const expected = flow.input.results[0]!;
+    if (change === 'newer-revision') {
+      const originalVerdict = failure('wrong_implementation', 'planConformance', goodCode);
+      flow.run(originalVerdict);
+      flow.input.reviewId = 'next-review'; flow.input.idempotencyKey = 'next-op';
+    }
+    const changed = { ...expected, revision: change === 'newer-revision' ? 2 : 1,
+      accomplishedBehavior: 'A different report inserted while the review was running.', updatedAt: at };
+    const config = concurrentWriterAgent(flow, changed, passing());
+    assert.throws(() => reviewProduct(flow.store, flow.input, config, flow.reader), /worker_return_(revision_conflict|superseded)/);
+    assert.equal(flow.store.get('project-1', flow.input.reviewId), undefined, 'No passing review or receipt is written');
+    assert.equal(flow.store.receipt('project-1', flow.input.idempotencyKey), undefined);
+    const saved = flow.store.get('project-1', changed.id); assert.ok(saved?.kind === 'criterion_result');
+    assert.equal(saved.accomplishedBehavior, changed.accomplishedBehavior, 'The concurrent writer committed; the review did not silently substitute it');
+  } finally { flow.close(); }
+});
+
+for (const definitive of ['pass', 'fail'] as const) test(`review finding 4: a new operation refreshes uncertain quality to ${definitive}, then reuses the definitive result`, () => {
+  const flow = setup();
+  try {
+    const config = fakeJudgeOptions({ result: JSON.stringify(passing()) });
+    let reads = 0;
+    const reader = (_repo: string, commit: string, observedAt: string) => {
+      reads++; return parseRoborevResult(qualityRaw(commit, reads === 1 ? 'unable_to_review' : definitive), commit, observedAt);
+    };
+    const first = reviewProduct(flow.store, flow.input, config, reader);
+    assert.equal(first.review.outcome, 'incomplete'); assert.equal(first.review.conformance?.technicalReviews[0]?.verdict, 'uncertain');
+    const replay = reviewProduct(flow.store, flow.input, config, reader);
+    assert.equal(replay.replayed, true); assert.equal(reads, 1);
+    const refreshed = reviewProduct(flow.store, { ...flow.input, reviewId: 'refreshed-review', idempotencyKey: 'refreshed-op' }, config, reader);
+    assert.equal(refreshed.review.outcome, definitive === 'pass' ? 'passed' : 'failed'); assert.equal(reads, 2);
+    assert.equal((flow.store.get('project-1', first.review.id) as typeof first.review).conformance?.technicalReviews[0]?.verdict, 'uncertain');
+    const reused = reviewProduct(flow.store, { ...flow.input, reviewId: 'definitive-reused', idempotencyKey: 'definitive-op' }, config,
+      () => { throw Error('A definitive unchanged result must be reused'); });
+    assert.equal(reused.review.outcome, refreshed.review.outcome); assert.equal(reads, 2);
+  } finally { flow.close(); }
+});
+
+
+test('review finding 1: assignments delivered at the same commit share a quality read and aggregate receipts replay exactly', () => {
+  const flow = setup(goodCode, splitAssignments);
+  try {
+    const [firstReturn, next] = flow.input.results; assert.ok(firstReturn && next);
+    const additional = { assignment: { id: 'assignment-2', revision: 1 }, repository: flow.directory,
+      deliveredArtifact: flow.input.deliveredArtifact, results: [{ ...next, assignment: { id: 'assignment-2', revision: 1 } }] };
+    const input = { ...flow.input, results: [firstReturn], additionalDeliveries: [additional] };
+    const calls = join(flow.directory, 'aggregate-replay.jsonl');
+    const config = fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) });
+    const first = reviewProduct(flow.store, input, config, flow.reader);
+    assert.equal(first.review.outcome, 'passed'); assert.equal(flow.qualityReads(), 1);
+    const replay = reviewProduct(flow.store, input, config, () => { throw Error('No quality read during replay'); });
+    assert.equal(replay.replayed, true); assert.deepEqual(replay.review, first.review);
+    assert.equal(readFileSync(calls, 'utf8').trimEnd().split('\n').length, 1);
+    assert.throws(() => reviewProduct(flow.store, { ...input, additionalDeliveries: [{ ...additional, paths: ['feature.js'] }] }, config, flow.reader), /idempotency_conflict/);
+  } finally { flow.close(); }
+});

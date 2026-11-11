@@ -1016,13 +1016,16 @@ mapping is implemented in `src/agent-profiles.ts`.
 
 ## Plan-based product review - BUILD-10
 
-`reviewProduct(store, input, agentConfig)` implements the canonical `record_review_result` operation for one delivered assignment.
+`reviewProduct(store, input, agentConfig)` implements the canonical `record_review_result` operation for one delivered assignment or an aggregate of assignments for the same feature, design and plan revisions.
 The CLI is `software-factory review-product --db <sqlite> --input <ReviewProductInput JSON file> --agent-config <ProjectAgentConfig JSON file>`.
 It prints the persisted review and returns zero only for a passing product review.
 It does not change feature state or FirstMate task state.
 
 The input names `projectId`, `reviewId`, `expectedRevision`, `idempotencyKey`, `issuedAt`, the exact `assignment` reference, an absolute `repository`, `deliveredArtifact`, worker `results`, and `baselineEvidence`.
 `deliveredArtifact.revision` must be a full commit SHA; each worker return uses the existing `criterion_result` contract and the same delivered artifact identity.
+`additionalDeliveries` optionally supplies further `{assignment, repository, deliveredArtifact, results, paths}` entries for a feature-wide review.
+Each entry retains its own task, commit, file snapshots, quality evidence and exact worker-result references; one bounded agent pass reviews the combined package.
+The feature-wide completion rule still requires all active required criteria, so a delivered partial slice stays incomplete until the aggregate supplies the remaining evidence.
 `paths` optionally adds unchanged dependency files to the review snapshot; every path changed by the commit is included automatically.
 `maxSourceChars` bounds the delivered snapshot, defaulting to 256,000 characters and limited to 1,000,000.
 The snapshot accepts at most 1,000 text files and the complete package is limited to 1,500,000 characters.
@@ -1038,7 +1041,8 @@ Suggestions remain separate from required findings and criterion outcomes.
 `product_review` selects its own harness, provider, model, effort and executable through the shared profile mechanism above.
 Each new operation starts one fresh, read-only, one-shot agent process with the frozen package on stdin, without worker session identity or lifecycle environment.
 `fixtures/product-review.schema.json` describes its strict JSON output; runtime validation also rejects duplicate keys, ungrounded quotations and missing or duplicate criterion outcomes.
-An accomplished outcome requires committed-code evidence.
+An accomplished outcome requires committed-code evidence from a delivery assigned to that criterion.
+Every assigned criterion, including optional criteria, must have a worker return before the review can pass.
 Unavailable agents, timeouts, malformed output, uncertain behavior, missing worker evidence, missing baseline evidence or unavailable quality results leave the review incomplete.
 A failed product comparison or technical verdict records a failed review.
 A passing review requires passing original-source, instruction-fidelity and plan-conformance comparisons, accomplished assigned behavior, and the existing completion rules for required criteria, baseline and improvement evidence.
@@ -1048,12 +1052,15 @@ The adapter follows the inspected `roborev v0.74.0-fmpatch.1` response: review `
 Only completed review jobs for that exact commit are accepted.
 The structured technical verdict is retained; a missing verdict is uncertain, and a closed review does not imply a pass.
 No review, tests, analysis or quality checks are enqueued.
-An exact-commit quality result already retained by an earlier product review is reused, including when that product review failed.
+A definitive exact-commit quality result already retained by an earlier product review is reused, including when that product review failed.
+An uncertain cached quality result is refreshed on a new review operation, preserving the original uncertain review and receipt replay.
 A changed delivered commit reads its own quality result.
 
 The product review persists its input digest, unique reviewer session, selected profile, committed file snapshots, raw technical evidence and per-criterion accomplished/failed/uncertain verdicts in the existing review record.
 Original source, design, plan, task and worker returns remain available through their exact historical references.
 The command receipt makes an identical completed operation replay return the saved review without another agent or quality read; changed input under the same key is a conflict.
+Assignment currency and worker-return content are checked again inside the mutation transaction after the reviewer finishes.
+A superseded assignment retains an incomplete historical assessment; a concurrently inserted conflicting return or a newer return revision produces a conflict without saving a passing review.
 There is no automatic retry of an unavailable reviewer.
 These records remain evidence of the supplied snapshot and reviewer judgment, not a claim that code execution was observed by the reviewer.
 
