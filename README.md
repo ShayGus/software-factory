@@ -12,6 +12,8 @@ The [one-feature run path](docs/one-feature-run.md) connects these commands to r
 FirstMate brief/start wrappers and its worker-start hook. It does not implement a
 scheduler, production UI/HTTP service, tasks-axi changes or a Beads adapter; the
 FirstMate home given in the settings selects Beads through FirstMate's existing task wrapper.
+Bootstrap the project database before enabling the sample hook; the runbook then
+verifies the hook before creating or releasing managed native work.
 
 Node.js 22.13.0 or later is required. Install and verify with:
 

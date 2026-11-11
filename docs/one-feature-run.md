@@ -6,8 +6,9 @@ and uses **the FirstMate home given in the settings**, with the FirstMate fork's
 code and a Beads backlog selected from that home's configuration. No workspace,
 backlog, settings or existing tasks are copied or migrated from another home.
 
-Install the sample hook and matching project registry in the configured home before
-preparation; preparation validates them before creating a native task.
+Bootstrap and validate the project database first, while its hook is disabled.
+Only then install the sample hook and matching project registry in the configured
+home. Preparation verifies them before creating a native task or releasing its hold.
 
 Build this package with `npm ci` and `npm run build`. Keep the checkout available
 at a stable absolute path: both entry scripts load its compiled modules. The
@@ -92,6 +93,8 @@ There are no agent calls for mechanical capture, mapping, rendering or transport
 Run these commands only when a live run has been authorized:
 
 ```sh
+/absolute/software-factory/scripts/run-feature.mjs bootstrap /absolute/pilot-proof/run.json
+# After bootstrap succeeds, create the matching registry and enable the sample hook.
 /absolute/software-factory/scripts/run-feature.mjs prepare /absolute/pilot-proof/run.json
 /absolute/software-factory/scripts/run-feature.mjs start   /absolute/pilot-proof/run.json
 # FirstMate supervises its worker through the normal return/delivery workflow.
@@ -103,7 +106,8 @@ The phases call the existing CLI and FirstMate commands in this order:
 
 | Phase | Commands and evidence |
 | --- | --- |
-| Prepare | `init`, `capture`; `understand` agent generates a full-request `map` and the `understand` input; `design`; `plan`; `detail`; independent `plan_check` agent; `check-plan`; verify hook/registry and time budgets; `queue-task` with a pending preparation condition; `reconcile-task` creates a held native task through real `fm-tasks-axi.sh`; real `fm-brief.sh`; `prepare-brief`; independent preparation `check-brief`; verify hook/registry again; `manage-task` records the passing evidence and releases the hold |
+| Bootstrap, before enabling hook | Existing local `init` creates the project database and record; a read-only open validates the existing schema and configured project identity. No agent, hook or FirstMate command is needed. Enable the hook only after this succeeds for every project in its registry. |
+| Prepare | Validate the bootstrapped database; verify hook/registry and time budgets; `capture`; `understand` agent generates a full-request `map` and the `understand` input; `design`; `plan`; `detail`; independent `plan_check` agent; `check-plan`; verify hook/registry again; `queue-task` with a pending preparation condition; `reconcile-task` creates a held native task through real `fm-tasks-axi.sh`; real `fm-brief.sh`; `prepare-brief`; independent preparation `check-brief`; verify hook/registry again; `manage-task` records the passing evidence and releases the hold |
 | Start | Verify the operator-installed hook and project registry; `deliver` through real `fm-inbox.sh` to announce the captured request; real `fm-spawn.sh` with the `build` profile; FirstMate invokes a fresh `worker.start.before` instruction check before starting its worker |
 | Worker return | Worker commits code, verifies acceptance and writes `worker-return.json` at the assignment's return location, preserving the scaffold's delivery contract; FirstMate owns worker supervision, task state and delivery |
 | Review | `review-product` imports worker results, reads the actual committed code and existing exact-commit technical evidence, then calls a separate `product_review` agent against the original request, design and detailed plan |
@@ -120,6 +124,15 @@ All other readiness rules still apply. This option is never used by the start ho
 After success, `manage-task` records the check evidence and reconciles the release;
 a failed check or unavailable hook leaves the native task held. Other readiness,
 context and semantic checks retain their existing failure behavior. No UI, scheduler or alternate record store is added.
+
+Bootstrap does not read agent settings or require hook installation. It retains
+`bootstrap-project-input.json`, `bootstrap.stdout` and `bootstrap.stderr` under
+`runDirectory`, and reuses `init`'s idempotent receipt on repeat. If it fails, leave
+the hook disabled and repair that local context before enabling it. Preparation,
+start and review validate the existing database without initializing a missing one.
+A preparation preflight failure therefore leaves the valid database available for
+the hook to classify unmanaged tasks. Do not register an unavailable database with
+an enabled home-wide hook: fail-closed lookup would refuse every task start there.
 
 The worker return matches `FeatureWorkerReturnSchema`:
 
@@ -154,7 +167,7 @@ A green technical review or a worker's passing claims cannot replace product
 conformance. `review-product` exits nonzero for failed or incomplete outcomes and
 keeps their records. It does not itself change FirstMate task state or feature state.
 
-Each phase has an exclusive `.started` marker. A second call cannot silently repeat
+Prepare, start and review have exclusive `.started` markers. A second call cannot silently repeat
 capture/planning or spawn another worker. Inputs, profile selections, agent outputs,
 CLI stdout/stderr and `prepared.json` remain under `runDirectory`; the manifest binds
 later phases to the same parsed run configuration. There is no automatic retry after
@@ -168,7 +181,8 @@ then use `review-product` directly with a new review key if fresh evidence is ne
 
 The executable `scripts/worker-start-before.mjs` accepts the absolute path of an
 operator-controlled project registry as its only argument and reads FirstMate's
-version 1 event JSON from stdin. Create the registry outside the repository:
+version 1 event JSON from stdin. After successful database bootstrap, create the
+registry outside the repository:
 
 ```json
 {
@@ -182,7 +196,8 @@ version 1 event JSON from stdin. Create the registry outside the repository:
 }
 ```
 
-The operator can add this entry to **the configured home's** `config/hooks.json`:
+After every listed database has been bootstrapped and validated, the operator can
+add this entry to **the configured home's** `config/hooks.json`:
 
 ```json
 {

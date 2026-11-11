@@ -19,7 +19,7 @@ const badCode = 'export function feature(system) { if (system.name !== "ERPNext"
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 const script = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
 
-function scenario() {
+function scenario(options = { bootstrap: true }) {
   const root = mkdtempSync(join(tmpdir(), 'sf-milestone-'));
   const save = (path: string, value: unknown) => writeFileSync(path, JSON.stringify(value, null, 2));
   const executable = (name: string, body: string) => {
@@ -128,7 +128,7 @@ assignment:prepared.assignment,criterion,result:'passed',accomplishedBehavior:'S
 evidence:[{artifact,description:'Synthetic acceptance evidence',observedAt:${JSON.stringify(at)}}],limitations:[],suggestions:[]}))}));`);
   const hookRegistry = join(root, 'hook-projects.json');
   save(hookRegistry, { version: 1, projects: [{ home, projectId: 'project-1', database, agentConfig }] });
-  save(join(home, 'config', 'hooks.json'), { version: 1, hooks: [{ id: 'software-factory', event: 'worker.start.before', argv: [script, hookRegistry], timeout_seconds: 300 }] });
+  const hookSettings = { version: 1, hooks: [{ id: 'software-factory', event: 'worker.start.before', argv: [script, hookRegistry], timeout_seconds: 300 }] };
   const spawn = executable('spawn.mjs', `import {readFileSync,writeFileSync} from 'node:fs';import {spawnSync} from 'node:child_process';import {createHash} from 'node:crypto';
 const source=${JSON.stringify(join(data, 'milestone-worker', 'brief.md'))};
 const candidate=${JSON.stringify(join(data, 'milestone-worker', 'launch-brief.md'))};
@@ -150,11 +150,47 @@ process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing techni
     firstMate: { home, dataDirectory: data, briefExecutable: brief, spawnExecutable: spawn, inboxExecutable: inbox,
       tasksExecutable: wrapper.executable, mode: 'local-only', yolo: 'off' }, sourceFiles: [],
     baselineEvidence: [{ artifact: { uri: `git:${repository}`, revision: before }, description: 'Feature X absent at baseline', observedAt: at }] };
+  if (options.bootstrap) runFeature(config, 'bootstrap');
+  save(join(home, 'config', 'hooks.json'), hookSettings);
   const oldPath = process.env.PATH; process.env.PATH = `${root}:${oldPath}`;
   return { root, home, data, database, config, wrapper, returnWorker, save, outputs,
     mode: (value: unknown) => save(join(root, 'mode.json'), value),
     close: () => { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; rmSync(root, { recursive: true, force: true }); } };
 }
+
+test('review 1201 finding 5: bootstrap works before hook enablement without an agent config and keeps unmanaged starts available', () => {
+  const flow = scenario({ bootstrap: false });
+  try {
+    const hookPath = join(flow.home, 'config', 'hooks.json'); const hooks = JSON.parse(readFileSync(hookPath, 'utf8'));
+    rmSync(hookPath); rmSync(flow.config.agentConfig);
+    const configPath = join(flow.root, 'run.json'); flow.save(configPath, flow.config);
+    const runner = fileURLToPath(new URL('../../scripts/run-feature.mjs', import.meta.url));
+    const result = spawnSync(process.execPath, [runner, 'bootstrap', configPath], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const store = new ProjectStore(flow.database, { readOnly: true });
+    try { assert.equal(store.get('project-1', 'project-1')?.kind, 'project'); } finally { store.close(); }
+    assert.equal(existsSync(hookPath), false);
+    flow.save(hookPath, hooks); // Operator enables the hook only AFTER validated bootstrap.
+    const registry = JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8'));
+    const event = { version: 1, event: 'worker.start.before', home: flow.home, task_id: 'ordinary-task',
+      source_brief_path: null, brief_path: null, brief_sha256: null };
+    assert.deepEqual(checkStartingWorker(registry, event), { ok: true, managed: false });
+    assert.throws(() => runFeature(flow.config, 'prepare')); // An agent preflight failure cannot remove the bootstrap context.
+    assert.deepEqual(checkStartingWorker(registry, event), { ok: true, managed: false });
+    assert.equal(flow.wrapper.read().calls.length, 0);
+    assert.equal(existsSync(join(flow.root, 'agents.jsonl')), false);
+  } finally { flow.close(); }
+});
+
+test('review 1201 finding 5: prepare refuses an unbootstrapped database before any task or agent call', () => {
+  const flow = scenario({ bootstrap: false });
+  try {
+    assert.throws(() => runFeature(flow.config, 'prepare'), /bootstrap_project_unavailable/);
+    assert.equal(existsSync(flow.database), false);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+    assert.equal(existsSync(join(flow.root, 'agents.jsonl')), false);
+  } finally { flow.close(); }
+});
 
 test('one captured feature reaches product completion through the existing CLI and fake FirstMate', () => {
   const flow = scenario();

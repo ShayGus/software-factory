@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { ProjectAgentConfigSchema, nativeStepProfile, stepAgentCommand } from './agent-profiles.js';
@@ -42,12 +42,43 @@ export const FeatureWorkerReturnSchema = ReviewProductInputSchema.pick({
 const json = (path: string) => parseStrictJson(readFileSync(path, 'utf8'));
 const cli = fileURLToPath(new URL('./cli.js', import.meta.url));
 
+function validatedRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
+  try {
+    const store = new ProjectStore(config.database, { readOnly: true });
+    try {
+      const project = store.get(config.project.id, config.project.id);
+      if (project?.kind !== 'project' || project.projectId !== config.project.id) throw new Error('project_identity_missing');
+      return project;
+    } finally { store.close(); }
+  } catch (error) { throw new Error(`bootstrap_project_unavailable: ${String(error)}; run bootstrap before enabling the hook`); }
+}
+
+/** Local, idempotent init only. This must succeed before the operator enables
+ * a hook that depends on this database. No agents or FirstMate calls occur. */
+function bootstrapRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
+  mkdirSync(dirname(config.database), { recursive: true });
+  mkdirSync(config.runDirectory, { recursive: true });
+  const input = join(config.runDirectory, 'bootstrap-project-input.json');
+  writeFileSync(input, JSON.stringify(config.project, null, 2) + '\n');
+  const result = spawnSync(process.execPath, [cli, 'init', '--db', config.database, '--input', input], {
+    cwd: config.runDirectory, encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024, shell: false,
+  });
+  writeFileSync(join(config.runDirectory, 'bootstrap.stdout'), result.stdout ?? '');
+  writeFileSync(join(config.runDirectory, 'bootstrap.stderr'), result.stderr ?? '');
+  if (result.error || result.status !== 0 || result.signal) throw new Error(`bootstrap_init_failed: inspect ${config.runDirectory}/bootstrap.stderr`);
+  const project = validatedRunProject(config);
+  return { ok: true, phase: 'bootstrap' as const, database: config.database, project: ref(project) };
+}
+
 /** A deliberately small runbook executor: existing commands own all mutations.
  * No scheduler, hidden retries, polling, quality enqueue or lifecycle hook install.
- * Each phase is single-use; a partial/ambiguous effect requires reconciliation
- * through the existing commands before another explicit attempt. */
-export function runFeature(configInput: unknown, phase: 'prepare' | 'start' | 'review') {
+ * Bootstrap replays the existing idempotent init. Other phases are single-use;
+ * a partial/ambiguous effect requires reconciliation through existing commands
+ * before another explicit attempt. */
+export function runFeature(configInput: unknown, phase: 'bootstrap' | 'prepare' | 'start' | 'review') {
   const config = FeatureRunConfigSchema.parse(configInput);
+  if (phase === 'bootstrap') return bootstrapRunProject(config);
+  validatedRunProject(config); // Never initialize a missing hook context during preparation.
   const { project, firstMate: fm, runDirectory: directory } = config;
   const agents = ProjectAgentConfigSchema.parse(json(config.agentConfig));
   for (const step of ['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'product_review'] as const) {
@@ -101,7 +132,6 @@ export function runFeature(configInput: unknown, phase: 'prepare' | 'start' | 'r
   const issuedAt = () => new Date().toISOString();
   if (phase === 'prepare') {
     begin();
-    inputCommand('init', project);
     const captured = command('capture', ['--project', project.id, '--client-request-id', config.clientRequestId,
       '--channel', 'cli', '--source', config.requestFile, '--text-file', config.requestFile]);
     const research = config.sourceFiles.map((source) => ({ ...source, text: readFileSync(source.path, 'utf8') }));
