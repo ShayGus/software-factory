@@ -12,6 +12,7 @@ import { captureRequest, initializeProject, mapRequest, requestCoverage, unclass
 import { recordStage, checkPlanReadiness, planReadinessHistory, stageHistory } from './planning.js';
 import { reviewProduct } from './product-review.js';
 import { ProjectStore, StoreError } from './store.js';
+import { manageExecutionTask, queueManagedTask, reconcileManagedTask, TaskAdapterOptionsSchema } from './tasks.js';
 
 const help = `Software Factory request intake and staged planning
 All commands print JSON; chat-hook is silent on success. No settings are installed.
@@ -37,6 +38,11 @@ All commands print JSON; chat-hook is silent on success. No settings are install
   unclassified   --db <sqlite> --project <id>
   coverage       --db <sqlite> --project <id> --request <request ID>
   outbox         --db <sqlite> --project <id>
+  queue-task     --db <sqlite> --input <MapManageExecutionTaskCommand JSON file>
+  manage-task    --db <sqlite> --input <MapManageExecutionTaskCommand JSON file>
+                 --adapter-config <TaskAdapterOptions JSON file>
+  reconcile-task --db <sqlite> --project <id> --operation <id>
+                 --adapter-config <TaskAdapterOptions JSON file>
   deliver        --db <sqlite> --project <id> --request <request ID>
                  --fm-home <absolute home> [--inbox-executable <absolute path>]
   chat-hook      --db <sqlite> --project <id> [--client-request-id <id>]
@@ -66,6 +72,9 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   unclassified: { db: valueOption, project: valueOption },
   coverage: { db: valueOption, project: valueOption, request: valueOption },
   outbox: { db: valueOption, project: valueOption },
+  'queue-task': { db: valueOption, input: valueOption },
+  'manage-task': { db: valueOption, input: valueOption, 'adapter-config': valueOption },
+  'reconcile-task': { db: valueOption, project: valueOption, operation: valueOption, 'adapter-config': valueOption },
   deliver: { db: valueOption, project: valueOption, request: valueOption,
     'fm-home': valueOption, 'inbox-executable': valueOption },
   'chat-hook': { db: valueOption, project: valueOption, 'client-request-id': valueOption },
@@ -140,6 +149,16 @@ export function runCli(args: string[]): number {
         case 'unclassified': output(unclassifiedRequests(store, required('project'))); break;
         case 'coverage': output(requestCoverage(store, required('project'), required('request'))); break;
         case 'outbox': output(store.operations(required('project'))); break;
+        case 'queue-task': output(queueManagedTask(store, jsonFile('input'))); break;
+        case 'manage-task': {
+          const result = manageExecutionTask(store, jsonFile('input'), TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')));
+          output(result); return result.operation.state === 'succeeded' ? 0 : 1;
+        }
+        case 'reconcile-task': {
+          const result = reconcileManagedTask(store, required('project'), required('operation'),
+            TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')));
+          output(result); return result.state === 'succeeded' ? 0 : 1;
+        }
         case 'deliver': {
           const executable = optional('inbox-executable');
           const operation = deliverRequest(store, required('project'), required('request'), {

@@ -2,6 +2,7 @@ import { planReadinessFindings, stageCriteria, stageDependencies } from './plann
 import { createHash } from 'node:crypto';
 import { expectedReviewCriteria } from './review-contracts.js';
 import { missingAssignmentContext } from './instruction-context.js';
+import { assertTaskDependencyAcyclic, taskReadinessReasons } from './task-readiness.js';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
 import {
@@ -685,6 +686,14 @@ export function validateRecords(input: unknown): ValidationResult<FactoryRecord[
     code: 'schema', recordId: String(issue.path[0] ?? ''), path: issue.path.join('.'), message: issue.message,
   })) };
   const ctx = new Context(parsed.data);
+  const mappings = [...ctx.current.values()].filter((record) => record.kind === 'task_mapping');
+  for (const mapping of mappings) {
+    if (mappings.some((other) => other.id !== mapping.id && other.firstMateTaskId === mapping.firstMateTaskId)) {
+      ctx.add(mapping, 'duplicate_mapping', 'firstMateTaskId', 'One mapping owns each FirstMate task');
+    }
+  }
+  try { assertTaskDependencyAcyclic([...ctx.current.values()]); }
+  catch { if (mappings[0]) ctx.add(mappings[0], 'dependency_cycle', 'dependencies', 'Managed dependency cycle'); }
   for (const record of parsed.data) {
     checkRecord(ctx, record);
     // All nested exact reference objects, including context and evidence source pointers,
@@ -764,6 +773,15 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
     ctx.add(owner, 'missing_mapping', 'firstMateTaskId', 'The current managed task mapping must match the assignment');
   } else if (mapping.disposition.state !== 'active') {
     ctx.add(owner, 'inactive_mapping', 'firstMateTaskId', 'The current managed task mapping is deferred or cancelled');
+  }
+  if (mapping?.management) {
+    const operation = ctx.current.get(mapping.management.operationId);
+    if (operation?.kind !== 'operation' || operation.state !== 'succeeded') {
+      ctx.add(owner, 'task_mutation_unconfirmed', 'firstMateTaskId', 'Managed task mutation is not confirmed');
+    }
+    for (const reason of taskReadinessReasons([...ctx.current.values()], mapping)) {
+      ctx.add(owner, 'task_not_ready', 'firstMateTaskId', reason);
+    }
   }
   return ctx.issues.length ? { ok: false, issues: ctx.issues } : { ok: true, data: owner };
 }

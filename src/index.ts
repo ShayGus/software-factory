@@ -18,3 +18,5 @@ export * from './agent-profiles.js';
 export * from './review-contracts.js';
 export * from './quality-results.js';
 export * from './product-review.js';
+export * from './task-readiness.js';
+export * from './tasks.js';

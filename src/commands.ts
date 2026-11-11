@@ -1,12 +1,12 @@
 import { z } from 'zod';
 import {
-  ArtifactSchema, EvidenceSchema, CorrectionActionSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema,
+  ArtifactSchema, CorrectionActionSchema, EvidenceSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema,
 } from './primitives.js';
 import {
   CriterionResultSchema, DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema,
   ImplementationPlanRevisionSchema, ObservationSchema, ProductReviewSchema, SelectedContextSchema,
   FeatureRevisionSchema, CriterionSchema, UnderstandingRevisionSchema, StageRevisionSchema,
-  ProjectSchema,
+  ProjectSchema, DependencySchema,
 } from './records.js';
 
 const envelope = {
@@ -52,12 +52,18 @@ export const MapManageExecutionTaskCommandSchema = z.strictObject({
       z.strictObject({ kind: z.literal('new'), firstMateTaskId: IdSchema, title: TextSchema, repo: TextSchema }),
     ]),
     // Toolkit intent, not a claim that tasks-axi has matching verbs/states.
-    action: z.enum(['map', 'create', 'set_priority', 'pause', 'resume', 'cancel', 'edit_dependencies']),
+    action: z.enum(['map', 'create', 'update', 'set_priority', 'pause', 'resume', 'cancel', 'edit_dependencies']),
     priority: z.number().int().optional(), dependencies: z.array(IdSchema), reason: TextSchema,
+    update: z.strictObject({ title: TextSchema.optional(), body: TextSchema.optional(),
+      repo: TextSchema.optional(), kind: TextSchema.optional() }).optional(),
+    requirements: z.array(DependencySchema).optional(),
+    readiness: z.array(z.strictObject({ id: IdSchema, reason: TextSchema, evidence: z.array(EvidenceSchema) })).optional(),
   }).refine((value) => value.action !== 'set_priority' || value.priority !== undefined,
     'Priority change requires a priority')
     .refine((value) => value.action !== 'create' || value.task.kind === 'new',
       'Create requires a new task description')
+    .refine((value) => value.action !== 'update' || (value.update && Object.keys(value.update).length > 0),
+      'Update requires at least one field')
     .refine((value) => value.feature !== null || value.criteria.length === 0,
       'Mapping product criteria requires a feature'),
 });

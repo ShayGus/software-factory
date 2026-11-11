@@ -1,4 +1,4 @@
-# Software Factory staged planning — BUILD-06
+# Software Factory product workflow
 
 This TypeScript package defines the records and operation boundaries for the
 FirstMate product-development workflow in [the design](Software_Factory_Design.md).
@@ -7,6 +7,7 @@ through one complete feature workflow. BUILD-03 adds local SQLite persistence.
 BUILD-04 adds CLI intake, source mapping, a standalone Claude Code chat hook,
 configuration-based capture coverage and an explicit FirstMate inbox delivery adapter.
 BUILD-06 adds staged understanding, design, planning, detail, reuse and readiness checks.
+BUILD-08 connects managed tasks and product prerequisites to FirstMate's existing task wrappers.
 It does not schedule workers or implement a UI, HTTP service, tasks-axi changes or Beads.
 
 Node.js 22.13.0 or later is required. Install and verify with:
@@ -814,8 +815,7 @@ identities. A criterion dependency selects its passed result and output artifact
 for the prerequisite's exact task revision when available. Without a recorded
 result, a `factory:criterion-output/<task>/<criterion>@<revision>` source names the
 missing handover; an explicit local output snapshot can supply that context.
-This records received context; execution dependency/hold management belongs to
-BUILD-08.
+This records received context; execution dependency/hold management uses [managed execution tasks](#managed-execution-tasks---build-08).
 
 Each supplied source has an original reference, a full-text SHA-256 identity and a
 verbatim extract. Optional `start`/`end` are half-open UTF-16 offsets selecting the
@@ -996,6 +996,81 @@ interviews, extra approval loops and multi-agent workflows were not imported.
 | RoboRev [internal/prompt/custom_review.go](https://github.com/kenn-io/roborev/blob/626dea478c5d5ab5c1d25845ce1474120f9c0f7b/internal/prompt/custom_review.go), same commit | One explicit structured output contract, independent of agent-native schema support. |
 | Installed local `/home/shayg/fm-homes/linux-mate/projects/software-factory/.roborev/task-fit.tmpl`, SHA-256 `a73d54fd32d3e907181d2fb35c825cdb26f3b66e0525685868979b8e667bde2c` | Task fit against originating design/intent, concrete missing/extra behavior, and refusing to infer the request from the candidate alone. This template is untracked, so it has no source commit to cite. |
 | Matt Pocock [write-a-prd/SKILL.md](https://github.com/mattpocock/skills/blob/ab45d5e6e1733b7ae27a0795f2a86418c2d451a0/write-a-prd/SKILL.md), [prd-to-plan/SKILL.md](https://github.com/mattpocock/skills/blob/ab45d5e6e1733b7ae27a0795f2a86418c2d451a0/prd-to-plan/SKILL.md), [prd-to-issues/SKILL.md](https://github.com/mattpocock/skills/blob/ab45d5e6e1733b7ae27a0795f2a86418c2d451a0/prd-to-issues/SKILL.md), commit `ab45d5e6e1733b7ae27a0795f2a86418c2d451a0` | Carry user behavior, implementation/testing decisions and exclusions into source-linked verifiable slices; judge the assigned contribution with its dependencies rather than requiring every task to build the whole feature. |
+
+## Managed execution tasks - BUILD-08
+
+`queueManagedTask(store, command)` commits a `task_mapping`, selected intent decision and pending `operation` in one transaction.
+It accepts the existing `map_manage_execution_task` command envelope, whose `targetId` is the stable mapping ID and whose `expectedRevision` is that mapping's current revision, or zero for a new mapping.
+The command's `task.firstMateTaskId` is supplied by the caller before creation and remains immutable.
+New tasks require ready detailed plans and preserve their selected feature and criteria.
+`manageExecutionTask(store, command, adapter)` queues that same intent and calls `reconcileManagedTask(store, projectId, operationId, adapter)`.
+The CLI exposes the same functions as `queue-task`, `manage-task` and `reconcile-task`; see `software-factory --help` for arguments.
+
+Configure the adapter explicitly, using absolute paths for the home and wrapper executables:
+
+```json
+{
+  "fmHome": "/absolute/firstmate-home",
+  "tasksExecutable": "/absolute/firstmate-installation/bin/fm-tasks-axi.sh",
+  "guardTaskId": "factory-permanent-guard",
+  "controlExecutable": "/absolute/firstmate-installation/bin/fm-control.sh",
+  "timeoutMs": 10000
+}
+```
+
+Inherited `FM_*` and `TASKS_AXI_*` addressing overrides are removed before invoking the wrapper with the configured `FM_HOME`.
+No wrapper path or home is inferred from this machine.
+The adapter checks the configured wrapper's `add --help` for `--hold-reason`.
+With that flag, creation includes an initial hold in the same call.
+Otherwise `guardTaskId` must name an existing, permanently held, unfinished task reserved for the adapter; FirstMate must retain it without completing or removing it.
+Creation first blocks on that guard, then installs the toolkit hold, then removes the guard dependency.
+The mapping and intended operation have already committed before either creation path runs.
+An unrelated hold is preserved; an independent guard dependency protects toolkit conditions while that hold remains, including when it expires.
+This also requires a configured permanent guard even on an installation supporting atomic creation.
+Use the same adapter configuration when recovering an interrupted operation.
+
+The supported intent actions map to existing operations:
+
+| Intent action | Existing wrapper operation |
+| --- | --- |
+| `map` | Observe the stable task and refresh its desired dependencies and product hold |
+| `create` | `add` in Queued state, initially held or guarded |
+| `update` | `update`, with `payload.update` fields `title`, `body`, `repo`, `kind` |
+| `set_priority` | `update --priority`, with an integer from 0 through 4 |
+| `pause` / `resume` | Retain / release the toolkit hold, subject to other prerequisites |
+| `edit_dependencies` | `block` new prerequisites before `unblock` of removed toolkit-owned edges |
+| `cancel` | Selected cancelled disposition and a retained hold; active work additionally uses the configured `fm-control.sh <id> exit` |
+
+The adapter never starts, spawns, dispatches or marks work done.
+FirstMate owns execution and subsequent lifecycle cleanup, including preservation of unlanded work.
+Cancellation does not fabricate tasks-axi's nonexistent cancelled state or complete a cancelled prerequisite.
+Dependents of cancelled prerequisites remain unresolved until explicitly replanned.
+
+`payload.dependencies` contains the desired ordinary FirstMate task IDs; retain those IDs when issuing another action.
+The current detailed plan's dependencies are also retained as typed product requirements on the mapping.
+Additional `payload.requirements` use the existing `DependencySchema`: a particular `prerequisiteTaskId` and `consumerTaskId` from detailed planning, a `reason`, and either an artifact identity or a criterion revision in `needs`.
+Feature prerequisites must be resolved to that specific producer before they can clear a hold.
+Missing or ambiguous producer mappings and missing native task IDs remain unresolved, even though tasks-axi treats dangling native edges as resolved.
+Both the managed graph and the observed native prerequisite graph reject cycles.
+
+An artifact requirement needs evidence of that exact artifact identity from a current result belonging to the mapped producer's current assignment.
+An artifact may be available even when its associated criterion failed.
+A criterion requirement additionally needs a passing result for the current criterion revision.
+Ordinary native task completion alone never supplies either product fact.
+Additional readiness conditions use `payload.readiness: [{id, reason, evidence: []}]`; an empty evidence list means unresolved, and supplied versioned evidence records the observation that clears the condition.
+Omitting `readiness` retains existing conditions; an explicit array replaces them.
+After new evidence or mappings arrive, issue a new `map` command with a new idempotency key and current expected revision to refresh the hold.
+`operation.state: succeeded` confirms the requested backlog synchronization, and may still report unresolved readiness reasons and a held task in its reconciliation observation.
+
+Mutation JSON is parsed against the installed tasks-axi 0.2.6 `add`, `update`, `hold`, `unhold`, `block` and `unblock` result contracts.
+Its `show --full` command is a separate flat TOON read contract, parsed strictly without claiming JSON read support.
+Timeouts, lost output, partial responses and mismatched task identities leave an unknown operation with retained evidence.
+Reconciliation reads the backlog by the original stable ID before retrying, recognizes an already-created task by its persisted mapping marker, and refuses an unrelated ID collision.
+Repeated successful keys replay their original receipt; a different payload cannot reuse that key, and another mutation cannot overtake an unconfirmed intent on the same mapping.
+
+`test/tasks.test.ts` uses a fake wrapper and scratch SQLite databases exclusively.
+It checks runnable state after each mutation in both creation paths, missing prerequisites, typed artifact/criterion readiness, cycles, cancellation, foreign holds, CLI integration, and recovery after lost mutation output or a timeout.
+Run `npm test` for these checks and the existing planning, assignment, intake and storage regressions.
 | Matt Pocock [skills/engineering/code-review/SKILL.md](https://github.com/mattpocock/skills/blob/4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/skills/engineering/code-review/SKILL.md), commit `4ae2317ddb22b046e26455e4f9c9b3aaaf62212d` | The spec-review axis: identify missing/partial, unrequested and incorrectly interpreted behavior, with quotations from the authority. |
 
 The inspected installed RoboRev was `0.74.0-fmpatch.1`; its build metadata names

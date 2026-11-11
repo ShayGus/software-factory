@@ -146,6 +146,14 @@ export const TaskMappingSchema = record('task_mapping', {
   firstMateTaskId: IdSchema, feature: RefSchema.nullable(), criteria: z.array(RefSchema),
   detailedPlanTask: RefSchema.nullable(), dependencies: z.array(IdSchema), legacy: z.boolean(),
   disposition: DispositionSchema,
+  management: z.strictObject({
+    operationId: IdSchema, requirements: z.array(DependencySchema),
+    managedDependencies: z.array(IdSchema),
+    readiness: z.array(z.strictObject({ id: IdSchema, reason: TextSchema, evidence: z.array(EvidenceSchema) })),
+    paused: z.boolean(),
+    // The exact marker is our ownership token. Never clear an unrelated hold.
+    holdReason: TextSchema,
+  }).optional(),
 }).refine((value) => value.legacy || (value.detailedPlanTask !== null &&
   (value.feature !== null || value.criteria.length === 0)),
   'Managed mapping requires a detailed task and a feature for product criteria');
