@@ -492,3 +492,56 @@ test('review finding 1: assignments delivered at the same commit share a quality
     assert.throws(() => reviewProduct(flow.store, { ...input, additionalDeliveries: [{ ...additional, paths: ['feature.js'] }] }, config, flow.reader), /idempotency_conflict/);
   } finally { flow.close(); }
 });
+
+test('review 1169 finding 2: a feature aggregate includes criterion and maintenance outcomes consistently', () => {
+  const flow = setup(goodCode, (records) => {
+    const task = records.find((record) => record.kind === 'detailed_plan_task'); assert.ok(task?.kind === 'detailed_plan_task');
+    const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
+    const mapping = records.find((record) => record.kind === 'task_mapping'); assert.ok(mapping?.kind === 'task_mapping');
+    const plan = records.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+    const maintenanceTask = { ...structuredClone(task), id: 'task-maintenance', criteria: [],
+      maintenanceObjective: 'Maintain the feature integration marker.', expectedBehavior: 'Keep the feature integration marker current.',
+      verificationCases: ['Integration marker is current'] };
+    const maintenanceAssignment = JSON.parse(JSON.stringify(assignment).replaceAll('task-1', 'task-maintenance')) as Assignment;
+    maintenanceAssignment.id = 'assignment-maintenance'; maintenanceAssignment.attemptId = 'maintenance-attempt';
+    maintenanceAssignment.firstMateTaskId = 'pilot-maintenance'; maintenanceAssignment.criteria = [];
+    maintenanceAssignment.instructionText = 'Maintain the feature integration marker.';
+    const maintenanceMapping = { ...structuredClone(mapping), id: 'mapping-maintenance', firstMateTaskId: 'pilot-maintenance',
+      detailedPlanTask: { id: maintenanceTask.id, revision: 1 }, criteria: [] };
+    plan.deliverySequence.push({ id: maintenanceTask.id, revision: 1 });
+    records.push(maintenanceTask, maintenanceAssignment, maintenanceMapping);
+  });
+  try {
+    const maintenanceCode = 'export const integrationMarker = "current";\n';
+    writeFileSync(join(flow.directory, 'integration-marker.js'), maintenanceCode); flow.git('add', 'integration-marker.js');
+    flow.git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Feature maintenance delivery');
+    const artifact = { ...flow.input.deliveredArtifact, revision: flow.git('rev-parse', 'HEAD') };
+    const maintenanceReturn: CriterionResult = { ...flow.input.results[0]!, id: 'result-maintenance',
+      assignment: { id: 'assignment-maintenance', revision: 1 }, criterion: null, artifact,
+      accomplishedBehavior: 'The integration marker is current.',
+      evidence: [{ artifact, description: 'Integration marker verification passed.', observedAt: at }] };
+    const input = { ...flow.input, additionalDeliveries: [{ assignment: maintenanceReturn.assignment,
+      repository: flow.directory, deliveredArtifact: artifact, results: [maintenanceReturn] }] };
+    const verdict = passing();
+    verdict.criteria.push({ criterion: null, state: 'accomplished', behavior: maintenanceReturn.accomplishedBehavior,
+      quotes: [{ source: 'delivery', text: maintenanceCode.trim() }], limitations: [] });
+    const calls = join(flow.directory, 'mixed-maintenance.jsonl');
+    const { review } = reviewProduct(flow.store, input, fakeJudgeOptions({ record: calls, result: JSON.stringify(verdict) }), flow.reader);
+    assert.equal(review.outcome, 'passed', JSON.stringify(review));
+    assert.deepEqual(review.conformance?.verdict?.criteria.map((outcome) => outcome.criterion), [general, second, null]);
+    assert.equal(validateReviewForCompletion(flow.store.history('project-1'), review).ok, true);
+    const snapshot = JSON.parse(readFileSync(calls, 'utf8'));
+    assert.deepEqual(snapshot.assignedCriteria, [general, second, null]);
+    assert.deepEqual(review.conformance?.deliveries?.[1]?.results, [{ id: maintenanceReturn.id, revision: 1 }]);
+    assert.deepEqual(review.improvementEvidence.at(-1)?.artifact, artifact, 'Maintenance evidence retains its delivered commit');
+    const omitted = structuredClone(verdict); omitted.criteria.pop();
+    const incomplete = reviewProduct(flow.store, { ...input, reviewId: 'missing-maintenance-outcome', idempotencyKey: 'missing-maintenance-op' },
+      fakeJudgeOptions({ result: JSON.stringify(omitted) }), flow.reader);
+    assert.equal(incomplete.review.outcome, 'incomplete');
+    assert.match(incomplete.review.conformance?.error ?? '', /criterion_coverage_mismatch/);
+    const historical = structuredClone(flow.store.history('project-1'));
+    const saved = historical.find((record) => record.id === review.id); assert.ok(saved?.kind === 'product_review');
+    saved.conformance!.verdict!.criteria.pop();
+    assert.equal(validateReviewForCompletion(historical, review).ok, false, 'Completion also requires the maintenance outcome');
+  } finally { flow.close(); }
+});

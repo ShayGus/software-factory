@@ -1025,6 +1025,7 @@ The input names `projectId`, `reviewId`, `expectedRevision`, `idempotencyKey`, `
 `deliveredArtifact.revision` must be a full commit SHA; each worker return uses the existing `criterion_result` contract and the same delivered artifact identity.
 `additionalDeliveries` optionally supplies further `{assignment, repository, deliveredArtifact, results, paths}` entries for a feature-wide review.
 Each entry retains its own task, commit, file snapshots, quality evidence and exact worker-result references; one bounded agent pass reviews the combined package.
+A maintenance delivery with no criteria contributes one null-criterion outcome alongside the distinct criterion outcomes, including when the deliveries belong to a feature.
 The feature-wide completion rule still requires all active required criteria, so a delivered partial slice stays incomplete until the aggregate supplies the remaining evidence.
 `paths` optionally adds unchanged dependency files to the review snapshot; every path changed by the commit is included automatically.
 `maxSourceChars` bounds the delivered snapshot, defaulting to 256,000 characters and limited to 1,000,000.

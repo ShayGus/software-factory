@@ -1,5 +1,6 @@
 import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
+import { expectedReviewCriteria } from './review-contracts.js';
 import { missingAssignmentContext } from './instruction-context.js';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
@@ -284,10 +285,15 @@ function checkCompletion(ctx: Context, review: ProductReview) {
           const result = ctx.index.get(key(resultRef));
           return result?.kind === 'criterion_result' && sameRef(result.assignment, assignmentRef) && sameRef(result.criterion, criterion);
         })) ctx.add(review, 'missing_worker_return', 'results', 'Every assigned criterion, including optional criteria, needs a worker return');
-        if (proof.verdict?.criteria.filter((outcome) => sameRef(outcome.criterion, criterion)).length !== 1) {
-          ctx.add(review, 'incomplete_conformance', 'conformance.verdict.criteria', 'Every assigned criterion needs exactly one reviewer outcome');
-        }
       }
+    }
+    const expectedCriteria = expectedReviewCriteria(review.assignments.flatMap((ref) => {
+      const assignment = ctx.index.get(key(ref));
+      return assignment?.kind === 'assignment' ? [assignment.criteria] : [];
+    }));
+    if (proof.verdict?.criteria.length !== expectedCriteria.length || expectedCriteria.some((criterion) =>
+      proof.verdict?.criteria.filter((outcome) => sameRef(outcome.criterion, criterion)).length !== 1)) {
+      ctx.add(review, 'incomplete_conformance', 'conformance.verdict.criteria', 'Every distinct assigned criterion and any maintenance need exactly one reviewer outcome');
     }
     for (const artifact of review.reviewedArtifacts) if (!proof.technicalReviews.some((result) => result.commit === artifact.revision)) {
       ctx.add(review, 'missing_quality_evidence', 'conformance.technicalReviews', 'Every delivered commit needs quality evidence');

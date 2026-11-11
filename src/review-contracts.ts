@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ArtifactSchema, RefSchema, TextSchema, TimestampSchema } from './primitives.js';
+import { ArtifactSchema, RefSchema, TextSchema, TimestampSchema, type Ref } from './primitives.js';
 import { WorkflowAgentProfileSchema } from './agent-profiles.js';
 
 export const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
@@ -42,3 +42,13 @@ export const ProductConformanceSchema = z.strictObject({
     results: z.array(RefSchema), fileArtifacts: z.array(ArtifactSchema).min(1),
   })).optional(),
 });
+
+/** Maintenance contributes a null outcome even when other assignments name criteria. */
+export function expectedReviewCriteria(groups: readonly (readonly Ref[])[]): (Ref | null)[] {
+  const expected: (Ref | null)[] = [];
+  for (const group of groups) for (const criterion of group.length ? group : [null]) {
+    if (!expected.some((existing) => existing === null || criterion === null ? existing === criterion :
+      existing.id === criterion.id && existing.revision === criterion.revision)) expected.push(criterion);
+  }
+  return expected;
+}
