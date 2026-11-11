@@ -25,6 +25,14 @@ export function fakeTaskWrapper(directory: string, atomic: boolean, database: st
 const fs = require('node:fs');
 const { join } = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
+const actionGate = join(__dirname, 'gate-action');
+if (fs.existsSync(actionGate) && fs.readFileSync(actionGate, 'utf8') === process.argv[2]) {
+  let first = false;
+  try { fs.writeFileSync(join(__dirname, 'gate-entered'), 'entered', { flag: 'wx' }); first = true; } catch {}
+  const deadline = Date.now() + 20000;
+  while (first && !fs.existsSync(join(__dirname, 'gate-release')) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  if (first && !fs.existsSync(join(__dirname, 'gate-release'))) process.exit(3);
+}
 const file = join(__dirname, 'fake-state.json');
 const database = ${JSON.stringify(database)};
 const s = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -62,7 +70,7 @@ if (action === 'add') {
   else {
     const deps = args.flatMap((a,i) => a === '--blocked-by' ? [{ type: 'blocked-by', id: args[i+1] }] : []);
     if (deps.some(d => !s.tasks[d.id])) fail('VALIDATION_ERROR', 'Missing blocker');
-    task = { id, title: args[2], state: 'queued', kind: flag('--kind'), repo: flag('--repo'), priority: args.includes('--priority') ? Number(flag('--priority')) : null,
+    task = { id, title: args[2].trim(), state: 'queued', kind: flag('--kind'), repo: flag('--repo'), priority: args.includes('--priority') ? Number(flag('--priority')) : null,
       created: '2026-11-11', closed: null, deps, hold: args.includes('--hold-reason') ? { reason: flag('--hold-reason'), kind: null, until: null } : null,
       links: [], body: flag('--body'), blocked: false, blocked_by: [], held: false };
     s.tasks[id] = task;
@@ -74,7 +82,7 @@ if (action === 'add') {
   else if (action === 'block') { if (!s.tasks[flag('--by')]) fail('VALIDATION_ERROR', 'Missing blocker'); if (!task.deps.some(d => d.id === flag('--by'))) task.deps.push({ type: 'blocked-by', id: flag('--by') }); else already = true; }
   else if (action === 'unblock') { const before = task.deps.length; task.deps = task.deps.filter(d => d.id !== flag('--by')); already = before === task.deps.length; }
   else if (action === 'update') { for (const key of ['title','body','repo','kind','priority']) if (args.includes('--'+key)) {
-    const value = key === 'priority' ? Number(flag('--'+key)) : flag('--'+key);
+    const value = key === 'priority' ? Number(flag('--'+key)) : key === 'title' ? flag('--'+key).trim() : flag('--'+key);
     if (task[key] !== value) changed.push(key);
     task[key] = value;
   } }

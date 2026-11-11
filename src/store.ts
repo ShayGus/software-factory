@@ -1,4 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { z } from 'zod';
 import { CommandEnvelopeSchema, type BoundaryError, type CommandEnvelope } from './commands.js';
 import { IdSchema, RefSchema, type Ref } from './primitives.js';
@@ -90,9 +92,12 @@ export function pendingOperation(input: unknown, id: string): Operation {
 /** Synchronous local persistence. Application handlers derive records; this class owns atomic writes. */
 export class ProjectStore {
   readonly #db: DatabaseSync;
+  readonly #path: string;
+  readonly #taskLocks = new Set<string>();
   #transactionOpen = false;
   constructor(path: string) {
     this.#db = new DatabaseSync(path);
+    this.#path = path === ':memory:' ? path : realpathSync(path);
     try {
       this.#db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;');
       const version = this.#db.prepare('PRAGMA user_version').get()?.user_version;
@@ -113,6 +118,33 @@ export class ProjectStore {
     } catch (error) { this.#db.close(); throw error; }
   }
   close(): void { this.#db.close(); }
+
+  /** Serialize task intents and reconciliation across processes, including
+   * external mutations and their outcome commit. A project-wide lock also
+   * covers cancellation's protective writes to dependent mappings without
+   * acquiring multiple mapping locks in conflicting orders. The separate SQLite
+   * connection leaves record transactions short and releases on process death. */
+  withTaskLock<T>(projectId: string, body: () => T): T {
+    parse(IdSchema, projectId);
+    if (this.#taskLocks.has(projectId)) throw new StoreError('conflict', 'nested_task_management');
+    let coordination: DatabaseSync | undefined;
+    if (this.#path !== ':memory:') {
+      const key = createHash('sha256').update(projectId).digest('hex');
+      coordination = new DatabaseSync(`${this.#path}.tasks-${key}.sqlite`);
+      try { coordination.exec('PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE;'); }
+      catch (error) {
+        coordination.close();
+        throw new StoreError('conflict', `task_management_lock_unavailable: ${String(error)}`);
+      }
+    }
+    this.#taskLocks.add(projectId);
+    try { return body(); }
+    finally {
+      this.#taskLocks.delete(projectId);
+      // No lease or persisted owner can strand a recovered operation.
+      try { coordination?.exec('ROLLBACK'); } finally { coordination?.close(); }
+    }
+  }
 
   history(projectId: string): FactoryRecord[] {
     parse(IdSchema, projectId);

@@ -1004,6 +1004,9 @@ It accepts the existing `map_manage_execution_task` command envelope, whose `tar
 The command's `task.firstMateTaskId` is supplied by the caller before creation and remains immutable.
 New tasks require ready detailed plans and preserve their selected feature and criteria.
 `manageExecutionTask(store, command, adapter)` queues that same intent and calls `reconcileManagedTask(store, projectId, operationId, adapter)`.
+Task intents and reconciliation are serialized across processes using a SQLite coordination file beside the canonical project database.
+The lock covers external mutations through outcome persistence and spans the project so cancellation can protect dependent mappings without conflicting lock orders.
+Record transactions remain separate and short; lock contention returns a conflict if acquisition exceeds five seconds.
 The CLI exposes the same functions as `queue-task`, `manage-task` and `reconcile-task`; see `software-factory --help` for arguments.
 
 Configure the adapter explicitly, using absolute paths for the home and wrapper executables:
@@ -1045,10 +1048,15 @@ The adapter never starts, spawns, dispatches or marks work done.
 FirstMate owns execution and subsequent lifecycle cleanup, including preservation of unlanded work.
 Cancellation does not fabricate tasks-axi's nonexistent cancelled state or complete a cancelled prerequisite.
 Dependents of cancelled prerequisites remain unresolved until explicitly replanned.
+Cancellation installs protective holds or guard dependencies on existing managed consumers before confirming synchronization, including consumers of already-completed prerequisites and downstream work reached through completed tasks.
+These protections survive FirstMate completing or removing the prerequisite during normal cleanup.
 
 `payload.dependencies` contains the desired ordinary FirstMate task IDs; retain those IDs when issuing another action.
 The current detailed plan's dependencies are also retained as typed product requirements on the mapping.
 Additional `payload.requirements` use the existing `DependencySchema`: a particular `prerequisiteTaskId` and `consumerTaskId` from detailed planning, a `reason`, and either an artifact identity or a criterion revision in `needs`.
+Explicit additional requirements are stored separately in `management.explicitRequirements`; omitting the field in a later command retains only those explicit extras alongside freshly generated current-plan requirements.
+Successful synchronization persists the exact installed toolkit-owned dependency IDs in `management.managedDependencies`, so obsolete edges can be removed even if producer resolution later changes or becomes ambiguous.
+This observation advances the mapping revision; use the mapping returned by `manageExecutionTask`, or reread the current mapping after standalone reconciliation, for the next expected revision.
 Feature prerequisites must be resolved to that specific producer before they can clear a hold.
 Missing or ambiguous producer mappings and missing native task IDs remain unresolved, even though tasks-axi treats dangling native edges as resolved.
 Both the managed graph and the observed native prerequisite graph reject cycles.
@@ -1056,6 +1064,8 @@ Both the managed graph and the observed native prerequisite graph reject cycles.
 An artifact requirement needs evidence of that exact artifact identity from a current result belonging to the mapped producer's current assignment.
 An artifact may be available even when its associated criterion failed.
 A criterion requirement additionally needs a passing result for the current criterion revision.
+Attempt chronology uses the latest assignment revision's update time and revision number, including revisions of an older assignment ID; equally current competing assignments remain unresolved.
+Evidence must name that exact current assignment revision.
 Ordinary native task completion alone never supplies either product fact.
 Additional readiness conditions use `payload.readiness: [{id, reason, evidence: []}]`; an empty evidence list means unresolved, and supplied versioned evidence records the observation that clears the condition.
 Omitting `readiness` retains existing conditions; an explicit array replaces them.
@@ -1067,6 +1077,8 @@ Its `show --full` command is a separate flat TOON read contract, parsed strictly
 Timeouts, lost output, partial responses and mismatched task identities leave an unknown operation with retained evidence.
 Reconciliation reads the backlog by the original stable ID before retrying, recognizes an already-created task by its persisted mapping marker, and refuses an unrelated ID collision.
 Repeated successful keys replay their original receipt; a different payload cannot reuse that key, and another mutation cannot overtake an unconfirmed intent on the same mapping.
+Definitive rejections before any external mutation, such as a native dependency cycle, are recorded as failed with `taskRejection.beforeMutation` and may be replaced by a corrected command with a fresh key.
+An ambiguous or partially applied operation still requires reconciliation before another intent can replace it.
 
 `test/tasks.test.ts` uses a fake wrapper and scratch SQLite databases exclusively.
 It checks runnable state after each mutation in both creation paths, missing prerequisites, typed artifact/criterion readiness, cycles, cancellation, foreign holds, CLI integration, and recovery after lost mutation output or a timeout.

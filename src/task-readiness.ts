@@ -18,6 +18,21 @@ export function taskDependencyIds(records: FactoryRecord[], mapping: TaskMapping
     .flatMap(({ producer }) => producer ? [producer.firstMateTaskId] : [])])];
 }
 
+export function cancelledTaskPrerequisites(records: FactoryRecord[], mapping: TaskMapping): string[] {
+  const mappings = new Map(currentTaskMappings(records).map((entry) => [entry.firstMateTaskId, entry]));
+  const cancelled = new Set<string>(); const visited = new Set<string>();
+  const visit = (id: string) => {
+    if (visited.has(id)) return;
+    visited.add(id);
+    const prerequisite = mappings.get(id);
+    if (!prerequisite) return;
+    if (prerequisite.disposition.state === 'cancelled') cancelled.add(id);
+    for (const next of taskDependencyIds(records, prerequisite)) visit(next);
+  };
+  for (const id of taskDependencyIds(records, mapping)) visit(id);
+  return [...cancelled];
+}
+
 /** Call with current records. Both explicit execution edges and resolved product
  * edges participate, including edges whose producer is cancelled. */
 export function assertTaskDependencyAcyclic(records: FactoryRecord[]): void {
@@ -45,10 +60,7 @@ export function taskReadinessReasons(records: FactoryRecord[], mapping: TaskMapp
   for (const condition of mapping.management?.readiness ?? []) {
     if (!condition.evidence.length) reasons.push(condition.reason);
   }
-  for (const id of mapping.dependencies) {
-    if (currentTaskMappings(records).some((candidate) => candidate.firstMateTaskId === id &&
-      candidate.disposition.state === 'cancelled')) reasons.push(`Cancelled prerequisite ${id}`);
-  }
+  for (const id of cancelledTaskPrerequisites(records, mapping)) reasons.push(`Cancelled prerequisite ${id}`);
   for (const { requirement, producer } of taskPrerequisites(records, mapping)) {
     const operation = producer?.management && records.find((record) => record.id === producer.management!.operationId);
     if (!producer || producer.disposition.state !== 'active' || (producer.management &&
@@ -63,10 +75,13 @@ export function taskReadinessReasons(records: FactoryRecord[], mapping: TaskMapp
       record.feature?.id === producer.feature?.id && record.feature?.revision === producer.feature?.revision &&
       record.criteria.length === producer.criteria.length && record.criteria.every((criterion) =>
         producer.criteria.some((entry) => entry.id === criterion.id && entry.revision === criterion.revision)));
-    // A new attempt can invalidate old evidence without editing the old
-    // assignment ID. Equal-time competing attempts have no certain current owner.
-    const latestTime = Math.max(...assignments.map((assignment) => Date.parse(assignment.createdAt)));
-    const latest = assignments.filter((assignment) => Date.parse(assignment.createdAt) === latestTime);
+    // Both a new assignment ID and a revision of an existing assignment can
+    // introduce a newer attempt. Equal-time, equal-revision competing attempts
+    // have no certain current owner.
+    const latestTime = Math.max(...assignments.map((assignment) => Date.parse(assignment.updatedAt)));
+    const atTime = assignments.filter((assignment) => Date.parse(assignment.updatedAt) === latestTime);
+    const latestRevision = Math.max(...atTime.map((assignment) => assignment.revision));
+    const latest = atTime.filter((assignment) => assignment.revision === latestRevision);
     const available = records.some((result) => result.kind === 'criterion_result' && result.artifact &&
       result.evidence.length > 0 && latest.length === 1 && latest.some((assignment) =>
         assignment.id === result.assignment.id && assignment.revision === result.assignment.revision) &&

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
@@ -30,7 +31,7 @@ function setup(t: TestContext, atomic = false, editRecords?: (records: FactoryRe
     const previous = store.get(projectId, mappingId);
     const task = records.find((record) => record.kind === 'detailed_plan_task')!;
     return MapManageExecutionTaskCommandSchema.parse({ schemaVersion: 1, id: `command-${++sequence}`, projectId,
-      issuedAt: '2026-11-11T20:00:00Z', idempotencyKey: `key-${sequence}`, command: 'map_manage_execution_task',
+      issuedAt: new Date().toISOString(), idempotencyKey: `key-${sequence}`, command: 'map_manage_execution_task',
       targetId: mappingId, expectedRevision: previous?.revision ?? 0,
       payload: { feature: { id: 'feature-1', revision: 1 }, criteria: task.kind === 'detailed_plan_task' ? task.criteria : [],
         detailedPlanTask: ref(task), task: { kind: 'new', firstMateTaskId: 'managed-task', title: 'Common integration', repo: 'sample' },
@@ -96,7 +97,7 @@ test('a cycle through unmanaged native tasks is refused before creation', (t) =>
   const flow = setup(t);
   flow.fake.edit((state) => { state.tasks.native = fakeTask('native', { deps: [{ type: 'blocked-by', id: 'managed-task' }] }); });
   const result = flow.manage(flow.command({ dependencies: ['native'] }));
-  assert.equal(result.operation.state, 'unknown');
+  assert.equal(result.operation.state, 'failed');
   assert.match(result.operation.reconciliation!.note, /cycle/);
   assert.equal(flow.fake.read().tasks['managed-task'], undefined);
 });
@@ -161,7 +162,7 @@ test('an existing stable ID belonging to someone else is never adopted as a new 
   const flow = setup(t);
   flow.fake.edit((state) => { state.tasks['managed-task'] = fakeTask('managed-task', { body: 'Someone else owns this' }); });
   const result = flow.manage(flow.command());
-  assert.equal(result.operation.state, 'unknown');
+  assert.equal(result.operation.state, 'failed');
   assert.match(result.operation.reconciliation!.note, /stable_task_id_collision/);
   assert.equal(flow.fake.read().trace.length, 0);
 });
@@ -257,7 +258,7 @@ test('legacy fallback refuses absent, done or expiring guards before creating ma
   const flow = setup(t);
   flow.fake.edit((state) => { state.tasks['permanent-guard']!.state = 'done'; });
   const first = flow.manage(flow.command());
-  assert.equal(first.operation.state, 'unknown');
+  assert.equal(first.operation.state, 'failed');
   assert.equal(flow.fake.read().tasks['managed-task'], undefined);
   assert.match(first.operation.reconciliation!.note, /guard_must_be_permanently/);
 });
@@ -407,4 +408,178 @@ test('CLI queues, reconciles and manages through the configured fake wrapper', (
   assert.equal(managed.status, 0, managed.stderr);
   assert.equal(JSON.parse(managed.stdout).operation.state, 'succeeded');
   assert.equal(flow.fake.read().tasks['managed-task']!.held, false);
+});
+
+function reviseRecord(flow: ReturnType<typeof setup>, id: string, change: (record: FactoryRecord) => void) {
+  const previous = flow.store.get(projectId, id); assert.ok(previous);
+  const next = structuredClone(previous); change(next);
+  next.revision++; next.updatedAt = new Date().toISOString();
+  const tasks: FactoryRecord[] = [];
+  if (next.kind === 'implementation_plan_revision') {
+    next.deliverySequence = next.deliverySequence.map((entry) => {
+      const task = flow.store.get(projectId, entry.id, entry.revision); assert.ok(task?.kind === 'detailed_plan_task');
+      const revised = { ...task, revision: task.revision + 1, updatedAt: next.updatedAt, plan: ref(next) };
+      tasks.push(revised); return ref(revised);
+    });
+  }
+  const key = `test-revision-${id}-${next.revision}`;
+  const decision = { kind: 'decision_change', id: key, projectId, schemaVersion: 1, revision: 1,
+    createdAt: next.updatedAt, updatedAt: next.updatedAt, questionOrChange: 'Explicit test replan or new attempt',
+    affectedRecords: [ref(previous)], rationale: 'Exercise current canonical records', disposition: 'selected',
+    sourceRefs: [{ uri: 'fixture://revision' }], scopeChanges: [] };
+  flow.store.mutate({ schemaVersion: 1, id: key, projectId, issuedAt: next.updatedAt, idempotencyKey: key,
+    command: 'record_decision_suggestion', targetId: id, expectedRevision: previous.revision, payload: { decision } },
+  () => [decision, next, ...tasks]);
+}
+
+async function until(predicate: () => boolean, timeout = 6000) {
+  const deadline = Date.now() + timeout;
+  while (!predicate()) { if (Date.now() >= deadline) assert.fail('Timed out waiting for test rendezvous'); await delay(10); }
+}
+function childResult(child: ChildProcess) {
+  let stderr = ''; child.stderr?.on('data', (data) => { stderr += String(data); });
+  return new Promise<{ code: number | null; stderr: string }>((resolve) => child.on('exit', (code) => resolve({ code, stderr })));
+}
+
+test('review 1: overlapping reconciliation cannot clear a later pause across processes', async (t) => {
+  const flow = setup(t);
+  flow.options.timeoutMs = 25000;
+  flow.succeeded(flow.command({ readiness: pendingCondition }));
+  const intent = queueManagedTask(flow.store, flow.existing({ readiness: [] }));
+  const pause = flow.existing({ action: 'pause' });
+  const inputPath = join(flow.directory, 'concurrent-input.json');
+  writeFileSync(inputPath, JSON.stringify({ operationId: intent.operation.id, options: flow.options, pause }));
+  writeFileSync(join(flow.directory, 'gate-action'), 'unhold');
+  const moduleUrl = new URL('../src/index.js', import.meta.url).href;
+  const common = `import { ProjectStore, reconcileManagedTask, manageExecutionTask } from ${JSON.stringify(moduleUrl)};
+    import { readFileSync, writeFileSync } from 'node:fs';
+    const input = JSON.parse(readFileSync(${JSON.stringify(inputPath)}, 'utf8'));
+    const store = new ProjectStore(${JSON.stringify(flow.database)});
+    const reconcile = () => reconcileManagedTask(store, 'project-1', input.operationId, input.options);`;
+  const first = spawn(process.execPath, ['--input-type=module', '-e', common + `try { reconcile(); } finally { store.close(); }`], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const firstDone = childResult(first);
+  t.after(() => first.kill());
+  await until(() => existsSync(join(flow.directory, 'gate-entered')));
+  const second = spawn(process.execPath, ['--input-type=module', '-e', common + `
+    writeFileSync(${JSON.stringify(join(flow.directory, 'second-started'))}, 'started');
+    try {
+      reconcile();
+      input.pause.expectedRevision = store.get('project-1', input.pause.targetId).revision;
+      input.pause.issuedAt = new Date().toISOString();
+      const result = manageExecutionTask(store, input.pause, input.options);
+      if (result.operation.state !== 'succeeded') throw new Error(JSON.stringify(result));
+      writeFileSync(${JSON.stringify(join(flow.directory, 'second-finished'))}, 'finished');
+    } finally { store.close(); }`], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const secondDone = childResult(second);
+  t.after(() => second.kill());
+  try {
+    await until(() => existsSync(join(flow.directory, 'second-started')));
+    // Without serialization the second process finishes the same intent and
+    // pauses while the first is still just before its stale unhold.
+    const deadline = Date.now() + 1200;
+    while (!existsSync(join(flow.directory, 'second-finished')) && Date.now() < deadline) await delay(10);
+  } finally { writeFileSync(join(flow.directory, 'gate-release'), 'release'); }
+  const [one, two] = await Promise.all([firstDone, secondDone]);
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, true, 'Later pause must survive stale reconciliation');
+  assert.equal(one.code, 0, one.stderr); assert.equal(two.code, 0, two.stderr);
+});
+
+test('review 2: cancelling a completed prerequisite protects existing consumers through cleanup', (t) => {
+  const flow = setup(t);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => { state.tasks['managed-task']!.state = 'done'; });
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Consumer', repo: 'sample' },
+    dependencies: ['managed-task'] }, 'consumer-mapping'));
+  flow.fake.edit((state) => { state.tasks.consumer!.state = 'done'; });
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'downstream', title: 'Downstream', repo: 'sample' },
+    dependencies: ['consumer'] }, 'downstream-mapping'));
+  assert.equal(flow.fake.read().tasks.downstream!.held, false);
+  flow.succeeded(flow.existing({ action: 'cancel' }));
+  assert.equal(flow.fake.read().tasks.consumer!.hold?.reason.startsWith('Software Factory '), true);
+  assert.equal(flow.fake.read().tasks.downstream!.held, true);
+  flow.fake.edit((state) => { delete state.tasks['managed-task']; });
+  const downstream = flow.store.get(projectId, 'downstream-mapping'); assert.equal(downstream?.kind, 'task_mapping');
+  if (downstream?.kind !== 'task_mapping') assert.fail();
+  assert.match(taskReadinessReasons(flow.store.records(projectId), downstream).join('\n'), /Cancelled prerequisite managed-task/);
+  assert.equal(flow.fake.read().tasks.downstream!.held, true, 'Cleanup does not clear protective holds');
+});
+
+test('review 3: a revised older assignment is the current attempt and needs exact-revision evidence', (t) => {
+  const flow = setup(t, false, (records) => {
+    productPrerequisiteRecords(records, 'criterion', true);
+    const assignment = records.find((record) => record.kind === 'assignment')!;
+    const newer = { ...structuredClone(assignment), id: 'assignment-newer-id', createdAt: '2026-11-11T18:00:00Z', updatedAt: '2026-11-11T18:00:00Z' };
+    records.push(newer);
+    const result = records.find((record) => record.kind === 'criterion_result');
+    if (result?.kind !== 'criterion_result') assert.fail();
+    records.push({ ...structuredClone(result), id: 'result-newer-id', assignment: ref(newer) });
+  });
+  flow.fake.edit((state) => { state.tasks['pilot-build'] = fakeTask('pilot-build', { state: 'done' }); });
+  flow.succeeded(flow.command({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, false);
+  reviseRecord(flow, 'assignment-1', (record) => { if (record.kind === 'assignment') record.attemptId = 'revised-current-attempt'; });
+  flow.succeeded(flow.existing({ detailedPlanTask: ref(flow.store.get(projectId, 'consumer-task')!) }));
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, true, 'Neither old revision nor superseded assignment ID can supply evidence');
+  const resultId = flow.store.records(projectId).find((record) => record.kind === 'criterion_result')!.id;
+  reviseRecord(flow, resultId, (record) => {
+    if (record.kind !== 'criterion_result') assert.fail();
+    record.assignment = ref(flow.store.get(projectId, 'assignment-1')!);
+  });
+  flow.succeeded(flow.existing({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, false, 'Evidence for the exact current assignment revision clears readiness');
+});
+
+for (const replace of [false, true]) test(`review 5: current plan alone supplies ${replace ? 'replaced' : 'removed'} plan requirements`, (t) => {
+  const flow = setup(t, false, (records) => { productPrerequisiteRecords(records, 'criterion', false); });
+  flow.fake.edit((state) => { state.tasks['pilot-build'] = fakeTask('pilot-build', { state: 'done' }); });
+  flow.succeeded(flow.command({ detailedPlanTask: { id: 'consumer-task', revision: 1 },
+    requirements: [{ prerequisiteTaskId: 'explicit-extra', consumerTaskId: 'consumer-task', reason: 'Keep this explicit additional requirement',
+      needs: { kind: 'criterion', criterion: { id: 'criterion-general', revision: 1 } } }] }));
+  reviseRecord(flow, 'plan-1', (record) => {
+    if (record.kind !== 'implementation_plan_revision') assert.fail();
+    record.dependencies = replace ? [{ ...record.dependencies[0]!, needs: { kind: 'criterion', criterion: { id: 'criterion-second-system', revision: 1 } } }] : [];
+  });
+  flow.succeeded(flow.existing({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
+  const requirements = flow.mapping().management!.requirements;
+  assert.equal(requirements.some((edge) => edge.prerequisiteTaskId === 'task-1' && edge.needs.kind === 'criterion' && edge.needs.criterion.id === 'criterion-general'), false);
+  assert.equal(requirements.some((edge) => edge.prerequisiteTaskId === 'explicit-extra'), true);
+  assert.equal(requirements.filter((edge) => edge.prerequisiteTaskId === 'task-1').length, replace ? 1 : 0);
+});
+
+test('review 6: installed dependency ownership survives producer ambiguity until explicit removal', (t) => {
+  const flow = setup(t, false, (records) => { productPrerequisiteRecords(records, 'criterion', true); });
+  flow.fake.edit((state) => { state.tasks['pilot-build'] = fakeTask('pilot-build'); });
+  flow.succeeded(flow.command({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
+  assert.deepEqual(flow.mapping().management!.managedDependencies, ['pilot-build'], 'Persist successful installed IDs');
+  const producer = flow.store.get(projectId, 'mapping-1'); assert.ok(producer?.kind === 'task_mapping');
+  const other = { ...structuredClone(producer), id: 'ambiguous-producer', firstMateTaskId: 'another-producer' };
+  const key = 'introduce-ambiguous-producer';
+  const decision = { kind: 'decision_change', id: key, projectId, schemaVersion: 1, revision: 1,
+    createdAt: other.createdAt, updatedAt: other.updatedAt, questionOrChange: 'Introduce ambiguity', affectedRecords: [ref(producer)],
+    rationale: 'Exact installed dependency ownership must survive changed resolution', disposition: 'selected', sourceRefs: [{ uri: 'fixture://ambiguity' }], scopeChanges: [] };
+  flow.store.mutate({ schemaVersion: 1, id: key, projectId, issuedAt: other.updatedAt, idempotencyKey: key,
+    command: 'record_decision_suggestion', targetId: other.id, expectedRevision: 0, payload: { decision } }, () => [decision, other]);
+  reviseRecord(flow, 'plan-1', (record) => { if (record.kind === 'implementation_plan_revision') record.dependencies = []; });
+  flow.succeeded(flow.existing({ detailedPlanTask: ref(flow.store.get(projectId, 'consumer-task')!), requirements: [] }));
+  assert.deepEqual(flow.fake.read().tasks['managed-task']!.deps, []);
+  assert.deepEqual(flow.mapping().management!.managedDependencies, []);
+});
+
+test('review 7: a definitive native cycle rejection accepts a corrected new intent', (t) => {
+  const flow = setup(t);
+  flow.fake.edit((state) => { state.tasks.native = fakeTask('native', { deps: [{ type: 'blocked-by', id: 'managed-task' }] }); });
+  const rejected = flow.manage(flow.command({ dependencies: ['native'] }));
+  assert.equal(rejected.operation.state, 'failed');
+  assert.equal(flow.fake.read().trace.length, 0);
+  flow.succeeded(flow.command({ dependencies: [] }));
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, false);
+});
+
+test('review 8: padded title receipts converge and allow a later pause', (t) => {
+  const flow = setup(t);
+  flow.succeeded(flow.command());
+  flow.succeeded(flow.existing({ action: 'update', update: { title: '  Normalized title  ' } }));
+  assert.equal(flow.fake.read().tasks['managed-task']!.title, 'Normalized title');
+  flow.succeeded(flow.existing({ action: 'pause' }));
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, true);
 });

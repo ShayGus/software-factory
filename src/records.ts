@@ -148,6 +148,7 @@ export const TaskMappingSchema = record('task_mapping', {
   disposition: DispositionSchema,
   management: z.strictObject({
     operationId: IdSchema, requirements: z.array(DependencySchema),
+    explicitRequirements: z.array(DependencySchema).optional(),
     managedDependencies: z.array(IdSchema),
     readiness: z.array(z.strictObject({ id: IdSchema, reason: TextSchema, evidence: z.array(EvidenceSchema) })),
     paused: z.boolean(),
@@ -257,6 +258,7 @@ export const PayloadDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const OperationSchema = record('operation', {
   idempotencyKey: IdSchema, command: CommandNameSchema, payloadDigest: PayloadDigestSchema,
   state: OperationStateSchema, externalReferences: z.array(SourceRefSchema),
+  taskRejection: z.strictObject({ beforeMutation: z.literal(true), reason: TextSchema }).optional(),
   reconciliation: z.strictObject({
     observedAt: TimestampSchema, evidence: z.array(EvidenceSchema).min(1),
     observedState: OperationStateSchema, note: TextSchema,
