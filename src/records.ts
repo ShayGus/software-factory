@@ -161,6 +161,12 @@ export const AssignmentSchema = record('assignment', {
   sourceRefs: z.array(SourceRefSchema).min(1), selectedContext: z.array(SelectedContextSchema).min(1),
   criteria: z.array(RefSchema), prerequisiteArtifacts: z.array(ArtifactSchema), returnLocation: TextSchema,
   instructionText: TextSchema, instructionFidelity: ComparisonSchema,
+  // Absent on historical assignments. New generated briefs retain the original
+  // lifecycle template and identities so a later gate can detect file damage.
+  brief: z.strictObject({
+    path: TextSchema, sidecarPath: TextSchema, scaffold: TextSchema,
+    sidecarDigest: TextSchema,
+  }).optional(),
 }).refine((value) => value.feature !== null || value.criteria.length === 0,
   'Standalone maintenance assignments cannot name product criteria');
 

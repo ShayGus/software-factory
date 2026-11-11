@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { captureChannelCoverage, chatHookCommand, chatHookSettings } from './capture-coverage.js';
 import { captureChatPrompt } from './chat-hook.js';
 import { deliverRequest } from './delivery.js';
+import { prepareWorkerBrief, checkWorkerBrief } from './briefs.js';
 import { captureRequest, initializeProject, mapRequest, requestCoverage, unclassifiedRequests } from './intake.js';
 import { recordStage, checkPlanReadiness, planReadinessHistory, stageHistory } from './planning.js';
 import { ProjectStore, StoreError } from './store.js';
@@ -24,6 +25,9 @@ All commands print JSON; chat-hook is silent on success. No settings are install
   plan           --db <sqlite> --input <RecordStageInput JSON file>
   detail         --db <sqlite> --input <RecordStageInput JSON file>
   check-plan     --db <sqlite> --input <CheckReadinessInput JSON file>
+  prepare-brief  --db <sqlite> --input <PrepareWorkerBriefInput JSON file>
+  check-brief    --db <sqlite> --project <id> --assignment <id>
+                 --revision <integer> --brief <already scaffolded brief path>
   findings       --db <sqlite> --project <id> --plan <plan ID>
   stages         --db <sqlite> --project <id> --feature <feature ID>
   unclassified   --db <sqlite> --project <id>
@@ -50,6 +54,8 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   plan: { db: valueOption, input: valueOption },
   detail: { db: valueOption, input: valueOption },
   'check-plan': { db: valueOption, input: valueOption },
+  'prepare-brief': { db: valueOption, input: valueOption },
+  'check-brief': { db: valueOption, project: valueOption, assignment: valueOption, revision: valueOption, brief: valueOption },
   findings: { db: valueOption, project: valueOption, plan: valueOption },
   stages: { db: valueOption, project: valueOption, feature: valueOption },
   unclassified: { db: valueOption, project: valueOption },
@@ -108,6 +114,15 @@ export function runCli(args: string[]): number {
           const report = checkPlanReadiness(store, jsonFile('input'));
           output(report);
           return report.readyPlan ? 0 : 1;
+        }
+        case 'prepare-brief': {
+          const report = prepareWorkerBrief(store, jsonFile('input'));
+          output(report); return report.ok ? 0 : 1;
+        }
+        case 'check-brief': {
+          const revision = z.coerce.number().int().positive().parse(required('revision'));
+          const report = checkWorkerBrief(store, required('project'), { id: required('assignment'), revision }, required('brief'));
+          output(report); return report.ok ? 0 : 1;
         }
         case 'findings': output(planReadinessHistory(store, required('project'), required('plan'))); break;
         case 'stages': output(stageHistory(store, required('project'), required('feature'))); break;

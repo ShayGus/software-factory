@@ -423,6 +423,26 @@
           }
         },
         "truncated": false
+      },
+      {
+        "source": {
+          "uri": "fixture://records/design-1",
+          "record": {
+            "id": "design-1",
+            "revision": 1
+          }
+        },
+        "truncated": false
+      },
+      {
+        "source": {
+          "uri": "fixture://records/plan-1",
+          "record": {
+            "id": "plan-1",
+            "revision": 1
+          }
+        },
+        "truncated": false
       }
     ],
     "criteria": [

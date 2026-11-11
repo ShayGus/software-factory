@@ -10,3 +10,6 @@ export * from './chat-hook.js';
 export * from './capture-coverage.js';
 export * from './planning.js';
 export * from './planning-checks.js';
+export * from './instruction-context.js';
+export * from './instructions.js';
+export * from './briefs.js';

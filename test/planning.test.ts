@@ -9,6 +9,7 @@ import {
   ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, StageRevisionSchema, DecisionChangeSchema,
   recordStage, checkPlanReadiness, planReadinessHistory, ref, validateRecords, validateAssignmentForDispatch, planReadinessFindings,
   type FactoryRecord, type StageRevision, type ImplementationPlanRevision, type Ref,
+  prepareWorkerBrief, requiredAssignmentContext, recordSource,
 } from '../src/index.js';
 
 const time = '2026-11-10T10:36:43Z';
@@ -451,7 +452,7 @@ test('review finding 1: ready staged plans accept verified retained tasks for di
     const assignment = { ...baseline.find((record) => record.kind === 'assignment')!, id: 'assignment-staged',
       feature, design: ref(flow.design), plan, detailedPlanTask: ref(task), firstMateTaskId: 'execution-task',
       criteria: task.criteria, sourceRefs: [request, flow.design, plan, task].map(source),
-      selectedContext: [{ source: source(task), truncated: false }],
+      selectedContext: [request, flow.design, result.readyPlan!, task].map((record) => ({ source: source(record), truncated: false })),
       instructionFidelity: comparison([request, flow.design, plan, task]) };
     const review = { ...baseline.find((record) => record.kind === 'product_review')!, id: 'review-staged',
       feature, design: ref(flow.design), plan, detailedPlanTasks: [ref(task)], assignments: [ref(assignment)],
@@ -706,7 +707,7 @@ test('1069-3: new tasks against the current feature keep their explicit assignme
     const assignment = { ...baseline.find((record) => record.kind === 'assignment')!, feature: ref(current),
       design: ref(flow.design), plan: result.readyPlan, detailedPlanTask: ref(task), criteria: [a],
       sourceRefs: [request, flow.design, result.readyPlan, task].map(source),
-      selectedContext: [{ source: source(task), truncated: false }],
+      selectedContext: [request, flow.design, result.readyPlan!, task].map((record) => ({ source: source(record), truncated: false })),
       instructionFidelity: comparison([request, flow.design, result.readyPlan, task]) };
     const dispatch = validateAssignmentForDispatch([...flow.store.history(base.projectId), mapping, assignment], ref(assignment));
     assert.equal(dispatch.ok, true, JSON.stringify(dispatch));
@@ -759,7 +760,7 @@ test('1090-2: Detail can refine a reused ready plan and retain its prior criteri
       detailedPlanTask: ref(task), criteria: [third] };
     const assignment = { ...baseline.find((record) => record.kind === 'assignment')!, feature: ref(refined.current),
       design: ready.design, plan: ref(ready), detailedPlanTask: ref(task), criteria: [third],
-      sourceRefs: [request, ready.design, ready, task].map(source), selectedContext: [{ source: source(task), truncated: false }],
+      sourceRefs: [request, ready.design, ready, task].map(source), selectedContext: [request, ready.design, ready, task].map((record) => ({ source: source(record), truncated: false })),
       instructionFidelity: comparison([request, ready.design, ready, task]) };
     const dispatch = validateAssignmentForDispatch([...flow.store.history(base.projectId), mapping, assignment], assignment);
     assert.equal(dispatch.ok, true, JSON.stringify(dispatch));
@@ -770,4 +771,44 @@ test('1090-2: Detail can refine a reused ready plan and retain its prior criteri
     refinedPlan.workflow!.retainedTasks = [];
     assert.ok(planReadinessFindings(withoutRetention, detail).some((finding) => finding.code === 'invented_scope'));
   } finally { flow.store.close(); }
+});
+
+for (const narrow of [false, true]) test(`BUILD-07 prepares ${narrow ? 'a correction' : 'a general feature'} from the BUILD-06 ready revision`, () => {
+  const flow = setup(narrow);
+  const directory = mkdtempSync(join(tmpdir(), 'sf-staged-brief-'));
+  try {
+    flow.start(); flow.finish();
+    const ready = flow.check().readyPlan; assert.ok(ready);
+    const task = flow.detailedTasks[0]!;
+    const plan = flow.store.get(base.projectId, ready.id, ready.revision);
+    assert.ok(plan?.kind === 'implementation_plan_revision');
+    const mapping = { ...baseline.find((record) => record.kind === 'task_mapping')!,
+      id: 'staged-brief-mapping', firstMateTaskId: 'staged-brief-worker', feature: plan.feature,
+      detailedPlanTask: ref(task), criteria: task.criteria, dependencies: [] };
+    flow.store.mutate({ schemaVersion: 1, id: 'map-staged-brief', projectId: base.projectId,
+      issuedAt: time, idempotencyKey: 'map-staged-brief', command: 'map_manage_execution_task', targetId: mapping.id,
+      expectedRevision: 0, payload: { action: 'map', feature: plan.feature, criteria: task.criteria,
+        detailedPlanTask: ref(task), task: { kind: 'existing', firstMateTaskId: 'staged-brief-worker' },
+        dependencies: [], reason: 'Map the already-existing execution task' } }, () => [mapping]);
+    const required = requiredAssignmentContext(flow.store.history(base.projectId), { projectId: base.projectId,
+      feature: plan.feature, design: plan.design, plan: ref(plan), detailedPlanTask: ref(task), criteria: task.criteria });
+    const sourceFiles = required.sources.filter((source) => !source.record).map((source, index) => {
+      const path = join(directory, `source-${index}.txt`); writeFileSync(path, 'Existing implementation and exact captured source.');
+      return { source, path };
+    });
+    const briefPath = join(directory, 'brief.md');
+    writeFileSync(briefPath, readFileSync(new URL('../../fixtures/firstmate-brief.md', import.meta.url), 'utf8'));
+    const result = prepareWorkerBrief(flow.store, { projectId: base.projectId, assignmentId: 'staged-brief-assignment',
+      attemptId: 'staged-brief-attempt', expectedRevision: 0, idempotencyKey: 'prepare-staged-brief', issuedAt: time,
+      detailedPlanTask: ref(task), plan: ref(plan), firstMateTaskId: 'staged-brief-worker',
+      returnLocation: 'data/staged-brief-worker/report.md', briefPath, sourceFiles });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const assignment = flow.store.get(base.projectId, result.assignment.id);
+    assert.ok(assignment?.kind === 'assignment');
+    assert.equal(assignment.plan.revision, 3); assert.equal(assignment.detailedPlanTask.revision, 2);
+    for (const record of [flow.decision, flow.understanding, flow.detailStage]) {
+      assert.ok(assignment.selectedContext.some((context) => context.source.uri === recordSource(record).uri));
+    }
+    assert.equal(validateAssignmentForDispatch(flow.store.history(base.projectId), ref(assignment)).ok, true);
+  } finally { flow.store.close(); rmSync(directory, { recursive: true, force: true }); }
 });

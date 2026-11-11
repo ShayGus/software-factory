@@ -67,6 +67,12 @@ export const PrepareAssignmentCommandSchema = z.strictObject({
     detailedPlanTask: RefSchema, feature: RefSchema.nullable(), design: RefSchema, plan: RefSchema,
     firstMateTaskId: IdSchema, selectedContext: z.array(SelectedContextSchema).min(1),
     returnLocation: TextSchema,
+    generation: z.strictObject({
+      attemptId: IdSchema, briefPath: TextSchema, sidecarPath: TextSchema,
+      scaffold: TextSchema, maxSourceChars: z.number().int().positive(),
+      sourceFiles: z.array(z.strictObject({ source: SourceRefSchema, path: TextSchema,
+        start: z.number().int().nonnegative().optional(), end: z.number().int().positive().optional() })),
+    }).optional(),
   }),
 });
 export const DeliverCorrectionCommandSchema = z.strictObject({

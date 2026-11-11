@@ -136,7 +136,10 @@ Storing them must not accidentally mean dispatch or completion is permitted:
 
 - `validateAssignmentForDispatch` also requires passing instruction fidelity, a
   ready plan, a source-compared design, a matching active current task mapping,
+  required request/design/plan/task context, the current assignment revision,
   and an active current feature with unchanged scope for feature assignments.
+  Generated assignments also require their full selected context and unchanged
+  source-derived instruction text. `check-brief` additionally checks actual files.
 - A review claiming `outcome: passed`, and `validateReviewForCompletion`, require
   current passing evidence for every active required criterion, passed source,
   instruction and plan comparisons, no unresolved product questions, and evidence
@@ -148,7 +151,8 @@ Storing them must not accidentally mean dispatch or completion is permitted:
 sources, findings, reviewer session and time. A passing comparison cannot hide
 unresolved findings, and original request references are required. An omitted
 requirement that has never been identified in criteria still requires comparison
-with the original text. BUILD-07 and BUILD-10 must produce these findings; a schema
+with the original text. BUILD-07 adds conservative exact-derivation checks and a
+bounded example-only scope check below; BUILD-10 owns product review. A schema
 cannot certify that a reviewer told the truth.
 
 The ERPNext fixtures deliberately keep both criterion IDs in the narrowed assignment.
@@ -336,8 +340,8 @@ results and delivered artifacts. The reason records why that evidence still appl
   no license; this package does not select one on the operator's behalf.
 
 Durable history, transactions, idempotency and pending-operation storage are implemented.
-Request delivery and staged planning are implemented below. General operation
-execution/reconciliation, semantic source interpretation, assignment generation and live
+Request delivery, staged planning and assignment preparation are implemented below. General operation
+execution/reconciliation, semantic source interpretation and live
 product review remain later builds. No live FirstMate integration or full product milestone is
 claimed by these contract fixtures.
 
@@ -727,5 +731,127 @@ the delivery content that its linked readiness record checked.
 single-message correction through the same CLI/application path, plus current-request
 reuse, dropped behavior, the BUILD-02 ERPNext narrowing scenario, integration gaps,
 detail gaps, settled decisions, correction/recheck, revision-preserving replanning,
-transaction conflicts and export/restore. Assignment generation, instruction fidelity,
-execution management and product review remain their separate planned builds.
+transaction conflicts and export/restore. Assignment generation and instruction fidelity
+are implemented below; execution management and product review remain later builds.
+
+## Derived worker instructions — BUILD-07
+
+`prepareWorkerBrief` (`prepare-brief`) takes a ready detailed task, the ready plan
+revision that retains it, an existing managed task mapping, and a brief file already
+scaffolded by FirstMate. It fills only `## Captain's intent` and
+`## Firstmate spec`. Every byte outside those two section bodies is retained,
+including role, worktree, safety and delivery instructions. Tests use
+`fixtures/firstmate-brief.md`; preparing a brief does not run FirstMate scripts.
+
+Captain's intent contains the exact captured original request text. When a feature
+has several source requests, their original texts appear in recorded order,
+separated by two newlines. Criteria, design interpretations and task instructions
+appear in Firstmate spec. That section contains behavior, preserved design and
+decisions, exclusions, boundaries, inputs/outputs, reuse targets, acceptance and
+verification cases, integration, dependencies, and the worker's return requirements.
+
+After FirstMate has created the scaffold, prepare it through the application API
+or CLI:
+
+```sh
+software-factory prepare-brief --db /absolute/project.sqlite --input prepare.json
+software-factory check-brief --db /absolute/project.sqlite --project project-1 \
+  --assignment assignment-build-1 --revision 1 --brief /absolute/data/build-1/brief.md
+```
+
+`prepare.json` follows `PrepareWorkerBriefInputSchema`:
+
+```json
+{
+  "projectId": "project-1",
+  "assignmentId": "assignment-build-1",
+  "attemptId": "attempt-build-1",
+  "expectedRevision": 0,
+  "idempotencyKey": "prepare-build-1",
+  "issuedAt": "2026-11-11T12:00:00Z",
+  "detailedPlanTask": { "id": "task-1", "revision": 2 },
+  "plan": { "id": "plan-1", "revision": 3 },
+  "firstMateTaskId": "build-1",
+  "returnLocation": "data/build-1/report.md",
+  "briefPath": "/absolute/data/build-1/brief.md",
+  "maxSourceChars": 16000,
+  "sourceFiles": [
+    {
+      "source": { "uri": "https://example.org/original-design" },
+      "path": "/absolute/sources/original-design.txt",
+      "start": 100,
+      "end": 900
+    }
+  ]
+}
+```
+
+Use actual stored IDs and revisions and list each original source/reuse target
+that needs a local snapshot. A source with an absolute local path or `file:` URI
+is read directly. Other external references require a `sourceFiles` entry matching
+the complete `SourceRef` (URI, optional record and excerpt); no network retrieval
+occurs. Snapshots must be readable UTF-8 text. Unsupported/binary or unavailable
+sources are explicit missing context. Record references resolve at their exact
+revision from the project store and are included in the sidecar.
+
+`selectAssignmentContext` selects the feature, design, plan, detailed task,
+original requests and sources, assigned criteria, decisions, exclusions, dependency
+outputs, and checked planning/reuse provenance. Checked criterion translations
+from BUILD-06 are reused. Explicit artifact dependencies retain their artifact
+identities. A criterion dependency selects its passed result and output artifact
+for the prerequisite's exact task revision when available. Without a recorded
+result, a `factory:criterion-output/<task>/<criterion>@<revision>` source names the
+missing handover; an explicit local output snapshot can supply that context.
+This records received context; execution dependency/hold management belongs to
+BUILD-08.
+
+Each supplied source has an original reference, a full-text SHA-256 identity and a
+verbatim extract. Optional `start`/`end` are half-open UTF-16 offsets selecting the
+task-relevant range. `maxSourceChars` caps each extract; `truncated: true` records
+any omitted prefix or suffix. Without a range, the source beginning is selected.
+The full original stays reachable through its local snapshot or the full record
+original bundled in the sidecar. Truncation never rewrites Captain's intent.
+
+Coverage is written beside the brief as `brief.sf.json` by default; `sidecarPath`
+can override it. The sidecar names the assignment revision, every selected record
+revision, full record originals, source references and digests, extracts,
+truncation, criterion IDs, prerequisite artifacts and missing context. The
+assignment stores the same selection, exact source-derived instruction text,
+fidelity comparison, original scaffold, output paths and sidecar digest.
+Use distinct output paths for distinct assignments. An unrelated existing sidecar
+or another assignment's output paths are refused.
+
+Both commands print structured JSON and return 0 only with no open findings.
+`checkWorkerBrief` (`check-brief`) is a read-only pre-dispatch gate: it compares the
+actual brief against the original request, detailed task and design, checks the
+preserved lifecycle scaffold, verifies sidecar coverage and local source integrity,
+and applies existing assignment-dispatch rules. Findings distinguish changed
+Captain's intent, damaged scaffold, narrowed generality, omitted behavior, invented
+scope, missing required context, changed coverage and revision/mapping/readiness
+problems. Pre-existing unmanaged task mappings remain supported. Existing managed
+assignments need their original request, design, plan and task contexts to dispatch.
+
+The check is deterministic and conservative. Exact generated content must survive;
+even an apparently harmless paraphrase requires regeneration. A bounded linguistic
+check also rejects explicit example-only restrictions such as the BUILD-02
+“Implement feature X for ERPNext only” scenario, including when all criterion IDs
+and a claimed fidelity pass remain. Explicit example roles come from BUILD-06
+understanding records or the captured request's `X is an example` wording. This
+cannot establish the semantic completeness of arbitrary prose or detect a
+requirement never represented by source analysis; original sources remain available
+for product review. No model call is part of preparation or checking.
+
+Preparation commits its assignment and idempotency receipt before atomically
+materializing each file. Retrying the same key repairs interrupted file writes;
+a changed payload cannot reuse the key. An old assignment revision cannot dispatch
+or overwrite newer prepared files. Missing source context produces an inspectable
+brief and failed comparison; supply it through a new assignment revision and key.
+A future FirstMate hook can call `check-brief` before starting a worker. Installing
+that hook and worker lifecycle operations are separate integration work.
+
+`test/briefs.test.ts` and the BUILD-07 integration cases in `test/planning.test.ts`
+cover preserved intent/scaffold bytes (LF and CRLF), exact revision coverage,
+context truncation, dependency outputs, explicit missing sources, altered content,
+the original ERPNext narrowing scenario, sidecar/source damage, persistent replay,
+stale assignment rejection, CLI exit codes, and preparation from both general and
+narrow BUILD-06 ready plans.

@@ -1,5 +1,7 @@
 import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
+import { missingAssignmentContext, narrowedInstruction } from './instruction-context.js';
+import { instructionBodies } from './instructions.js';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
 import {
@@ -670,8 +672,20 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
   const owner = validated.data.find((record) => record.kind === 'assignment' && sameRef(record, assignmentRef));
   if (!owner || owner.kind !== 'assignment') return { ok: false, issues: [{ code: 'missing_assignment', recordId: assignmentRef.id,
     path: 'assignment', message: 'Assignment revision is absent' }] };
+  if (ctx.current.get(owner.id)?.revision !== owner.revision) ctx.add(owner,
+    'superseded_assignment', 'assignment', 'A newer revision of this assignment exists');
   if (owner.instructionFidelity.result !== 'passed') ctx.add(owner, 'instruction_fidelity', 'instructionFidelity',
     'Instruction comparison with original request, design and task has not passed');
+  for (const source of missingAssignmentContext(validated.data, owner)) ctx.add(owner,
+    'missing_required_context', 'selectedContext', `Missing required context: ${JSON.stringify(source)}`);
+  if (!owner.brief && narrowedInstruction(validated.data, owner, owner.instructionText)) ctx.add(owner,
+    'narrowed_generality', 'instructionText', 'Instructions narrow an original example to the entire scope');
+  if (owner.brief) {
+    try {
+      if (owner.instructionText !== instructionBodies(validated.data, owner).spec) ctx.add(owner,
+        'instruction_fidelity', 'instructionText', 'Generated assignment text differs from its detailed task and design');
+    } catch (error) { ctx.add(owner, 'missing_required_context', 'instructionText', String(error)); }
+  }
   const plan = ctx.get(owner, owner.plan, 'implementation_plan_revision', 'plan');
   const design = ctx.get(owner, owner.design, 'design_revision', 'design');
   if (!plan?.readiness.ready || design?.sourceComparison.result !== 'passed') ctx.add(owner, 'plan_not_ready', 'plan', 'Design/plan not ready');
