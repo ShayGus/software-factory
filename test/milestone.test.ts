@@ -192,6 +192,26 @@ test('review 1201 finding 5: prepare refuses an unbootstrapped database before a
   } finally { flow.close(); }
 });
 
+for (const field of ['goal', 'exclusions'] as const) {
+  test(`review 1207: changed project ${field} is refused read-only before capture`, () => {
+    const flow = scenario();
+    try {
+      flow.config.project = structuredClone(flow.config.project);
+      if (field === 'goal') flow.config.project.goal = 'A changed goal that was never initialized';
+      else flow.config.project.exclusions.push('A changed exclusion that was never initialized');
+      const before = readFileSync(flow.database);
+      assert.throws(() => runFeature(flow.config, 'prepare'), /project_initialization_mismatch/);
+      assert.deepEqual(readFileSync(flow.database), before);
+      const store = new ProjectStore(flow.database, { readOnly: true });
+      try { assert.equal(store.records('project-1').some((record) => record.kind === 'request'), false); }
+      finally { store.close(); }
+      assert.equal(flow.wrapper.read().calls.length, 0);
+      assert.equal(existsSync(join(flow.root, 'agents.jsonl')), false);
+      assert.equal(existsSync(join(flow.config.runDirectory, 'prepare.started')), false);
+    } finally { flow.close(); }
+  });
+}
+
 test('one captured feature reaches product completion through the existing CLI and fake FirstMate', () => {
   const flow = scenario();
   try {

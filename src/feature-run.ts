@@ -2,18 +2,19 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { ProjectAgentConfigSchema, nativeStepProfile, stepAgentCommand } from './agent-profiles.js';
 import { runStepAgent } from './agent-runner.js';
 import { briefPreparationGateId, PrepareWorkerBriefInputSchema } from './briefs.js';
-import { MapRequestInputSchema, ref } from './intake.js';
+import { MapRequestInputSchema, ref, stableId } from './intake.js';
 import { InstructionJudgeVerdictSchema } from './instruction-judge.js';
 import { digestText } from './instruction-context.js';
 import { RecordStageInputSchema } from './planning.js';
 import { EvidenceSchema, RefSchema } from './primitives.js';
 import { ProjectSchema } from './records.js';
 import { ReviewProductInputSchema } from './product-review.js';
-import { ProjectStore } from './store.js';
+import { ProjectStore, StoreError } from './store.js';
 import { parseStrictJson } from './strict-json.js';
 import { TaskAdapterOptionsSchema } from './tasks.js';
 import { WorkerHookConfigSchema } from './worker-start-hook.js';
@@ -48,9 +49,22 @@ function validatedRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
     try {
       const project = store.get(config.project.id, config.project.id);
       if (project?.kind !== 'project' || project.projectId !== config.project.id) throw new Error('project_identity_missing');
+      const initialization = store.receipt(config.project.id, stableId('initialize-key', config.project.id));
+      if (!initialization || initialization.command.command !== 'record_decision_suggestion' ||
+        initialization.command.targetId !== config.project.id || initialization.command.expectedRevision !== 0 ||
+        !initialization.result.records.some((record) => record.id === config.project.id && record.revision === 1)) {
+        throw new Error('project_initialization_missing');
+      }
+      // Legacy init receipts omitted the payload project; their saved revision 1
+      // is the same fallback used by ProjectStore's initialization replay.
+      const initialized = initialization.command.payload.project ?? store.get(config.project.id, config.project.id, 1);
+      if (!isDeepStrictEqual(initialized, config.project)) throw new StoreError('conflict', 'project_initialization_mismatch');
       return project;
     } finally { store.close(); }
-  } catch (error) { throw new Error(`bootstrap_project_unavailable: ${String(error)}; run bootstrap before enabling the hook`); }
+  } catch (error) {
+    if (error instanceof StoreError && error.detail.code === 'conflict') throw error;
+    throw new Error(`bootstrap_project_unavailable: ${String(error)}; run bootstrap before enabling the hook`);
+  }
 }
 
 /** Local, idempotent init only. This must succeed before the operator enables

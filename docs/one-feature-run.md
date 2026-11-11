@@ -130,6 +130,10 @@ Bootstrap does not read agent settings or require hook installation. It retains
 `runDirectory`, and reuses `init`'s idempotent receipt on repeat. If it fails, leave
 the hook disabled and repair that local context before enabling it. Preparation,
 start and review validate the existing database without initializing a missing one.
+The configured project must match the stored initialization payload, including
+goal and exclusions. A mismatch is rejected read-only before capture or agent
+calls; restore the initialized configuration rather than silently changing the
+project through `run.json`.
 A preparation preflight failure therefore leaves the valid database available for
 the hook to classify unmanaged tasks. Do not register an unavailable database with
 an enabled home-wide hook: fail-closed lookup would refuse every task start there.
