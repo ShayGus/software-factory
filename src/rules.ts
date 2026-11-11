@@ -267,6 +267,31 @@ function checkReview(ctx: Context, review: ProductReview) {
 }
 
 function checkCompletion(ctx: Context, review: ProductReview) {
+  if (review.conformance) {
+    const proof = review.conformance;
+    if (!proof.verdict || proof.error || proof.qualityError ||
+      !proof.technicalReviews.length || proof.technicalReviews.some((result) => result.verdict !== 'passed') ||
+      proof.verdict.criteria.some((criterion) => criterion.state !== 'accomplished') ||
+      [proof.verdict.sourceComparison, proof.verdict.instructionFidelity, proof.verdict.planConformance].some((result) => result !== 'passed')) {
+      ctx.add(review, 'unresolved_conformance', 'conformance', 'A fresh product review with accomplished behavior and passing existing quality evidence is required');
+    }
+    if (proof.sessionId !== review.reviewerSession) ctx.add(review, 'review_session_mismatch', 'conformance.sessionId', 'Product reviewer session must match');
+    for (const assignmentRef of review.assignments) {
+      const assignment = ctx.index.get(key(assignmentRef));
+      if (assignment?.kind !== 'assignment') continue;
+      for (const criterion of assignment.criteria.length ? assignment.criteria : [null]) {
+        if (proof.verdict?.criteria.filter((outcome) => sameRef(outcome.criterion, criterion)).length !== 1) {
+          ctx.add(review, 'incomplete_conformance', 'conformance.verdict.criteria', 'Every assigned criterion needs exactly one reviewer outcome');
+        }
+      }
+    }
+    for (const file of proof.deliveredFiles) if (!review.reviewedArtifacts.some((artifact) => artifact.revision === file.artifact.revision)) {
+      ctx.add(review, 'unreviewed_artifact', 'conformance.deliveredFiles', 'Snapshot must name the delivered commit');
+    }
+    for (const quality of proof.technicalReviews) if (!review.reviewedArtifacts.some((artifact) => artifact.revision === quality.commit)) {
+      ctx.add(review, 'unreviewed_artifact', 'conformance.technicalReviews', 'Quality evidence must name the delivered commit');
+    }
+  }
   const feature = review.feature ? ctx.get(review, review.feature, 'feature_revision', 'feature') : undefined;
   for (const [path, comparison] of Object.entries({
     sourceComparison: review.sourceComparison, instructionFidelity: review.instructionFidelity,
@@ -711,6 +736,9 @@ export function validateReviewForCompletion(input: unknown, reviewRef: Ref): Val
   if (!owner || owner.kind !== 'product_review') return { ok: false, issues: [{ code: 'missing_review', recordId: reviewRef.id,
     path: 'review', message: 'Review revision is absent' }] };
   checkCompletion(ctx, owner);
+  if (owner.conformance) for (const assignment of owner.assignments) {
+    if (ctx.current.get(assignment.id)?.revision !== assignment.revision) ctx.add(owner, 'superseded_assignment', 'assignments', 'Completion names an old assignment');
+  }
   if (owner.outcome !== 'passed') ctx.add(owner, 'review_failed', 'outcome', 'Review did not pass');
   return ctx.issues.length ? { ok: false, issues: ctx.issues } : { ok: true, data: owner };
 }

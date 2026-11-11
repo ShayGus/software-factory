@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { z } from 'zod';
 import { TextSchema } from './primitives.js';
 import type { Comparison } from './primitives.js';
@@ -6,7 +5,8 @@ import type { Assignment, FactoryRecord } from './records.js';
 import { planningRecord } from './planning-checks.js';
 import { digestText, recordSource, requiredAssignmentContext } from './instruction-context.js';
 import { workerAssignmentMetadata } from './instructions.js';
-import { instructionAgentCommand, type WorkflowAgentProfile } from './agent-profiles.js';
+import type { WorkflowAgentProfile } from './agent-profiles.js';
+import { runStepAgent } from './agent-runner.js';
 import { parseStrictJson } from './strict-json.js';
 
 export const InstructionJudgeVerdictSchema = z.strictObject({
@@ -71,19 +71,10 @@ export function judgeWorkerInstructions(records: FactoryRecord[], assignment: As
   config: unknown, comparedAt = new Date().toISOString()): InstructionJudgment {
   let inputDigest: string | null = null;
   try {
-    const command = instructionAgentCommand(config, assignment.projectId);
     const snapshot = instructionJudgeSnapshot(records, assignment, candidate);
     const input = JSON.stringify(snapshot);
     inputDigest = digestText(input);
-    const sessionMarkers = new Set(['CLAUDECODE', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID']);
-    // Keep native authentication, but never give the judge the worker/main
-    // session identity or FirstMate's lifecycle/inbox control environment.
-    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
-      !sessionMarkers.has(name) && !name.startsWith('FM_') && !name.startsWith('ORCA_')));
-    const result = spawnSync(command.executable, command.args, { input: instructionJudgeDirections + input + '\n',
-      encoding: 'utf8', env, ...(command.cwd ? { cwd: command.cwd } : {}), timeout: command.timeoutMs,
-      killSignal: 'SIGKILL', maxBuffer: 2 * 1024 * 1024, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
-    if (result.error || result.status !== 0 || result.signal) throw new Error(`instruction_judge_failed: ${result.error?.message ?? result.signal ?? result.status}`);
+    const result = runStepAgent(config, assignment.projectId, 'instruction_check', instructionJudgeDirections + input + '\n');
     const verdict = InstructionJudgeVerdictSchema.parse(parseStrictJson(result.stdout));
     const quoteSources = { original_request: snapshot.originalRequests.map((request) => request.text), assignment: textLeaves(snapshot.assignment),
       design: textLeaves(snapshot.design), plan: textLeaves(snapshot.plan), task: textLeaves(snapshot.task),
@@ -96,6 +87,6 @@ export function judgeWorkerInstructions(records: FactoryRecord[], assignment: As
     const comparison: Comparison = { result: verdict.verdict === 'pass' ? 'passed' : 'failed', sourceRefs,
       findings: verdict.findings.map((finding) => ({ result: 'failed', description: JSON.stringify(finding), sourceRefs, evidence: [] })),
       reviewerSession: 'factory:agent-instruction-judge', comparedAt };
-    return { ok: true, inputDigest, profile: command.profile, verdict, comparison };
+    return { ok: true, inputDigest, profile: result.profile, verdict, comparison };
   } catch (error) { return { ok: false, inputDigest, error: error instanceof Error ? error.message : String(error) }; }
 }

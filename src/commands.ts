@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  ArtifactSchema, CorrectionActionSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema,
+  ArtifactSchema, EvidenceSchema, CorrectionActionSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema,
 } from './primitives.js';
 import {
   CriterionResultSchema, DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema,
@@ -89,6 +89,8 @@ export const RecordReviewResultCommandSchema = z.strictObject({
     originalRequests: z.array(RefSchema).min(1), feature: RefSchema.nullable(), design: RefSchema, plan: RefSchema,
     assignment: RefSchema, deliveredArtifact: ArtifactSchema,
     results: z.array(CriterionResultSchema), review: ProductReviewSchema.optional(),
+    generation: z.strictObject({ repository: TextSchema, paths: z.array(TextSchema), maxSourceChars: z.number().int().positive(),
+      baselineEvidence: z.array(EvidenceSchema), agentConfigDigest: TextSchema }).optional(),
   }),
 });
 export const CaptureConsolidateLearningCommandSchema = z.strictObject({

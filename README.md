@@ -340,10 +340,9 @@ results and delivered artifacts. The reason records why that evidence still appl
   no license; this package does not select one on the operator's behalf.
 
 Durable history, transactions, idempotency and pending-operation storage are implemented.
-Request delivery, staged planning and assignment preparation are implemented below. General operation
-execution/reconciliation and live
-product review remain later builds. No live FirstMate integration or full product milestone is
-claimed by these contract fixtures.
+Request delivery, staged planning, assignment preparation and product review are implemented below.
+General operation execution/reconciliation remains a later build.
+No live FirstMate integration or full product milestone is claimed by these contract fixtures.
 
 ## Request capture CLI — BUILD-04
 
@@ -732,7 +731,7 @@ single-message correction through the same CLI/application path, plus current-re
 reuse, dropped behavior, the BUILD-02 ERPNext narrowing scenario, integration gaps,
 detail gaps, settled decisions, correction/recheck, revision-preserving replanning,
 transaction conflicts and export/restore. Assignment generation and instruction fidelity
-are implemented below; execution management and product review remain later builds.
+are implemented below; execution management remains a later build.
 
 ## Derived worker instructions — BUILD-07
 
@@ -898,8 +897,8 @@ configuration are refused rather than inherited from another step or session.
 ```
 
 `resolveStepAgentProfile` is the shared resolver for later understand/design/plan/
-detail and BUILD-10 review executors. Currently only `instruction_check` executes
-an agent. It selects its own profile, never the worker's or the main session's.
+detail executors and the implemented `instruction_check` and `product_review` steps.
+Each review step selects its own profile, never the worker's or the main session's.
 The executable map names installed harness binaries, not arbitrary command argv.
 The adapter constructs the command itself:
 
@@ -923,8 +922,8 @@ disabled for these review calls, rather than attaching to a running agent.
 Every check launches a separate one-shot process with a complete prompt on stdin
 and the default two-minute timeout. The CLI must return only its final JSON verdict
 on stdout; progress belongs on stderr. There are no retries, provider SDKs or
-RoboRev subprocesses. The shared setting stores future steps' profiles now without
-pretending that their agent executors or product review are implemented.
+RoboRev subprocesses in instruction checking.
+Product review uses the same isolated agent runner and reads existing RoboRev evidence as described below.
 
 The result follows `fixtures/instruction-judge.schema.json`:
 
@@ -1013,3 +1012,50 @@ profiles), `bin/fm-dispatch-resolve.sh` (`effort_ok`) and `bin/fm-spawn.sh`
 same four profile fields; this package neither modifies it nor imports its role
 rules, quota selection or account management. The copied native field/effort
 mapping is implemented in `src/agent-profiles.ts`.
+
+
+## Plan-based product review - BUILD-10
+
+`reviewProduct(store, input, agentConfig)` implements the canonical `record_review_result` operation for one delivered assignment.
+The CLI is `software-factory review-product --db <sqlite> --input <ReviewProductInput JSON file> --agent-config <ProjectAgentConfig JSON file>`.
+It prints the persisted review and returns zero only for a passing product review.
+It does not change feature state or FirstMate task state.
+
+The input names `projectId`, `reviewId`, `expectedRevision`, `idempotencyKey`, `issuedAt`, the exact `assignment` reference, an absolute `repository`, `deliveredArtifact`, worker `results`, and `baselineEvidence`.
+`deliveredArtifact.revision` must be a full commit SHA; each worker return uses the existing `criterion_result` contract and the same delivered artifact identity.
+`paths` optionally adds unchanged dependency files to the review snapshot; every path changed by the commit is included automatically.
+`maxSourceChars` bounds the delivered snapshot, defaulting to 256,000 characters and limited to 1,000,000.
+The snapshot accepts at most 1,000 text files and the complete package is limited to 1,500,000 characters.
+Binary files, unreadable commits, missing requested paths and exceeded limits return explicit errors rather than silently truncating evidence.
+Files come from the pinned commit, including first-parent merge changes, regardless of local worktree edits.
+Supply relevant unchanged dependencies in `paths`; the reviewer must report uncertainty when the supplied evidence cannot establish behavior.
+
+The package includes exact original request text, the design and plan revisions, detailed task and acceptance cases, canonical assignment metadata, actual delivered code, per-criterion worker returns, selected decisions, baseline evidence and existing technical-review results.
+The reviewer checks the plan independently against the original request and reports original-request omissions even when no listed criterion mentions them.
+A brief that incorrectly narrows a general design to ERPNext cannot redefine correctness.
+Suggestions remain separate from required findings and criterion outcomes.
+
+`product_review` selects its own harness, provider, model, effort and executable through the shared profile mechanism above.
+Each new operation starts one fresh, read-only, one-shot agent process with the frozen package on stdin, without worker session identity or lifecycle environment.
+`fixtures/product-review.schema.json` describes its strict JSON output; runtime validation also rejects duplicate keys, ungrounded quotations and missing or duplicate criterion outcomes.
+An accomplished outcome requires committed-code evidence.
+Unavailable agents, timeouts, malformed output, uncertain behavior, missing worker evidence, missing baseline evidence or unavailable quality results leave the review incomplete.
+A failed product comparison or technical verdict records a failed review.
+A passing review requires passing original-source, instruction-fidelity and plan-conformance comparisons, accomplished assigned behavior, and the existing completion rules for required criteria, baseline and improvement evidence.
+
+`readRoborevResult` invokes only `roborev show --json <full-commit-SHA>` in the supplied repository.
+The adapter follows the inspected `roborev v0.74.0-fmpatch.1` response: review `job_id`, raw output and `structured_output`, plus nested `job.id`, `job.git_ref`, `job.status` and `job.job_type`.
+Only completed review jobs for that exact commit are accepted.
+The structured technical verdict is retained; a missing verdict is uncertain, and a closed review does not imply a pass.
+No review, tests, analysis or quality checks are enqueued.
+An exact-commit quality result already retained by an earlier product review is reused, including when that product review failed.
+A changed delivered commit reads its own quality result.
+
+The product review persists its input digest, unique reviewer session, selected profile, committed file snapshots, raw technical evidence and per-criterion accomplished/failed/uncertain verdicts in the existing review record.
+Original source, design, plan, task and worker returns remain available through their exact historical references.
+The command receipt makes an identical completed operation replay return the saved review without another agent or quality read; changed input under the same key is a conflict.
+There is no automatic retry of an unavailable reviewer.
+These records remain evidence of the supplied snapshot and reviewer judgment, not a claim that code execution was observed by the reviewer.
+
+`test/product-review.test.ts` exercises the decisive ERPNext-only case with passing technical checks, missing behavior, wrong implementation, an original-request omission, bounded immutable delivery snapshots, quality-result reuse, per-step isolated profiles, strict output rejection, persistence, replay and CLI status.
+Tests use fake agent executables and fake quality results and make no real model calls.

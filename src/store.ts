@@ -128,6 +128,12 @@ export class ProjectStore {
     return this.history(projectId).filter((record) => record.id === id &&
       (revision === undefined || record.revision === revision)).at(-1);
   }
+  receipt(projectId: string, idempotencyKey: string) {
+    const row = this.#db.prepare('SELECT body FROM command_receipts WHERE project_id = ? AND idempotency_key = ?')
+      .get(parse(IdSchema, projectId), parse(IdSchema, idempotencyKey));
+    return row ? parse(ReceiptSchema, JSON.parse(String(row.body))) : undefined;
+  }
+
   operations(projectId: string): Operation[] {
     return this.records(projectId).filter((record): record is Operation => record.kind === 'operation');
   }

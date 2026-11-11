@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "sourceComparison": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed",
+        "uncertain"
+      ]
+    },
+    "instructionFidelity": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed",
+        "uncertain"
+      ]
+    },
+    "planConformance": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed",
+        "uncertain"
+      ]
+    },
+    "criteria": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "criterion": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "id",
+                  "revision"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "accomplished",
+              "failed",
+              "uncertain"
+            ]
+          },
+          "behavior": {
+            "type": "string"
+          },
+          "quotes": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "original_request",
+                    "design",
+                    "plan",
+                    "task",
+                    "instructions",
+                    "delivery",
+                    "worker_return"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source",
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "criterion",
+          "state",
+          "behavior",
+          "quotes",
+          "limitations"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "check": {
+            "type": "string",
+            "enum": [
+              "sourceComparison",
+              "instructionFidelity",
+              "planConformance"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "missing_behavior",
+              "wrong_implementation",
+              "original_request_omission",
+              "narrowed_generality",
+              "instruction_mismatch"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "quotes": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "original_request",
+                    "design",
+                    "plan",
+                    "task",
+                    "instructions",
+                    "delivery",
+                    "worker_return"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "source",
+                "text"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "check",
+          "type",
+          "message",
+          "quotes"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "suggestions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unresolvedQuestions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "sourceComparison",
+    "instructionFidelity",
+    "planConformance",
+    "criteria",
+    "findings",
+    "suggestions",
+    "unresolvedQuestions"
+  ],
+  "additionalProperties": false
+}

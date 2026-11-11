@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProductConformanceSchema } from './review-contracts.js';
 import {
   ArtifactSchema, ClaimStateSchema, CommandNameSchema, ComparisonSchema, ConsolidationStateSchema,
   CorrectionActionSchema, CorrectionDeliveryFactSchema, CriterionResultStateSchema,
@@ -186,6 +187,7 @@ export const ProductReviewSchema = record('product_review', {
   baselineEvidence: z.array(EvidenceSchema), improvementEvidence: z.array(EvidenceSchema),
   unresolvedQuestions: z.array(TextSchema), outcome: ReviewOutcomeSchema,
   reviewerSession: TextSchema, reviewedAt: TimestampSchema,
+  conformance: ProductConformanceSchema.optional(),
 });
 
 export const MeasurementClaimSchema = record('measurement_claim', {

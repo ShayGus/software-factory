@@ -29,23 +29,27 @@ export function resolveStepAgentProfile(input: unknown, projectId: string, step:
   return { config, profile: config.steps[WorkflowAgentStepSchema.parse(step)] };
 }
 
-/** Only instruction-check currently executes an agent. Each call starts a fresh
+/** Review steps execute an agent. Each call starts a fresh
  * one-shot session; neither adapter can resume or reuse the worker/main session.
  * Effort values follow the inspected FirstMate adapter's native mappings. */
-export function instructionAgentCommand(input: unknown, projectId: string) {
-  const { config, profile } = resolveStepAgentProfile(input, projectId, 'instruction_check');
+export function stepAgentCommand(input: unknown, projectId: string, step: 'instruction_check' | 'product_review') {
+  const { config, profile } = resolveStepAgentProfile(input, projectId, step);
   const { harness, model, effort, provider } = profile;
-  if (harness !== 'codex' && harness !== 'claude') throw new Error(`unsupported_instruction_check_harness: ${harness}`);
-  if (provider && provider !== harness) throw new Error(`unsupported_instruction_check_provider: ${provider} for ${harness}`);
+  if (harness !== 'codex' && harness !== 'claude') throw new Error(`unsupported_${step}_harness: ${harness}`);
+  if (provider && provider !== harness) throw new Error(`unsupported_${step}_provider: ${provider} for ${harness}`);
   if (effort && (effort === 'ultra' || (harness === 'codex' && effort === 'max' && model !== 'gpt-5.6-luna'))) {
-    throw new Error(`unsupported_instruction_check_effort: ${effort} for ${harness}/${model ?? 'default'}`);
+    throw new Error(`unsupported_${step}_effort: ${effort} for ${harness}/${model ?? 'default'}`);
   }
   const executable = config.executables[harness];
   if (!executable) throw new Error(`agent_executable_not_configured: ${harness}`);
   const args = harness === 'codex' ? ['exec', '--sandbox', 'read-only', '--ephemeral', '--ignore-user-config', '--color', 'never',
-    '--skip-git-repo-check', '--output-schema', fileURLToPath(new URL('../../fixtures/instruction-judge.schema.json', import.meta.url)),
+    '--skip-git-repo-check', '--output-schema', fileURLToPath(new URL(`../../fixtures/${step === 'instruction_check' ? 'instruction-judge' : 'product-review'}.schema.json`, import.meta.url)),
     ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []), '-'] :
     ['--print', '--safe-mode', '--strict-mcp-config', '--output-format', 'text', '--tools', '', '--disable-slash-commands', '--no-session-persistence',
       ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])];
   return { executable, args, timeoutMs: config.timeoutMs, ...(config.cwd ? { cwd: config.cwd } : {}), profile };
+}
+
+export function instructionAgentCommand(input: unknown, projectId: string) {
+  return stepAgentCommand(input, projectId, 'instruction_check');
 }

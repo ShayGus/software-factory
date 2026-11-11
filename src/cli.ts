@@ -10,6 +10,7 @@ import { deliverRequest } from './delivery.js';
 import { prepareWorkerBrief, checkWorkerBrief } from './briefs.js';
 import { captureRequest, initializeProject, mapRequest, requestCoverage, unclassifiedRequests } from './intake.js';
 import { recordStage, checkPlanReadiness, planReadinessHistory, stageHistory } from './planning.js';
+import { reviewProduct } from './product-review.js';
 import { ProjectStore, StoreError } from './store.js';
 
 const help = `Software Factory request intake and staged planning
@@ -28,6 +29,8 @@ All commands print JSON; chat-hook is silent on success. No settings are install
   prepare-brief  --db <sqlite> --input <PrepareWorkerBriefInput JSON file>
   check-brief    --db <sqlite> --project <id> --assignment <id>
                  --revision <integer> --brief <already scaffolded brief path>
+                 --agent-config <ProjectAgentConfig JSON file>
+  review-product --db <sqlite> --input <ReviewProductInput JSON file>
                  --agent-config <ProjectAgentConfig JSON file>
   findings       --db <sqlite> --project <id> --plan <plan ID>
   stages         --db <sqlite> --project <id> --feature <feature ID>
@@ -57,6 +60,7 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   'check-plan': { db: valueOption, input: valueOption },
   'prepare-brief': { db: valueOption, input: valueOption },
   'check-brief': { db: valueOption, project: valueOption, assignment: valueOption, revision: valueOption, brief: valueOption, 'agent-config': valueOption },
+  'review-product': { db: valueOption, input: valueOption, 'agent-config': valueOption },
   findings: { db: valueOption, project: valueOption, plan: valueOption },
   stages: { db: valueOption, project: valueOption, feature: valueOption },
   unclassified: { db: valueOption, project: valueOption },
@@ -125,6 +129,10 @@ export function runCli(args: string[]): number {
           const agentConfig = optional('agent-config') ? jsonFile('agent-config') : undefined;
           const report = checkWorkerBrief(store, required('project'), { id: required('assignment'), revision }, required('brief'), agentConfig);
           output(report); return report.ok ? 0 : 1;
+        }
+        case 'review-product': {
+          const report = reviewProduct(store, jsonFile('input'), jsonFile('agent-config'));
+          output(report); return report.review.outcome === 'passed' ? 0 : 1;
         }
         case 'findings': output(planReadinessHistory(store, required('project'), required('plan'))); break;
         case 'stages': output(stageHistory(store, required('project'), required('feature'))); break;
