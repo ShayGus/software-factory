@@ -79,8 +79,9 @@ away other drafts or input entered during the save. Design,
 plan and task-detail edits create a coherent revisioned artifact set through
 `design_plan_feature` and clear draft readiness for rechecking with BUILD-06.
 Stage and reuse selections remain explicit; newer unselected drafts are labeled
-separately from the selected design and plan. Prior
-assignments retain their old revision links. Task edits use BUILD-08 and its
+separately from the selected design and plan. Editors resume the latest coherent
+draft for the selected plan, preserving previous draft edits across saves and
+reloads. Prior assignments retain their old revision links. Task edits use BUILD-08 and its
 existing reconciliation/receipt records. Unknown outcomes stay visible and block
 further edits; explicit reconciliation uses the existing CLI operation.
 

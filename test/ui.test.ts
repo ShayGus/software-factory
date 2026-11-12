@@ -8,7 +8,7 @@ import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import {
   ProjectStore, RecordsSchema, ToolkitApi, buildEditCommand, createToolkitRequestHandler, projectView, renderFeature,
-  type EditContext, type EditValues, type FactoryRecord, captureRequest, validateAssignmentForDispatch,
+  type EditContext, type EditValues, type FactoryRecord, captureRequest, validateAssignmentForDispatch, checkPlanReadiness,
 } from '../src/index.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 
@@ -360,4 +360,70 @@ test('review 7: a requested priority without an observation remains Unknown afte
   const task = projectView(flow.store, { projectId: 'project-1' }).features[0]!.tasks.find((task) => task.mapping.id === 'mapping-2'); assert.ok(task);
   assert.equal(task.priority, undefined);
   assert.match(task.label, /^Unknown/u);
+});
+
+test('review 1314 finding 1: design-save, reload and plan-save resume the same coherent draft', async (t) => {
+  const flow = setup(t);
+  const path = '/projects/project-1/features/feature-1';
+  const originalAssignment = flow.store.get('project-1', 'assignment-1');
+  await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'design'), { productBehavior: 'Saved design behavior must survive the next plan edit' }, 'continuous-design');
+  const reloaded = await flow.http('GET', path);
+  await sendEdit(flow, findEditor(reloaded.body, 'plan'), { integrationApproach: 'Saved plan change must preserve the design draft' }, 'continuous-plan');
+  const design = flow.store.get('project-1', 'design-1'); assert.ok(design?.kind === 'design_revision');
+  const plan = flow.store.get('project-1', 'plan-1'); assert.ok(plan?.kind === 'implementation_plan_revision');
+  assert.equal(design.productBehavior, 'Saved design behavior must survive the next plan edit');
+  assert.equal(plan.integrationApproach, 'Saved plan change must preserve the design draft');
+  assert.deepEqual(plan.design, { id: design.id, revision: design.revision });
+  await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'plan-task'), { outputs: 'Keep this saved task draft output' }, 'continuous-task-output');
+  await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'plan-task'), { verificationMethod: 'Verify without discarding the saved output' }, 'continuous-task-verification');
+  const task = flow.store.get('project-1', 'task-1'); assert.ok(task?.kind === 'detailed_plan_task');
+  assert.deepEqual(task.outputs, ['Keep this saved task draft output']);
+  assert.equal(task.verificationMethod, 'Verify without discarding the saved output');
+  const selected = projectView(flow.store, { projectId: 'project-1' }).features[0]!;
+  assert.equal(selected.design?.revision, 1, 'Draft edits do not silently select the new design');
+  assert.equal(selected.plan?.revision, 1, 'Draft edits do not silently select the new plan');
+  const nextEditor = findEditor((await flow.http('GET', path)).body, 'plan'); assert.ok(nextEditor.context.kind === 'plan');
+  assert.equal(nextEditor.context.design.productBehavior, design.productBehavior);
+  assert.equal(nextEditor.values.integrationApproach, plan.integrationApproach);
+  assert.deepEqual(flow.store.get('project-1', 'assignment-1'), originalAssignment);
+});
+
+for (const oldReady of [false, true]) test(`review 1314 finding 4: old Detail${oldReady ? ' and ready revision' : ''} cannot override the current Plan stage`, async (t) => {
+  const history = structuredClone(fixture);
+  const originalDesign = history.find((record) => record.kind === 'design_revision'); assert.ok(originalDesign?.kind === 'design_revision');
+  const originalPlan = history.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(originalPlan?.kind === 'implementation_plan_revision');
+  const designStage = history.find((record) => record.kind === 'stage_revision' && record.stage === 'design'); assert.ok(designStage?.kind === 'stage_revision');
+  const planStage = history.find((record) => record.kind === 'stage_revision' && record.stage === 'plan'); assert.ok(planStage?.kind === 'stage_revision');
+  const detailStage = history.find((record) => record.kind === 'stage_revision' && record.stage === 'detail'); assert.ok(detailStage?.kind === 'stage_revision');
+  const at = new Date().toISOString();
+  const design = { ...originalDesign, revision: 2, updatedAt: at, productBehavior: 'New explicitly selected design', sourceComparison: { ...originalDesign.sourceComparison, result: 'untested' as const } };
+  const taskRecords = history.filter((record): record is Extract<FactoryRecord, { kind: 'detailed_plan_task' }> => record.kind === 'detailed_plan_task');
+  for (const task of taskRecords) { task.verificationMethod = 'Run the recorded acceptance cases'; task.decisionsToKeep = []; }
+  const tasks = taskRecords.map((task) => ({ ...task, id: `new-${task.id}`, updatedAt: at,
+    plan: { id: 'new-selected-plan', revision: 1 }, design: { id: design.id, revision: 2 },
+    designRefs: [{ uri: 'fixture://new-design', record: { id: design.id, revision: 2 } }] }));
+  const plan = { ...originalPlan, id: 'new-selected-plan', updatedAt: at, design: { id: design.id, revision: 2 },
+    deliverySequence: tasks.map((task) => ({ id: task.id, revision: task.revision })),
+    priorities: tasks.map((task, priority) => ({ taskId: task.id, priority })),
+    readiness: { ready: false, comparison: { ...originalPlan.readiness.comparison, result: 'untested' as const,
+      sourceRefs: [{ uri: 'fixture://request', record: { id: 'request-1', revision: 1 } }, { uri: 'fixture://new-design', record: { id: design.id, revision: 2 } }] } },
+    workflow: { ...originalPlan.workflow!, slices: originalPlan.workflow!.slices.map((slice) => ({ ...slice,
+      tasks: slice.tasks.map((task) => ({ ...task, id: `new-${task.id}` })) })) } };
+  history.push(design, plan, ...tasks, { ...designStage, revision: 2, updatedAt: at, artifact: { id: design.id, revision: 2 } },
+    { ...planStage, revision: 2, updatedAt: at, artifact: { id: plan.id, revision: 1 }, previousStage: { id: designStage.id, revision: 2 } });
+  const flow = setup(t, history);
+  if (oldReady) {
+    const result = checkPlanReadiness(flow.store, { projectId: 'project-1', detailStage: { id: detailStage.id, revision: 1 },
+      expectedPlanRevision: 1, idempotencyKey: 'old-detail-readiness', issuedAt: at });
+    assert.ok(result.readyPlan, JSON.stringify(result.check));
+  }
+  const selected = projectView(flow.store, { projectId: 'project-1' }).features[0]!;
+  assert.equal(selected.plan?.id, plan.id);
+  assert.equal(selected.design?.revision, 2);
+  assert.equal(selected.planDrafts.some((draft) => draft.id === plan.id && draft.revision === 1), false);
+  const page = await flow.http('GET', '/projects/project-1/features/feature-1');
+  const editor = findEditor(page.body, 'plan'); assert.ok(editor.context.kind === 'plan');
+  assert.equal(editor.context.plan.id, plan.id);
+  assert.match(page.body, /Historical detailed plans/u);
+  assert.ok(page.body.includes('/inspect/plan-1?revision=1'));
 });

@@ -72,8 +72,13 @@ decisions, preserving otherwise valid dispatch. Existing staged `recordStage` an
 `checkPlanReadiness` operations remain available through the same dispatcher and
 the original CLI. Applicable stage and reuse records select the displayed artifacts, including an
 older selected design or plan with newer drafts. Readiness-check revisions remain
-linked to the selected detail stage. Newer drafts are labeled unselected; editing
-a selected older revision allocates a new revision after the current head,
+linked to the selected detail stage. A Detail selection applies only when it
+refines the current Plan-stage revision; earlier detailed plans remain linked
+as historical context. Newer drafts are labeled unselected. The editors resume
+the latest coherent draft for the selected logical plan, using that draft
+plan's exact design and task revisions for both form values and command context.
+Successive design, plan and task saves preserve earlier draft edits across reloads
+without changing stage selections. Saves allocate revisions after current heads,
 retaining every intervening draft. Assignments keep their exact historical links.
 An edit never claims a product review or silently upgrades worker instructions.
 

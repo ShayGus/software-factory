@@ -1,5 +1,5 @@
 import type { Ref } from './primitives.js';
-import type { FactoryRecord } from './records.js';
+import type { FactoryRecord, DetailedPlanTask } from './records.js';
 import type { EditContext } from './ui-edit.js';
 import { relatedRefs, sameRef, type FeatureView, type ProjectView } from './ui-state.js';
 
@@ -100,40 +100,56 @@ function artifacts(view: ProjectView, feature: FeatureView) {
     const task = view.history.find((record) => sameRef(record, target));
     return task?.kind === 'detailed_plan_task' ? [task] : [];
   }) ?? [];
-  const context = design && plan && tasks.length === plan.deliverySequence.length ? { feature: feature.feature, design, plan, tasks,
-    expectedRevisions: [feature.feature, design, plan, ...tasks].map((record) => {
+  // Resume the saved bundle for this selected plan; unrelated or superseded
+  // plan drafts cannot become the editing base merely by being newer.
+  const editorPlan = feature.planDrafts.filter((draft) => draft.id === plan?.id && sameRef(draft.feature, feature.feature)).at(-1) ?? plan;
+  const editorDesign = editorPlan && view.history.find((record) => sameRef(record, editorPlan.design));
+  const editorTasks = editorPlan?.deliverySequence.flatMap((target) => {
+    const task = view.history.find((record) => sameRef(record, target));
+    return task?.kind === 'detailed_plan_task' ? [task] : [];
+  }) ?? [];
+  const context = editorDesign?.kind === 'design_revision' && editorPlan && editorTasks.length === editorPlan.deliverySequence.length ?
+    { feature: feature.feature, design: editorDesign, plan: editorPlan, tasks: editorTasks,
+    expectedRevisions: [feature.feature, editorDesign, editorPlan, ...editorTasks].map((record) => {
       const head = view.records.find((candidate) => candidate.id === record.id) ?? record;
       return { id: head.id, revision: head.revision };
     }),
     criterionMap: feature.stages.filter((stage) => sameRef(stage.feature, feature.feature)).flatMap((stage) => stage.reuse?.criterionMap ?? []),
   } : undefined;
+  const taskEditor = (task: DetailedPlanTask) => {
+    const draft = context?.tasks.find((candidate) => candidate.id === task.id);
+    return context && draft ? edit({ ...context, kind: 'plan-task', taskId: draft.id }, `Edit plan task ${draft.id} · r${draft.revision}`,
+      field('expectedBehavior', 'Expected behavior', draft.expectedBehavior) + field('verificationMethod', 'Verification method', draft.verificationMethod ?? 'Run the listed verification cases') +
+      (['boundaries', 'inputs', 'outputs', 'verificationCases', 'returnRequirements', 'blockers'] as const).map((name) => field(name, `${labelName(name)} (one per line)`, draft[name]?.join('\n'))).join('')) : '';
+  };
   return `<section id="design"><h2>Product design</h2><p>Revision history: ${links(view.options.projectId, feature.designs)}</p>
-    ${feature.designDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.designDrafts)}. Editing the selected design creates a new draft revision.</p>` : ''}
+    ${feature.designDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.designDrafts)}. Stage selection stays unchanged.</p>` : ''}
+    ${context && !sameRef(context.design, design) ? `<p>Resuming saved design draft in the editors: ${recordLink(view.options.projectId, context.design)}.</p>` : ''}
     ${design ? `<p>${recordLink(view.options.projectId, design)} · ${sameRef(design.feature, feature.feature) ? 'Current feature revision' : 'Stale — design names an earlier feature revision'}</p>
       <h3>Product behavior</h3>${text(design.productBehavior)}<h3>Technical design</h3>${text(design.technicalDesign)}<h3>Data flow</h3>${text(design.dataFlow)}
       <h3>Reuse findings</h3>${items(design.reuseFindings)}<h3>Interfaces</h3>${items(design.interfaces)}<h3>Examples</h3>${items(design.examples)}
       <h3>Testing approach</h3>${text(design.testingApproach)}<h3>Alternatives</h3>${items(design.alternatives)}<h3>Exclusions</h3>${items(design.exclusions)}
       <h3>Unresolved questions</h3>${items(design.unresolvedQuestions)}<p>Source comparison: ${h(design.sourceComparison.result)}</p>
-      ${context ? edit({ ...context, kind: 'design' }, `Edit product design · r${design.revision}`,
-        (['productBehavior', 'technicalDesign', 'dataFlow', 'testingApproach'] as const).map((name) => field(name, name.replace(/[A-Z]/gu, (letter) => ` ${letter.toLowerCase()}`), design[name])).join('') +
-        (['reuseFindings', 'interfaces', 'examples', 'alternatives', 'exclusions', 'unresolvedQuestions'] as const).map((name) => field(name, `${labelName(name)} (one per line)`, design[name].join('\n'))).join('')) : empty('Incomplete — a coherent design, plan and task set is required before editing.')}` : empty('Unknown — product design not recorded.')}</section>
+      ${context ? edit({ ...context, kind: 'design' }, `Edit product design · r${context.design.revision}`,
+        (['productBehavior', 'technicalDesign', 'dataFlow', 'testingApproach'] as const).map((name) => field(name, name.replace(/[A-Z]/gu, (letter) => ` ${letter.toLowerCase()}`), context.design[name])).join('') +
+        (['reuseFindings', 'interfaces', 'examples', 'alternatives', 'exclusions', 'unresolvedQuestions'] as const).map((name) => field(name, `${labelName(name)} (one per line)`, context.design[name].join('\n'))).join('')) : empty('Incomplete — a coherent design, plan and task set is required before editing.')}` : empty('Unknown — product design not recorded.')}</section>
     <section id="plan"><h2>Detailed plan</h2><p>Revision history: ${links(view.options.projectId, feature.plans)}</p>
-    ${feature.planDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.planDrafts)}. Editing the selected plan creates a new draft revision.</p>` : ''}
+    ${feature.planDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.planDrafts)}. Stage selection stays unchanged.</p>` : ''}
+    ${feature.historicalDetails.length ? `<p>Historical detailed plans: ${links(view.options.projectId, feature.historicalDetails.map((stage) => stage.artifact))}.</p>` : ''}
+    ${context && !sameRef(context.plan, plan) ? `<p>Resuming saved plan draft in the editors: ${recordLink(view.options.projectId, context.plan)}.</p>` : ''}
     ${plan ? `<p>${recordLink(view.options.projectId, plan)} · ${plan.readiness.ready && sameRef(plan.feature, feature.feature) && sameRef(plan.design, design) ? 'Recorded ready — see readiness evidence' : 'Incomplete or stale — readiness needs checking'}</p>
       <p>Strategy: ${h(plan.strategy)} · ${h(plan.strategyReason)}</p>${text(plan.integrationApproach)}
       <h3>Integration steps</h3>${items(plan.workflow?.integrationSteps ?? [])}<h3>Final verification</h3>${items(plan.workflow?.finalVerification ?? [])}
       <h3>Plan dependencies</h3>${items(plan.dependencies.map((edge) => `${edge.consumerTaskId} needs ${edge.prerequisiteTaskId}: ${edge.reason}`))}
-      ${context ? edit({ ...context, kind: 'plan' }, `Edit delivery plan · r${plan.revision}`,
-        select('strategy', 'Execution strategy', plan.strategy, ['focused', 'parallel']) + field('strategyReason', 'Strategy reason', plan.strategyReason) + field('integrationApproach', 'Integration approach', plan.integrationApproach) +
-        field('integrationSteps', 'Integration steps (one per line)', plan.workflow?.integrationSteps.join('\n')) + field('finalVerification', 'Final verification (one per line)', plan.workflow?.finalVerification.join('\n'))) : ''}
+      ${context ? edit({ ...context, kind: 'plan' }, `Edit delivery plan · r${context.plan.revision}`,
+        select('strategy', 'Execution strategy', context.plan.strategy, ['focused', 'parallel']) + field('strategyReason', 'Strategy reason', context.plan.strategyReason) + field('integrationApproach', 'Integration approach', context.plan.integrationApproach) +
+        field('integrationSteps', 'Integration steps (one per line)', context.plan.workflow?.integrationSteps.join('\n')) + field('finalVerification', 'Final verification (one per line)', context.plan.workflow?.finalVerification.join('\n'))) : ''}
       <ol class="plan-tasks">${tasks.map((task) => `<li id="plan-task-${h(task.id)}"><h3>${recordLink(view.options.projectId, task, task.expectedBehavior ?? task.id)}</h3>
         <p>${task.draft ? 'Incomplete — draft task' : 'Detailed task'} · Criteria: ${links(view.options.projectId, task.criteria)}</p>
         <h4>Boundaries</h4>${items(task.boundaries ?? [])}<h4>Inputs</h4>${items(task.inputs ?? [])}<h4>Outputs</h4>${items(task.outputs ?? [])}
         <h4>Verification cases</h4>${items(task.verificationCases ?? [])}<h4>Return requirements</h4>${items(task.returnRequirements ?? [])}
         <p>Produced assignments: ${links(view.options.projectId, feature.assignments.filter((assignment) => sameRef(assignment.detailedPlanTask, task)))}</p>
-        ${context ? edit({ ...context, kind: 'plan-task', taskId: task.id }, `Edit plan task ${task.id} · r${task.revision}`,
-          field('expectedBehavior', 'Expected behavior', task.expectedBehavior) + field('verificationMethod', 'Verification method', task.verificationMethod ?? 'Run the listed verification cases') +
-          (['boundaries', 'inputs', 'outputs', 'verificationCases', 'returnRequirements', 'blockers'] as const).map((name) => field(name, `${labelName(name)} (one per line)`, task[name]?.join('\n'))).join('')) : ''}</li>`).join('')}</ol>` : empty('Unknown — detailed plan not recorded.')}</section>`;
+        ${taskEditor(task)}</li>`).join('')}</ol>` : empty('Unknown — detailed plan not recorded.')}</section>`;
 }
 export function renderFeature(view: ProjectView, item: FeatureView) {
   const projectId = view.options.projectId;

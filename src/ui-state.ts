@@ -24,8 +24,12 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
     const stages = records.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> =>
       record.kind === 'stage_revision' && sameRef(record.feature, feature))
       .sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
-    const detailStage = stages.filter((stage) => stage.stage === 'detail').at(-1);
-    const planStage = detailStage ?? stages.filter((stage) => stage.stage === 'plan').at(-1);
+    const currentPlanStage = stages.filter((stage) => stage.stage === 'plan').at(-1);
+    const detailStage = stages.filter((stage) => stage.stage === 'detail' && currentPlanStage &&
+      sameRef(stage.previousStage, currentPlanStage) && stage.artifact.id === currentPlanStage.artifact.id &&
+      stage.artifact.revision >= currentPlanStage.artifact.revision).at(-1);
+    const historicalDetails = stages.filter((stage) => stage.stage === 'detail' && !sameRef(stage, detailStage));
+    const planStage = detailStage ?? currentPlanStage;
     const selectedPlan = planStage && lookup(planStage.artifact);
     const readyPlan = detailStage && plans.filter((candidate) => {
       const check = candidate.workflow?.readinessCheck && lookup(candidate.workflow.readinessCheck);
@@ -91,7 +95,7 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
         label: operation?.kind === 'operation' && operation.state === 'unknown' ? 'Unknown outcome — reconciliation required' :
           !task ? 'Unknown — execution observation unavailable' : stale ? `Stale — last observed ${task.state}` : `Observed — ${task.state}` };
     });
-    return { feature, designs, design, designDrafts, plans, plan, planDrafts, assignments, reviews, criteria, decisions, corrections, tasks,
+    return { feature, designs, design, designDrafts, plans, plan, planDrafts, historicalDetails, assignments, reviews, criteria, decisions, corrections, tasks,
       stages: history.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> => record.kind === 'stage_revision' && record.feature.id === feature.id),
       requests: feature.sourceRequests.map((target) => ({ target, record: lookup(target),
         coverage: requestCoverage(store, options.projectId, target.id) })),
