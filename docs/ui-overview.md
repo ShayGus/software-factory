@@ -74,11 +74,16 @@ the original CLI. Applicable stage and reuse records select the displayed artifa
 older selected design or plan with newer drafts. Readiness-check revisions remain
 linked to the selected detail stage. A Detail selection applies only when it
 refines the current Plan-stage revision; earlier detailed plans remain linked
-as historical context. Newer drafts are labeled unselected. The editors resume
-the latest coherent draft for the selected logical plan, using that draft
-plan's exact design and task revisions for both form values and command context.
-Successive design, plan and task saves preserve earlier draft edits across reloads
-without changing stage selections. Saves allocate revisions after current heads,
+as historical context. Newer drafts are labeled unselected. Every artifact editor
+uses one edit bundle: the newest unstaged draft built on the currently selected
+design, or the selected bundle if no compatible draft exists. Saved commands pin
+that selected-design base in their existingDesignRefs; the canonical receipt
+retains it across subsequent saves. Unmarked drafts use their declared plan.design
+reference as the base. A draft based on a different selected design is labeled
+Conflict and remains read-only. All task editors come directly from the edit
+bundle, including newly added or replaced IDs; selected historical tasks and their
+assignment links are read-only context. Successive design, plan and task saves
+preserve earlier draft edits across reloads without changing stage selections. Saves allocate revisions after current heads,
 retaining every intervening draft. Assignments keep their exact historical links.
 An edit never claims a product review or silently upgrades worker instructions.
 
