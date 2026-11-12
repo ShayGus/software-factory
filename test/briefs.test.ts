@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { fakeJudge, fakeVerdict } from './judge-helper.js';
 import {
@@ -540,4 +541,66 @@ test('review 1238 finding 2: fidelity validates the explicitly selected live occ
     assert.deepEqual(metadata.contextPointers.find((pointer: { source: { uri: string } }) => pointer.source.uri === memoryPath).originalRange, context.originalRange);
     const checked = flow.check(); assert.equal(checked.ok, true, JSON.stringify(checked));
   } finally { flow.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('1094-5: a same-input retry repairs saved context after a newer prerequisite result', () => {
+  const flow = setup({ dependencies: true });
+  try {
+    const first = flow.prepare();
+    const saved = flow.assignment();
+    const expected = readFileSync(flow.briefPath, 'utf8');
+    const owner = { ...structuredClone(saved), id: 'prerequisite-assignment', firstMateTaskId: 'prerequisite-worker', detailedPlanTask: { id: 'prerequisite-task', revision: 1 } };
+    delete owner.brief;
+    const prerequisiteSource = { uri: 'factory:record/prerequisite-task@1', record: owner.detailedPlanTask };
+    owner.selectedContext.push({ source: prerequisiteSource, truncated: false });
+    owner.sourceRefs.push(prerequisiteSource); owner.instructionFidelity.sourceRefs.push(prerequisiteSource);
+    const mapping = flow.records.find((record) => record.kind === 'task_mapping')!;
+    const prerequisiteMapping = { ...mapping, id: 'prerequisite-mapping', firstMateTaskId: owner.firstMateTaskId, detailedPlanTask: owner.detailedPlanTask };
+    const result = baseline.find((record) => record.kind === 'criterion_result')!;
+    flow.store.mutate({ schemaVersion: 1, id: 'new-result', projectId, issuedAt: flow.input.issuedAt,
+      idempotencyKey: 'new-result', command: 'record_decision_suggestion', targetId: owner.id, expectedRevision: 0,
+      payload: { decision: baseline.find((record) => record.kind === 'decision_change')! } }, () => [owner, prerequisiteMapping,
+      { ...result, id: 'new-prerequisite-result', assignment: ref(owner) }]);
+    rmSync(flow.briefPath); rmSync(first.sidecarPath);
+    assert.deepEqual(flow.prepare(), first);
+    assert.deepEqual(flow.assignment().selectedContext, saved.selectedContext);
+    assert.equal(readFileSync(flow.briefPath, 'utf8'), expected);
+  } finally { flow.close(); }
+});
+
+test('1094-6: concurrent CLI preparations serialize supersession and both output replacements', async () => {
+  const flow = setup(); const children: ReturnType<typeof spawn>[] = [];
+  const waitFor = async (path: string) => {
+    for (let i = 0; i < 500; i++) { if (existsSync(path)) return; await delay(10); }
+    throw Error(`Timed out waiting for ${path}`);
+  };
+  try {
+    const input = join(flow.directory, 'input.json'); writeFileSync(input, JSON.stringify(flow.input));
+    const runner = join(flow.directory, 'prepare.mjs');
+    writeFileSync(runner, `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+import {ProjectStore,prepareWorkerBrief} from ${JSON.stringify(new URL('../src/index.js', import.meta.url).href)};
+const input=JSON.parse(fs.readFileSync(process.argv[2],'utf8')), mode=process.argv[3];
+const root=${JSON.stringify(flow.directory)};
+if(mode==='old') { const rename=fs.renameSync; let paused=false; fs.renameSync=(...args)=>{
+ if(!paused) { paused=true; fs.writeFileSync(root+'/old-paused','');
+ const deadline=Date.now()+5000; while(!fs.existsSync(root+'/release')) { if(Date.now()>deadline) throw Error('release timeout'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10); } }
+ return rename(...args); }; syncBuiltinESMExports(); }
+else { input.expectedRevision=1; input.idempotencyKey='newer'; input.attemptId='newer'; }
+const store=new ProjectStore(${JSON.stringify(flow.database)}); fs.writeFileSync(root+'/'+mode+'-started','');
+try { prepareWorkerBrief(store,input); fs.writeFileSync(root+'/'+mode+'-done',''); } finally {store.close();}`);
+    const run = (mode: string) => {
+      const child = spawn(process.execPath, [runner, input, mode], { stdio: ['ignore', 'pipe', 'pipe'] });
+      children.push(child); let errors = ''; child.stderr!.on('data', (data) => { errors += data; });
+      return new Promise<void>((resolve, reject) => { child.on('error', reject); child.on('exit', (code) => code === 0 ? resolve() : reject(Error(errors))); });
+    };
+    const older = run('old'); await waitFor(join(flow.directory, 'old-paused'));
+    const newer = run('new'); await waitFor(join(flow.directory, 'new-started'));
+    await delay(300);
+    writeFileSync(join(flow.directory, 'release'), ''); await Promise.all([older, newer]);
+    const assignment = flow.assignment(); assert.equal(assignment.revision, 2);
+    const sidecar = JSON.parse(readFileSync(assignment.brief!.sidecarPath, 'utf8'));
+    assert.equal(sidecar.assignment.revision, 2);
+    assert.equal(flow.check().ok, true);
+  } finally { for (const child of children) if (child.exitCode === null) child.kill('SIGKILL'); flow.close(); }
 });

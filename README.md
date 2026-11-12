@@ -733,7 +733,7 @@ a key with a changed payload fails, and a replay returns the original receipt.
 | --- | --- | --- |
 | `understand` | `UnderstandingRevisionSchema` | Goal, user behavior, vocabulary, priorities, examples, exclusions, researched existing work, explicit unknowns, request scope roles |
 | `design` | `DesignRevisionSchema` | `workflow.understanding`; `workflow.reuse` with `alreadyWorks`, `gap`, `change`; `workflow.scope`; `workflow.changeReason`. Existing behavior, technical design, source comparison and decision references remain canonical. |
-| `plan` | `ImplementationPlanRevisionSchema` | `workflow.slices` (ordered IDs, behavior, criteria and task refs), `scope`, `integrationSteps`, `finalVerification`, `retainedTasks`, `changeReason`. Existing execution strategy, ordered tasks, real dependencies and priorities remain canonical. |
+| `plan` | `ImplementationPlanRevisionSchema` | `workflow.slices` (ordered IDs, behavior, criteria, task refs and `criteriaFeature` provenance), `scope`, `integrationSteps`, `finalVerification`, `retainedTasks`, `changeReason`. Existing execution strategy, ordered tasks, real dependencies and priorities remain canonical. |
 | `detail` | The selected plan or a later revision of it | Detailed task revisions containing behavior, design references, `decisionsToKeep`, boundaries, reuse targets, inputs, outputs, blockers, acceptance cases, `verificationMethod` and return requirements |
 
 At Plan, include linked draft tasks in `records` alongside the plan, using
@@ -1052,7 +1052,11 @@ The CLI returns 0 only when mechanical checks and the fresh semantic verdict pas
 Its JSON contains `judgment.verdict`, the grounded findings, a comparison using the
 existing assignment contract and an input digest identifying the reviewed snapshot.
 `judgment.ok` describes a valid agent response, while top-level `ok` is start
-eligibility. A failure verdict has top-level `ok: false`. The read-only gate returns
+eligibility in normal dispatch mode. With `--preparation-gate`, `ok: true` and
+exit 0 mean the preparation check succeeded while the task remains held;
+`dispatchReady: false` explicitly means this is not dispatch approval. The native
+worker-start hook must still perform its fresh check after the hold is released.
+A failure verdict has top-level `ok: false`. The read-only gate returns
 the fresh comparison rather than overwriting assignment history. It rechecks files
 and current dispatch references after the call so a changed candidate, context or
 assignment cannot inherit the earlier snapshot's pass. `validateAssignmentForDispatch`

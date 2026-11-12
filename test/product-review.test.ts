@@ -534,6 +534,15 @@ test('review 1169 finding 2: a feature aggregate includes criterion and maintena
     assert.deepEqual(snapshot.assignedCriteria, [general, second, null]);
     assert.deepEqual(review.conformance?.deliveries?.[1]?.results, [{ id: maintenanceReturn.id, revision: 1 }]);
     assert.deepEqual(review.improvementEvidence.at(-1)?.artifact, artifact, 'Maintenance evidence retains its delivered commit');
+    for (const state of ['failed', 'blocked', 'untested'] as const) {
+      const invalid = { ...maintenanceReturn, id: `maintenance-${state}`, result: state, artifact: null, evidence: [] };
+      const mixed = reviewProduct(flow.store, { ...input, reviewId: `mixed-${state}`, idempotencyKey: `mixed-${state}`,
+        additionalDeliveries: [{ ...input.additionalDeliveries[0]!, results: [invalid] }] },
+        fakeJudgeOptions({ result: JSON.stringify(verdict) }), flow.reader);
+      assert.notEqual(mixed.review.outcome, 'passed', `Mixed review accepted ${state} maintenance`);
+      const history = flow.store.history('project-1').map((record) => record.id === mixed.review.id ? { ...mixed.review, outcome: 'passed' as const } : record);
+      assert.equal(validateReviewForCompletion(history, mixed.review).ok, false);
+    }
     const omitted = structuredClone(verdict); omitted.criteria.pop();
     const incomplete = reviewProduct(flow.store, { ...input, reviewId: 'missing-maintenance-outcome', idempotencyKey: 'missing-maintenance-op' },
       fakeJudgeOptions({ result: JSON.stringify(omitted) }), flow.reader);

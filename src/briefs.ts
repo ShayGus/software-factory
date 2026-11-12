@@ -98,6 +98,12 @@ function materializePreparation(store: ProjectStore, records: FactoryRecord[], s
  * files. The same key repairs an interrupted write of either file on retry. */
 export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   const data = PrepareWorkerBriefInputSchema.parse(input);
+  // The project lock covers assignment currency, output ownership and BOTH
+  // replacements, including receipt replays, across CLI processes.
+  return store.withTaskLock(data.projectId, () => prepareLockedWorkerBrief(store, data));
+}
+
+function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof PrepareWorkerBriefInputSchema>) {
   // Resolve replay before reading files or deriving context from mutable project state.
   const receipt = store.receipt(data.projectId, data.idempotencyKey);
   if (receipt) {
@@ -264,7 +270,22 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
   if (candidateRead) {
     try { findings.push(...instructionFidelityFindings(records, assignment, sourceCandidate, sidecarFields)); }
     catch (error) { findings.push({ code: 'damaged_scaffold', path: 'brief', message: String(error) }); }
-    if (launchCandidate) findings.push(...assignmentMetadataFindings(candidate, workerAssignmentBlock(records, assignment), sidecarFields));
+    if (launchCandidate) {
+      let metadataCandidate = candidate;
+      if (assignment.brief) {
+        const parts = scaffoldParts(assignment.brief.scaffold);
+        const { intent } = instructionBodies(records, assignment);
+        const verifiedPrefix = parts.prefix + intent + parts.newline.repeat(2) + parts.middle;
+        // Remove only the intent at its verified scaffold position inside the
+        // single preserved source. Identical text in overlays is still checked.
+        const sourceStart = candidate.indexOf(sourceCandidate);
+        if (sourceStart >= 0 && sourceCandidate.startsWith(verifiedPrefix)) {
+          const start = sourceStart + parts.prefix.length;
+          metadataCandidate = candidate.slice(0, start) + candidate.slice(start + intent.length);
+        }
+      }
+      findings.push(...assignmentMetadataFindings(metadataCandidate, workerAssignmentBlock(records, assignment), sidecarFields));
+    }
   }
   const dispatch = validateAssignmentForDispatch(eligibilityContext(records), assignmentRef);
   if (!dispatch.ok) findings.push(...dispatch.issues.filter((issue) => !(issue.recordId === assignment.id &&

@@ -10,7 +10,7 @@ import { runStepAgent } from './agent-runner.js';
 import { briefPreparationGateId, PrepareWorkerBriefInputSchema } from './briefs.js';
 import { MapRequestInputSchema, ref, stableId } from './intake.js';
 import { InstructionJudgeVerdictSchema } from './instruction-judge.js';
-import { digestText } from './instruction-context.js';
+import { digestText, requiredAssignmentContext, sameSource } from './instruction-context.js';
 import { RecordStageInputSchema } from './planning.js';
 import { EvidenceSchema, RefSchema } from './primitives.js';
 import { ProjectSchema } from './records.js';
@@ -131,8 +131,10 @@ export function runFeature(configInput: unknown, phase: 'bootstrap' | 'prepare' 
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       !key.startsWith('FM_') && !key.startsWith('TASKS_AXI_')));
     if (firstMate) env.FM_HOME = fm.home;
+    // Agent-backed CLI commands need startup and validation time outside the
+    // agent's own configured budget, including its maximum supported timeout.
     const result = spawnSync(executable, args, { encoding: 'utf8', env, cwd: firstMate ? fm.home : directory,
-      timeout: firstMate ? label === 'firstmate-spawn' ? fm.timeoutMs : fm.launchTimeoutMs : 600_000,
+      timeout: firstMate ? label === 'firstmate-spawn' ? fm.timeoutMs : fm.launchTimeoutMs : Math.max(600_000, agents.timeoutMs + 30_000),
       maxBuffer: 4 * 1024 * 1024, killSignal: 'SIGKILL', shell: false });
     writeFileSync(join(directory, `${label}.stdout`), result.stdout ?? '');
     writeFileSync(join(directory, `${label}.stderr`), result.stderr ?? '');
@@ -194,6 +196,17 @@ The detailed task must require the worker to commit its code, verify each criter
     if (plan?.kind !== 'implementation_plan_revision' || plan.deliverySequence.length !== 1 || plan.dependencies.length) throw new Error('run_requires_one_independent_task');
     const task = history().find((record) => record.id === plan.deliverySequence[0]!.id && record.revision === plan.deliverySequence[0]!.revision);
     if (task?.kind !== 'detailed_plan_task') throw new Error('run_task_missing');
+    // Agent-authored URIs can select only operator snapshots or the captured
+    // request. Never let an absolute path become authority to read a local file.
+    const sources = requiredAssignmentContext(history(), { projectId: project.id, feature: plan.feature,
+      design: plan.design, plan: ref(plan), detailedPlanTask: ref(task), criteria: task.criteria }).sources;
+    const request = captured.request;
+    const requestSnapshot = join(directory, 'captured-request.txt');
+    writeFileSync(requestSnapshot, request.originalText);
+    const sourceFiles = [{ source: { uri: config.requestFile }, path: requestSnapshot }, ...config.sourceFiles];
+    for (const source of sources) if (!source.record && !sourceFiles.some((file) => sameSource(file.source, source))) {
+      throw new Error(`unauthorized_run_source: ${source.uri}`);
+    }
     verifyDispatchConfiguration();
     const preparationGate = briefPreparationGateId(config.taskId);
     const queued = inputCommand('queue-task', { schemaVersion: 1, id: `${config.taskId}-queue`, projectId: project.id,
@@ -212,7 +225,7 @@ The detailed task must require the worker to commit its code, verify each criter
     const prepared = inputCommand('prepare-brief', { projectId: project.id, assignmentId: `${config.taskId}-assignment`,
       attemptId: `${config.taskId}-attempt`, expectedRevision: 0, idempotencyKey: `${config.taskId}-prepare`, issuedAt: issuedAt(),
       detailedPlanTask: ref(task), plan: ref(plan), firstMateTaskId: config.taskId,
-      returnLocation: join(directory, 'worker-return.json'), briefPath, sourceFiles: config.sourceFiles });
+      returnLocation: join(directory, 'worker-return.json'), briefPath, sourceFiles });
     command('check-brief', ['--project', project.id, '--assignment', prepared.assignment.id, '--revision', String(prepared.assignment.revision),
       '--brief', briefPath, '--agent-config', config.agentConfig, '--preparation-gate', preparationGate]);
     // Preserve the native hold through the check and revalidate the hook/registry

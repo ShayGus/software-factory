@@ -375,7 +375,9 @@ function checkCompletion(ctx: Context, review: ProductReview) {
     'Review must compare delivered behavior with the starting baseline');
   if (!review.improvementEvidence.length) ctx.add(review, 'missing_improvement', 'improvementEvidence',
     'Regression success alone cannot demonstrate the requested improvement');
-  if (review.feature === null) for (const assignment of review.assignments) {
+  for (const assignmentRef of review.assignments) {
+    const assignment = ctx.index.get(key(assignmentRef));
+    if (assignment?.kind !== 'assignment' || assignment.criteria.length) continue;
     const results = review.results.flatMap((ref) => {
       const result = ctx.index.get(key(ref));
       return result?.kind === 'criterion_result' && sameRef(result.assignment, assignment) && result.criterion === null ? [result] : [];

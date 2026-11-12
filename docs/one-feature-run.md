@@ -77,7 +77,9 @@ rejected before capture so planning and brief preparation read the same file.
 Planning agents receive their bytes, record history and the exact captured request. These agents are
 read-only and do not inspect the repository themselves. The snapshots must be enough
 to establish existing behavior, reuse and the actual gap. External references in
-generated designs and tasks need matching local snapshots for brief preparation.
+generated designs and tasks must resolve through these operator-provided mappings
+or the captured request. Unlisted paths and file URIs are refused before brief
+preparation; the captured request is supplied from its saved text.
 
 Set `agentConfig` using `fixtures/workflow-agents.json`, with the matching project
 ID and absolute installed harness executables. `understand`, `design`, `plan`,
@@ -230,6 +232,9 @@ plus `firstMate.launchTimeoutMs` (default 120,000 ms, maximum 600,000 ms).
 The instruction hook itself must have more than `agents.timeoutMs + 5000` ms.
 Preparation and start both validate these budgets; a short deadline fails before
 a task is created or released. Non-spawn FirstMate calls use `launchTimeoutMs`.
+Agent-backed CLI commands have an outer deadline of at least 600,000 ms or the
+configured agent timeout plus 30,000 ms, whichever is larger, to allow startup
+and validation outside the agent budget.
 Each dispatching home needs its own entry. For the scripted start, the entry must use these exact
 two absolute argv paths; the full hook runner still validates the configuration.
 

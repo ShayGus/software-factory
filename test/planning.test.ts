@@ -620,6 +620,7 @@ function replan(flow: ReturnType<typeof setup>, selected: ImplementationPlanRevi
   planMap?: NonNullable<StageRevision['reuse']>['criterionMap'];
   criteria: Ref[];
   refineReady?: boolean;
+  sliceCriteria?: Ref[][];
 }) {
   const prior = flow.store.get(base.projectId, feature.id);
   assert.ok(prior?.kind === 'feature_revision');
@@ -656,6 +657,7 @@ function replan(flow: ReturnType<typeof setup>, selected: ImplementationPlanRevi
   const refined = { ...selected, revision: selected.revision + 1, feature: ref(current), design: ref(revisedDesign),
     readiness: { ready: false, comparison: comparison([request, revisedDesign]) },
     workflow: { ...selected.workflow!, readinessCheck: undefined,
+      ...(options.sliceCriteria ? { slices: selected.workflow!.slices.map((slice, index) => ({ ...slice, criteria: options.sliceCriteria![index]! })) } : {}),
       changeReason: 'Refine the reused plan while retaining unchanged tasks',
       retainedTasks: selected.deliverySequence.map((task) => ({ task, reason: 'Task behavior remains valid' })) } };
   const detailedPlan = options.refineReady ? ImplementationPlanRevisionSchema.parse(refined) : selected;
@@ -863,5 +865,21 @@ test('artifact editors compose checked reuse through ready-plan lineage for reta
     assert.deepEqual(command.payload.tasks[0]!.criteria, third);
     assert.deepEqual(command.payload.plan.workflow!.slices[0]!.criteria, third);
     applyCommand(flow.store, command);
+  } finally { flow.store.close(); }
+});
+
+test('1093-2: retained task identity does not replay mappings on criteria authored by Detail', () => {
+  const flow = setup();
+  try {
+    flow.start(); flow.finish();
+    const [a, oldB] = flow.criteria as [Ref, Ref]; const b = { ...oldB, revision: 2 };
+    const map = [{ existing: a, current: a }, { existing: a, current: b }, { existing: oldB, current: a }];
+    const initial = replan(flow, flow.detailedPlan, { criteria: [a, b], designMap: map, planMap: map });
+    assert.ok(initial.result.readyPlan, JSON.stringify(initial.result.check));
+    const selected = flow.store.get(base.projectId, initial.result.readyPlan.id, initial.result.readyPlan.revision);
+    assert.ok(selected?.kind === 'implementation_plan_revision');
+    const refined = replan(flow, selected, { criteria: [a, b], refineReady: true, designMap: [],
+      planMap: [{ existing: a, current: a }, { existing: b, current: b }], sliceCriteria: [[a, b], [a]] });
+    assert.ok(refined.result.readyPlan, JSON.stringify(refined.result.check));
   } finally { flow.store.close(); }
 });

@@ -1,5 +1,4 @@
 // Shared full-feature fixture: all agents are local canned processes, never providers.
-import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -140,9 +139,8 @@ writeFileSync(${JSON.stringify(join(root, 'hook-result.json'))},checked.stdout||
 if(checked.status!==0) process.exit(1);
 writeFileSync(${JSON.stringify(join(root, 'worker-started'))},'started');
 const worker=spawnSync(${JSON.stringify(returnWorker)},[],{encoding:'utf8'});process.stderr.write(worker.stderr);process.exit(worker.status??1);`);
-  const quality = executable('roborev', `import assert from 'node:assert/strict';assert.deepEqual(process.argv.slice(2,4),['show','--json']);
+  executable('roborev', `import assert from 'node:assert/strict';assert.deepEqual(process.argv.slice(2,4),['show','--json']);
 process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict:'pass'},job:{id:42,git_ref:process.argv[4],status:'done',job_type:'review'}}));`);
-  assert.ok(quality);
   const project = baseline.find((record) => record.kind === 'project')!;
   const runtime = fakeRuntime(home);
   const config: z.input<typeof FeatureRunConfigSchema> = { version: 1, project, database, runDirectory, agentConfig,

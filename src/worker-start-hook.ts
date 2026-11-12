@@ -22,9 +22,7 @@ const EventSchema = z.object({ version: z.literal(1), event: z.literal('worker.s
 
 /** Lookup is operator-configured home + canonical task mapping, never metadata
  * from a worker-supplied brief. Missing managed context fails closed. */
-export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
-  const config = WorkerHookConfigSchema.parse(configInput);
-  const event = EventSchema.parse(eventInput); // Additive FirstMate fields allowed.
+function startingAssignment(config: z.infer<typeof WorkerHookConfigSchema>, event: z.infer<typeof EventSchema>) {
   const matches = [];
   const home = realpathSync(event.home);
   for (const project of config.projects.filter((entry) => realpathSync(entry.home) === home)) {
@@ -37,7 +35,7 @@ export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
       }
       if (identity.integration?.state === 'disabled') continue;
       const records = store.records(project.projectId);
-      const mapping = records.filter((record) => record.kind === 'task_mapping' && record.firstMateTaskId === event.task_id);
+      const mapping = records.filter((record) => record.kind === 'task_mapping' && record.firstMateTaskId === event.task_id && (!record.legacy || !!record.management));
       // Resolve task-wide attempt currency before checking the selected attempt
       // against its managed mapping. Do not fall back to a historical match if
       // the current attempt conflicts with that mapping; dispatch rules reject it.
@@ -48,16 +46,29 @@ export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
       }
     } finally { store.close(); }
   }
-  if (!matches.length) return { ok: true, managed: false };
+  if (!matches.length) return null;
   if (matches.length !== 1 || matches[0]!.assignments.length !== 1) throw new Error('hook_managed_assignment_missing_or_ambiguous');
-  const { project, assignments } = matches[0]!;
-  const assignment = assignments[0]!;
+  return { project: matches[0]!.project, assignment: matches[0]!.assignments[0]! };
+}
+
+export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
+  const config = WorkerHookConfigSchema.parse(configInput);
+  const event = EventSchema.parse(eventInput); // Additive FirstMate fields allowed.
+  const match = startingAssignment(config, event);
+  if (!match) return { ok: true, managed: false };
+  const { project, assignment } = match;
   if (!event.brief_path || !event.source_brief_path || !event.brief_sha256) throw new Error('hook_candidate_missing');
   const store = new ProjectStore(project.database, { readOnly: true });
   try {
-    return { ...checkWorkerBrief(store, project.projectId, assignment, event.brief_path,
+    const report = checkWorkerBrief(store, project.projectId, assignment, event.brief_path,
       parseStrictJson(readFileSync(project.agentConfig, 'utf8')),
-      { sourceBriefPath: event.source_brief_path, sha256: event.brief_sha256 }), managed: true };
+      { sourceBriefPath: event.source_brief_path, sha256: event.brief_sha256 });
+    const current = startingAssignment(config, event);
+    if (!current || current.project.database !== project.database || current.project.projectId !== project.projectId ||
+      current.assignment.id !== assignment.id || current.assignment.revision !== assignment.revision) {
+      throw new Error('hook_managed_assignment_changed');
+    }
+    return { ...report, managed: true };
   } finally { store.close(); }
 }
 

@@ -8,15 +8,16 @@ export function planningRecord(records: FactoryRecord[], ref: Ref) {
   return records.find((record) => samePlanningRef(record, ref));
 }
 
-/** Tasks name their source feature. Slices inherit it from the checked plan. */
+/** Tasks and slices carry their own criterion provenance. Historical slices
+ * without it are traced through exact retained slice criteria, independently of tasks. */
 export function stageCriteria(records: FactoryRecord[], detail: StageRevision, refs: Ref[], sourceFeature?: Ref | null,
-  taskRefs?: Ref[]): Ref[] {
+  taskRefs?: Ref[], sliceId?: string): Ref[] {
   if (sourceFeature === null || (sourceFeature && samePlanningRef(sourceFeature, detail.feature))) return refs;
   const plan = planningRecord(records, detail.artifact);
   if (plan?.kind !== 'implementation_plan_revision' || !plan.feature) return refs;
 
-  // Detail may revise a reused ready plan. Follow only exact retained tasks back
-  // to that selected plan before composing its checked criterion mappings.
+  // Detail may revise a reused ready plan. Follow the selected entity
+  // back to that plan before composing its checked criterion mappings.
   const planStage = detail.previousStage && planningRecord(records, detail.previousStage);
   const selected = planStage?.kind === 'stage_revision' && planStage.stage === 'plan' && planStage.reuse &&
     planningRecord(records, planStage.artifact);
@@ -25,12 +26,20 @@ export function stageCriteria(records: FactoryRecord[], detail: StageRevision, r
     selected.id === plan.id && selected.revision < plan.revision) {
     const retained = taskRefs ?? plan.deliverySequence;
     let cursor = plan;
-    while (cursor.revision > selected.revision && retained.length > 0 && retained.every((task) =>
-      cursor.deliverySequence.some((ref) => samePlanningRef(ref, task)) &&
-      cursor.workflow?.retainedTasks.some((entry) => samePlanningRef(entry.task, task)))) {
+    while (cursor.revision > selected.revision) {
       const previous = planningRecord(records, { id: cursor.id, revision: cursor.revision - 1 });
-      if (previous?.kind !== 'implementation_plan_revision' || previous.projectId !== plan.projectId ||
-        !retained.every((task) => previous.deliverySequence.some((ref) => samePlanningRef(ref, task)))) break;
+      if (previous?.kind !== 'implementation_plan_revision' || previous.projectId !== plan.projectId) break;
+      if (sliceId) {
+        const currentSlice = cursor.workflow?.slices.find((slice) => slice.id === sliceId);
+        const previousSlice = previous.workflow?.slices.find((slice) => slice.id === sliceId);
+        if (!currentSlice || !previousSlice || currentSlice.criteria.length !== previousSlice.criteria.length ||
+          !currentSlice.criteria.every((ref, index) => samePlanningRef(ref, previousSlice.criteria[index]!)) ||
+          (currentSlice.criteriaFeature && previousSlice.criteriaFeature &&
+            !samePlanningRef(currentSlice.criteriaFeature, previousSlice.criteriaFeature))) break;
+      } else if (!retained.length || !retained.every((task) =>
+        cursor.deliverySequence.some((ref) => samePlanningRef(ref, task)) &&
+        cursor.workflow?.retainedTasks.some((entry) => samePlanningRef(entry.task, task)) &&
+        previous.deliverySequence.some((ref) => samePlanningRef(ref, task)))) break;
       cursor = previous;
     }
     if (samePlanningRef(cursor, selected)) checkedPlan = selected;
@@ -41,7 +50,7 @@ export function stageCriteria(records: FactoryRecord[], detail: StageRevision, r
   if (prior && prior.kind === 'stage_revision' && checkedPlan.feature && samePlanningRef(prior.artifact, check.plan) &&
     (!sourceFeature || !samePlanningRef(sourceFeature, checkedPlan.feature))) {
     // The ready revision retained raw slices and task revisions from its predecessor.
-    refs = stageCriteria(records, prior, refs, sourceFeature, taskRefs);
+    refs = stageCriteria(records, prior, refs, sourceFeature, taskRefs, sliceId);
     sourceFeature = checkedPlan.feature;
   }
   const origin = sourceFeature ?? plan.feature;
@@ -163,7 +172,7 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
     add('detail_gap', plan, 'deliverySequence', `Missing detailed task ${ref.id}`); return [];
   });
   const taskCriteria = tasks.flatMap((task) => selectedCriteria(task.criteria, task.feature, [task]));
-  const sliceCriteria = slices.flatMap((slice) => selectedCriteria(slice.criteria, undefined, slice.tasks));
+  const sliceCriteria = slices.flatMap((slice) => stageCriteria(records, detail, slice.criteria, slice.criteriaFeature, undefined, slice.id));
   for (const ref of feature.criteria) {
     const criterion = planningRecord(records, ref);
     if (criterion?.kind !== 'criterion' || criterion.disposition.state !== 'active') continue;
@@ -178,7 +187,7 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   for (const slice of slices) {
     if (ids.has(slice.id)) add('detail_gap', plan, 'workflow.slices', `Duplicate slice ${slice.id}`);
     ids.add(slice.id);
-    const criteria = selectedCriteria(slice.criteria, undefined, slice.tasks);
+    const criteria = stageCriteria(records, detail, slice.criteria, slice.criteriaFeature, undefined, slice.id);
     const maintenanceSlice = slice.tasks.length > 0 && slice.tasks.every((ref) => {
       const task = tasks.find((candidate) => samePlanningRef(candidate, ref));
       return task && task.criteria.length === 0 && task.maintenanceObjective !== undefined;

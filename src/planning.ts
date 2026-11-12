@@ -1,5 +1,6 @@
 import { bundleUrl } from './ui-bundle.js';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { DesignPlanFeatureCommandSchema } from './commands.js';
 import { ref, stableId } from './intake.js';
@@ -77,7 +78,18 @@ export function recordStage(store: ProjectStore, input: unknown) {
         throw new StoreError('validation', 'use_readiness_check_to_record_ready_plan');
       }
     }
-    return [...data.records, stage];
+    const records = data.records.map((record) => {
+      if (record.kind !== 'implementation_plan_revision' || !record.workflow) return record;
+      const previous = planningRecord(history, { id: record.id, revision: record.revision - 1 });
+      // Copy provenance only for an unchanged slice. Detail can explicitly name
+      // the current feature when reauthoring identical refs against current scope.
+      return { ...record, workflow: { ...record.workflow, slices: record.workflow.slices.map((slice) => {
+        const old = previous?.kind === 'implementation_plan_revision' && previous.workflow?.slices.find((item) => item.id === slice.id);
+        const retained = old && isDeepStrictEqual(old.criteria, slice.criteria) && isDeepStrictEqual(old.tasks, slice.tasks);
+        return { ...slice, criteriaFeature: retained ? slice.criteriaFeature ?? old.criteriaFeature ?? previous.feature ?? stage.feature : stage.feature };
+      }) } };
+    });
+    return [...records, stage];
   });
 }
 

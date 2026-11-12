@@ -126,6 +126,9 @@ export const ImplementationPlanRevisionSchema = record('implementation_plan_revi
   workflow: z.strictObject({
     slices: z.array(z.strictObject({
       id: IdSchema, behavior: TextSchema, criteria: z.array(RefSchema), tasks: z.array(RefSchema),
+      // Feature against which these slice criteria were authored, independently
+      // of task retention. Absent on historical plan revisions.
+      criteriaFeature: RefSchema.optional(),
     })).min(1),
     scope: z.array(PlannedScopeSchema), integrationSteps: z.array(TextSchema),
     finalVerification: z.array(TextSchema), changeReason: TextSchema,

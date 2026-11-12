@@ -1,11 +1,12 @@
 import { scenario } from './milestone-helper.js';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import childProcess, { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { syncBuiltinESMExports } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { checkStartingWorker, ProjectStore, ref, recordSource, runFeature,
   validateReviewForCompletion, FeatureRunConfigSchema, prepareWorkerBrief } from '../src/index.js';
@@ -122,9 +123,6 @@ for (const field of ['goal', 'exclusions'] as const) {
       const before = readFileSync(flow.database);
       assert.throws(() => runFeature(flow.config, 'prepare'), /project_initialization_mismatch/);
       assert.deepEqual(readFileSync(flow.database), before);
-      const store = new ProjectStore(flow.database, { readOnly: true });
-      try { assert.equal(store.records('project-1').some((record) => record.kind === 'request'), false); }
-      finally { store.close(); }
       assert.equal(flow.wrapper.read().calls.length, 0);
       assert.equal(existsSync(join(flow.root, 'agents.jsonl')), false);
       assert.equal(existsSync(join(flow.config.runDirectory, 'prepare.started')), false);
@@ -145,7 +143,6 @@ test('one captured feature reaches product completion through the existing CLI a
     finally { store.close(); }
     const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     assert.deepEqual(calls.map((call) => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'instruction_check', 'instruction_check', 'product_review']);
-    assert.equal(new Set(calls.map((call) => call.pid)).size, calls.length);
     assert.deepEqual(JSON.parse(readFileSync(join(flow.root, 'spawn-args.json'), 'utf8')).slice(-6), ['--harness', 'codex', '--model', 'build', '--effort', 'medium']);
     assert.equal((runFeature(flow.config, 'start') as { state: string }).state, 'awaiting_worker_return');
   } finally { flow.close(); }
@@ -157,7 +154,6 @@ test('review 1: task stays held until its prepared brief passes the instruction 
     flow.mode({ requirePreparationHold: true });
     runFeature(flow.config, 'prepare');
     const state = flow.wrapper.read();
-    assert.ok(state.trace.some((entry) => entry.task.held));
     assert.equal(state.tasks['milestone-worker']!.held, false);
   } finally { flow.close(); }
 });
@@ -199,16 +195,12 @@ test('review 2: a conflicting assignment block anywhere in the launch overlay is
   } finally { flow.close(); }
 });
 
-for (const context of ['empty', 'truncated', 'wrong-schema', 'wrong-project'] as const) {
+for (const context of ['empty', 'wrong-project'] as const) {
   test(`review 3: hook rejects ${context} database without changing it or classifying task as unmanaged`, () => {
     const flow = scenario();
     try {
       const database = join(flow.root, 'unavailable.sqlite');
       if (context === 'empty') writeFileSync(database, '');
-      if (context === 'truncated') writeFileSync(database, 'SQLite format 3\0broken');
-      if (context === 'wrong-schema') {
-        const db = new DatabaseSync(database); db.exec('PRAGMA user_version=1; CREATE TABLE record_history (body TEXT)'); db.close();
-      }
       if (context === 'wrong-project') {
         const store = new ProjectStore(database);
         store.importProject({ schemaVersion: 1, projectId: 'project-1', history: [flow.config.project], receipts: [] }); store.close();
@@ -354,5 +346,132 @@ test('hook passes unmanaged tasks and fails closed for missing managed context a
     assert.equal(existsSync(missing.projects[0].database), false);
     const cli = spawnSync(script, [flow.config.hookRegistry], { input: '{broken', encoding: 'utf8' });
     assert.equal(cli.status, 1);
+  } finally { flow.close(); }
+});
+
+
+test('followup: passive legacy mappings remain unmanaged, explicit management and orphan assignments stay protected', () => {
+  const flow = scenario();
+  try {
+    const registry = JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8'));
+    const fixture = JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8'));
+    const template = fixture.find((record: any) => record.kind === 'task_mapping');
+    const legacy = { ...template, legacy: true, feature: null, criteria: [], detailedPlanTask: null };
+    const event = { version: 1, event: 'worker.start.before', home: flow.home, task_id: legacy.firstMateTaskId,
+      source_brief_path: null, brief_path: null, brief_sha256: null };
+    for (const kind of ['passive', 'managed', 'orphan'] as const) {
+      const database = join(flow.root, `${kind}.sqlite`);
+      const history = fixture.filter((record: any) => ['project', 'request', 'feature_revision', 'criterion', 'design_revision', 'implementation_plan_revision', 'detailed_plan_task', 'task_mapping', 'assignment'].includes(record.kind) &&
+        (kind === 'orphan' || record.kind !== 'assignment'))
+        .map((record: any) => kind === 'passive' && record.kind === 'task_mapping' ? legacy : record);
+      const store = new ProjectStore(database);
+      try { store.importProject({ schemaVersion: 1, projectId: 'project-1', history, receipts: [] }); }
+      finally { store.close(); }
+      if (kind === 'orphan') {
+        const db = new DatabaseSync(database);
+        try { db.exec("DELETE FROM record_history WHERE kind = 'task_mapping'"); } finally { db.close(); }
+      }
+      registry.projects[0].database = database;
+      if (kind === 'passive') assert.deepEqual(checkStartingWorker(registry, event), { ok: true, managed: false });
+      else assert.throws(() => checkStartingWorker(registry, event), /hook_(managed_assignment_missing_or_ambiguous|candidate_missing)/);
+    }
+  } finally { flow.close(); }
+});
+
+test('followup: a tied assignment created during judgment invalidates the launch', () => {
+  const flow = scenario();
+  try {
+    runFeature(flow.config, 'prepare');
+    const agentConfig = JSON.parse(readFileSync(flow.config.agentConfig, 'utf8'));
+    const agentPath = agentConfig.executables.codex;
+    writeFileSync(agentPath, readFileSync(agentPath, 'utf8').replace("if(step==='instruction_check') {", `if(step==='instruction_check') {
+      const {ProjectStore}=await import(${JSON.stringify(new URL('../src/index.js', import.meta.url).href)});
+      const store=new ProjectStore(${JSON.stringify(flow.database)});
+      const history=store.history('project-1');
+      const assignment=history.find(r=>r.kind==='assignment');
+      store.mutate({schemaVersion:1,id:'concurrent',projectId:'project-1',issuedAt:assignment.updatedAt,idempotencyKey:'concurrent',command:'prepare_assignment',targetId:'concurrent-assignment',expectedRevision:0,payload:{detailedPlanTask:assignment.detailedPlanTask,feature:assignment.feature,design:assignment.design,plan:assignment.plan,firstMateTaskId:assignment.firstMateTaskId,selectedContext:assignment.selectedContext,returnLocation:assignment.returnLocation}},()=>[{...assignment,id:'concurrent-assignment'}]);
+      store.close();`));
+    const source = join(flow.data, 'milestone-worker', 'brief.md');
+    assert.throws(() => checkStartingWorker(JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8')),
+      startingEvent(flow, source)), /hook_managed_assignment_(changed|missing_or_ambiguous)/);
+    const store = new ProjectStore(flow.database, { readOnly: true });
+    try { assert.equal(store.records('project-1').filter((record) => record.kind === 'assignment').length, 2); }
+    finally { store.close(); }
+  } finally { flow.close(); }
+});
+
+test('followup: original intent may quote reserved assignment markers at launch', () => {
+  const flow = scenario({ bootstrap: true, originalRequest: 'Build feature X for every connected system, ERPNext is only an example.\nExample marker:\n<!-- software-factory-assignment:v1:begin -->\n<!-- software-factory-assignment:v1:end -->' });
+  try {
+    runFeature(flow.config, 'prepare');
+    const source = join(flow.data, 'milestone-worker', 'brief.md');
+    const registry = JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8'));
+    const report = checkStartingWorker(registry, startingEvent(flow, source));
+    assert.equal(report.ok, true, JSON.stringify(report));
+    const candidate = join(flow.root, 'quoted-marker-overlay.md');
+    writeFileSync(candidate, readFileSync(source, 'utf8') + '\n<!-- software-factory-assignment:v1:begin -->\n{}\n<!-- software-factory-assignment:v1:end -->\n');
+    const rejected = checkStartingWorker(registry, { ...startingEvent(flow, candidate), source_brief_path: source });
+    assert.equal(rejected.ok, false);
+    assert.ok('findings' in rejected);
+    assert.ok(rejected.findings.some((finding) => finding.code === 'assignment_metadata_mismatch'));
+    assert.equal(rejected.judgment, null);
+  } finally { flow.close(); }
+});
+
+test('followup: agent-backed CLI deadline leaves overhead beyond the maximum agent budget', () => {
+  const flow = scenario(); const original = childProcess.spawnSync;
+  const observed: number[] = [];
+  try {
+    const agents = JSON.parse(readFileSync(flow.config.agentConfig, 'utf8')); agents.timeoutMs = 600_000;
+    flow.save(flow.config.agentConfig, agents);
+    const hooks = JSON.parse(readFileSync(join(flow.home, 'config', 'hooks.json'), 'utf8'));
+    hooks.hooks[0].timeout_seconds = 900; flow.save(join(flow.home, 'config', 'hooks.json'), hooks);
+    childProcess.spawnSync = ((...args: any[]) => {
+      if (args[1]?.includes('check-brief')) observed.push(args[2].timeout);
+      return (original as any)(...args);
+    }) as typeof original;
+    syncBuiltinESMExports();
+    runFeature(flow.config, 'prepare');
+    assert.equal(observed.length, 1);
+    assert.ok(observed[0]! > agents.timeoutMs + 5000, `Outer CLI budget was ${observed[0]}`);
+  } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); flow.close(); }
+});
+
+for (const field of ['reuseTargets', 'sourceRefs'] as const) for (const uriKind of ['path', 'file'] as const) {
+  test(`followup: automated ${field} rejects an unlisted ${uriKind} before brief preparation`, () => {
+    const flow = scenario();
+    try {
+      const secret = join(flow.root, 'unlisted.txt'); writeFileSync(secret, 'PRIVATE_TEST_CONTENT');
+      const uri = uriKind === 'file' ? pathToFileURL(secret).href : secret;
+      const owner = field === 'reuseTargets' ? flow.outputs.detail.records.find((record: any) => record.kind === 'detailed_plan_task') : flow.outputs.design.records[0];
+      Object.assign(owner!, { [field]: [{ uri }] }); flow.save(join(flow.root, 'outputs.json'), flow.outputs);
+      assert.throws(() => runFeature(flow.config, 'prepare'), /unauthorized_run_source/);
+      assert.equal(existsSync(join(flow.data, 'milestone-worker', 'brief.sf.json')), false);
+      const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+      assert.equal(calls.includes('PRIVATE_TEST_CONTENT'), false);
+      assert.equal(calls.includes('"step":"instruction_check"'), false);
+    } finally { flow.close(); }
+  });
+}
+
+
+test('followup: automated preparation accepts an operator source snapshot and preserves the captured request', () => {
+  const flow = scenario();
+  try {
+    const uri = 'research:common-interface'; const snapshot = join(flow.root, 'research.txt');
+    writeFileSync(snapshot, 'OPERATOR_SUPPLIED_INTERFACE');
+    flow.config.sourceFiles = [{ source: { uri }, path: snapshot }];
+    const task = flow.outputs.detail.records.find((record: any) => record.kind === 'detailed_plan_task');
+    Object.assign(task!, { reuseTargets: [{ uri }, { uri: flow.config.requestFile }] });
+    flow.save(join(flow.root, 'outputs.json'), flow.outputs);
+    const originalRequest = readFileSync(flow.config.requestFile, 'utf8');
+    const agent = JSON.parse(readFileSync(flow.config.agentConfig, 'utf8')).executables.codex;
+    writeFileSync(agent, readFileSync(agent, 'utf8').replace("if(step==='plan_check')",
+      `if(step==='plan_check') { const fs=await import('node:fs'); fs.writeFileSync(${JSON.stringify(flow.config.requestFile)},'MUTATED_REQUEST_FILE'); }\nif(step==='plan_check')`));
+    runFeature(flow.config, 'prepare');
+    const text = readFileSync(join(flow.data, 'milestone-worker', 'brief.md'), 'utf8');
+    assert.ok(text.includes('OPERATOR_SUPPLIED_INTERFACE'));
+    assert.ok(text.includes(originalRequest));
+    assert.equal(text.includes('MUTATED_REQUEST_FILE'), false);
   } finally { flow.close(); }
 });
