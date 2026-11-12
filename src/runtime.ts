@@ -130,6 +130,11 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
     catch (error) { return recordOperationObservation(store, operation, operation.externalAttempt ? 'unknown' : 'pending', String(error)); }
     try {
       const task = runtimeTask(snapshot, assignment.firstMateTaskId);
+      const latest = store.get(data.projectId, assignment.id);
+      const currentAttempts = store.records(data.projectId).filter((record) => record.kind === 'assignment' && record.firstMateTaskId === assignment.firstMateTaskId);
+      if (latest?.kind !== 'assignment' || latest.attemptId !== assignment.attemptId ||
+        latest.firstMateTaskId !== assignment.firstMateTaskId || currentAttempts.some((record) => record.id !== assignment.id &&
+          Date.parse(record.updatedAt) >= Date.parse(assignment.updatedAt))) throw new Error('worker_start_attempt_superseded');
       if (operation.externalAttempt) {
         if (task?.spawn_gen && task.project === data.repository &&
           Date.parse(snapshot.generated) >= Date.parse(operation.externalAttempt.startedAt) &&
@@ -138,10 +143,7 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
         }
         return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Start outcome unresolved; no retry authorized', snapshot }));
       }
-      const latest = store.get(data.projectId, assignment.id);
-      const currentAttempts = store.records(data.projectId).filter((record) => record.kind === 'assignment' && record.firstMateTaskId === assignment.firstMateTaskId);
-      if (latest?.revision !== assignment.revision || currentAttempts.some((record) => record.id !== assignment.id &&
-        Date.parse(record.updatedAt) >= Date.parse(assignment.updatedAt))) throw new Error('worker_start_attempt_superseded');
+      if (latest.revision !== assignment.revision) throw new Error('worker_start_attempt_superseded');
       // Any pre-existing generation belongs to ordinary FirstMate management.
       if (task?.spawn_gen) return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Existing worker generation; explicit new attempt required', snapshot }));
       if (!data.hookRegistry || !assignment.brief) return recordOperationObservation(store, operation, 'pending', 'Worker start requires configured instruction and dispatch check');

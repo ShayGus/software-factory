@@ -351,22 +351,23 @@ export function recoverTaskCorrection(store: ProjectStore, input: unknown, adapt
     const childKey = stableId('recovered-task-key', recoveryId);
     const childId = stableId('task-operation', data.projectId, childKey);
     const mapping = store.get(data.projectId, task.targetId);
-    // A fresh permission may succeed a retired recovery child for this exact
-    // source intent. Its receipt proves lineage; payload similarity alone does not.
-    const descendant = mapping?.kind === 'task_mapping' && store.exportProject(data.projectId).receipts.some((item) => {
-      if (item.command.command !== 'record_decision_suggestion' || item.command.payload.decision.rationale !== descriptor) return false;
+    // A fresh permission may reuse a successful child or succeed a retired child
+    // for this source intent. Its receipt proves lineage; payload similarity does not.
+    const descendant = mapping?.kind === 'task_mapping' && store.exportProject(data.projectId).receipts.flatMap((item) => {
+      if (item.command.command !== 'record_decision_suggestion' || item.command.payload.decision.rationale !== descriptor) return [];
       const permit = store.get(data.projectId, item.command.targetId);
       const key = stableId('recovered-task-key', item.command.targetId);
       const child = store.get(data.projectId, stableId('task-operation', data.projectId, key));
       const receipt = store.receipt(data.projectId, key);
-      return permit?.kind === 'operation' && !!permit.suspended && child?.kind === 'operation' && !!child.suspended &&
+      return permit?.kind === 'operation' && !!permit.suspended && child?.kind === 'operation' && (child.suspended || child.state === 'succeeded') &&
         child.id === mapping.management?.operationId && receipt?.command.command === 'map_manage_execution_task' &&
-        JSON.stringify(receipt.command.payload) === JSON.stringify(task.payload);
-    });
+        JSON.stringify(receipt.command.payload) === JSON.stringify(task.payload) ? [{ child, command: receipt.command }] : [];
+    }).at(0);
     if (mapping?.kind !== 'task_mapping' || mapping.firstMateTaskId !== task.payload.task.firstMateTaskId ||
       (![originalTaskId, childId].includes(mapping.management?.operationId ?? '') && !descendant)) {
       throw new StoreError('conflict', 'task_correction_recovery_superseded');
     }
+    if (descendant && descendant.child.state === 'succeeded') return { recovery, task: descendant.command, record };
     const prior = store.receipt(data.projectId, childKey);
     if (prior) {
       if (prior.command.command !== 'map_manage_execution_task' || JSON.stringify(prior.command.payload) !== JSON.stringify(task.payload)) {

@@ -119,6 +119,45 @@ test('ambiguous worker timeout plus an empty fleet never authorizes a second lau
   assert.equal(readFileSync(join(flow.home, 'starts'), 'utf8'), 'start\n');
 });
 
+for (const replacementId of ['assignment-1', 'replacement-assignment']) test(`review 1453-3: a timed-out start cannot claim a replacement generation (${replacementId})`, t => {
+  const flow = setup(t); const hookRegistry = readyWorkerStart(flow);
+  const timeout = flow.executable('start-timeout.cjs', `setTimeout(()=>process.exit(0),10000);`);
+  const input = { projectId, idempotencyKey: 'original-start', assignment: ref(assignment(flow)), repository: flow.home,
+    executable: timeout, hookRegistry, args: ['pilot-build', flow.home] };
+  const adapter = { fmHome: flow.home, snapshotExecutable: flow.runtime.executable, timeoutMs: 500 };
+  const original = startManagedWorker(flow.store, input, adapter);
+  assert.equal(original.state, 'unknown'); assert.ok(original.externalAttempt);
+  const previous = assignment(flow); const at = new Date().toISOString();
+  const replacement = { ...previous, id: replacementId, revision: replacementId === previous.id ? previous.revision + 1 : 1,
+    updatedAt: at, attemptId: 'replacement-attempt', brief: undefined };
+  const decision = { kind: 'decision_change', id: 'replace-start-attempt', projectId, schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at,
+    questionOrChange: 'Replace the timed-out worker attempt', affectedRecords: [ref(previous)], rationale: 'Fresh explicit attempt',
+    disposition: 'selected', sourceRefs: [{ uri: 'fixture:replacement' }], scopeChanges: [] };
+  flow.store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
+    command: 'record_decision_suggestion', targetId: replacement.id, expectedRevision: replacement.revision - 1, payload: { decision } }, () => [decision, replacement]);
+  // Prepare the replacement through the same checked-start path, including a new assignment ID.
+  const history = flow.store.history(projectId);
+  const sourceFiles = requiredAssignmentContext(history, replacement).sources.filter(source => !source.record).map((source, index) =>
+    ({ source, path: join(flow.home, `launch-source-${index}.txt`) }));
+  const replacementBrief = join(flow.home, 'replacement-brief.md');
+  writeFileSync(replacementBrief, readFileSync(new URL('../../fixtures/firstmate-brief.md', import.meta.url)));
+  assert.equal(prepareWorkerBrief(flow.store, { projectId, assignmentId: replacement.id, attemptId: replacement.attemptId,
+    expectedRevision: replacement.revision, idempotencyKey: 'replacement-prepare', issuedAt: new Date().toISOString(),
+    detailedPlanTask: replacement.detailedPlanTask, plan: replacement.plan, firstMateTaskId: replacement.firstMateTaskId,
+    returnLocation: replacement.returnLocation, briefPath: replacementBrief, sourceFiles }).ok, true);
+  const start = flow.executable('replacement-start.cjs', `const fs=require('node:fs');
+fs.appendFileSync(${JSON.stringify(join(flow.home, 'replacement-starts'))},'start\\n');
+fs.writeFileSync(${JSON.stringify(flow.runtime.statePath)},JSON.stringify([{id:'pilot-build',spawn_gen:'replacement-generation',project:${JSON.stringify(flow.home)},current_state:{state:'active',freshness:'fresh',observed_at:''}}]));`);
+  const current = flow.store.get(projectId, replacement.id)!;
+  assert.equal(startManagedWorker(flow.store, { ...input, idempotencyKey: 'replacement-start', assignment: ref(current), executable: start },
+    { ...adapter, timeoutMs: 5000 }).state, 'succeeded');
+  const replayed = startManagedWorker(flow.store, input, adapter);
+  assert.equal(replayed.state, 'unknown', replayed.reconciliation?.note);
+  assert.deepEqual(replayed.externalAttempt, original.externalAttempt);
+  assert.equal(flow.store.history(projectId).some(record => record.id === original.id && record.kind === 'operation' && record.state === 'succeeded'), false);
+  assert.equal(readFileSync(join(flow.home, 'replacement-starts'), 'utf8'), 'start\n');
+});
+
 test('process death after durable steering is recovered from handled inbox without resending or claiming incorporation', t => {
   const flow = setup(t); const queued = correction(flow);
   const inbox = join(flow.home, 'state', 'pilot-build.inbox'); mkdirSync(inbox, { recursive: true });
@@ -1081,6 +1120,37 @@ test('review 1342-4: fresh recovery permission follows a suspended recovery chil
   assert.equal(flow.tasks.read().calls.filter(call => call.args[0] === 'add' && call.args[1] !== '--help').length, 1);
 });
 
+test('review 1453-1: recovery reuses a successful child after interruption and disable/re-enable', t => {
+  const flow = setup(t); const { queued, task, options } = suspendedNewWork(flow);
+  flow.tasks.edit(state => { state.failure = { action: 'add', when: 'after' }; });
+  assert.equal(manageExecutionTask(flow.store, task, flow.adapter).operation.state, 'unknown');
+  disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+  const lock = flow.store.withTaskLock.bind(flow.store); let count = 0;
+  flow.store.withTaskLock = (id, body) => {
+    const result = lock(id, body);
+    if (++count === 2) throw new Error('interrupted after child success');
+    return result;
+  };
+  const request = { projectId, correctionId: queued.correction.id, idempotencyKey: 'interrupted-success-permission' };
+  assert.throws(() => recoverTaskCorrection(flow.store, request, options), /interrupted after child success/);
+  flow.store.withTaskLock = lock;
+  const childKey = stableId('recovered-task-key', stableId('task-correction-recovery', projectId, request.idempotencyKey));
+  const child = flow.store.get(projectId, stableId('task-operation', projectId, childKey));
+  assert.ok(child?.kind === 'operation'); assert.equal(child.state, 'succeeded');
+  disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+  assert.throws(() => recoverTaskCorrection(flow.store, request, options), /permanently_suspended/);
+  const calls = flow.tasks.read().calls;
+  const taskOperations = flow.store.operations(projectId).filter(operation => operation.command === 'map_manage_execution_task');
+  const fresh = { ...request, idempotencyKey: 'fresh-success-permission' };
+  assert.equal(recoverTaskCorrection(flow.store, fresh, options).state, 'succeeded');
+  assert.equal(recoverTaskCorrection(flow.store, fresh, options).state, 'succeeded');
+  assert.deepEqual(flow.tasks.read().calls, calls);
+  const record = flow.store.get(projectId, queued.correction.id);
+  assert.ok(record?.kind === 'observation' && record.correction);
+  assert.equal(record.correction.facts.filter(fact => fact.fact === 'delivered').length, 1);
+  assert.deepEqual(flow.store.operations(projectId).filter(operation => operation.command === 'map_manage_execution_task'), taskOperations);
+});
+
 test('review 1342-2: explicit cancellation recovery carries the lost-response lifecycle attempt', t => {
   const flow = setup(t); const a = assignment(flow); const task = taskCommand(a.firstMateTaskId, 'cancel');
   task.targetId = 'mapping-1'; task.expectedRevision = 1;
@@ -1105,7 +1175,7 @@ fs.writeFileSync(${JSON.stringify(flow.runtime.statePath)},JSON.stringify(tasks)
 });
 
 
-for (const protection of ['guard', 'hold'] as const) test(`review 1299-9: interrupted cancellation protection retains consumer ${protection} ownership for handback`, t => {
+for (const protection of ['guard', 'hold', 'preexisting-guard'] as const) test(`review 1453-2: cancellation protection respects consumer ${protection} ownership at handback`, t => {
   const flow = setup(t); const detail = flow.store.get(projectId, 'task-1'); assert.ok(detail?.kind === 'detailed_plan_task');
   const at = new Date().toISOString(); const consumerDetail = { ...detail, id: 'consumer-detail', plan: { id: 'consumer-plan', revision: 1 } };
   const plan = flow.store.get(projectId, 'plan-1'); assert.ok(plan?.kind === 'implementation_plan_revision');
@@ -1116,7 +1186,7 @@ for (const protection of ['guard', 'hold'] as const) test(`review 1299-9: interr
   flow.store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
     command: 'record_decision_suggestion', targetId: consumerDetail.id, expectedRevision: 0, payload: { decision } }, () => [decision, consumerPlan, consumerDetail]);
   const consumer = taskCommand('protected-consumer', 'map');
-  if (protection === 'guard') {
+  if (protection !== 'hold') {
     queueManagedTask(flow.store, { ...consumer, payload: { ...consumer.payload, detailedPlanTask: ref(consumerDetail), dependencies: ['pilot-build'] } });
   } else {
     const template = flow.store.get(projectId, 'mapping-1'); assert.ok(template?.kind === 'task_mapping');
@@ -1127,14 +1197,20 @@ for (const protection of ['guard', 'hold'] as const) test(`review 1299-9: interr
   }
   flow.tasks.edit(state => {
     state.tasks['pilot-build'] = fakeTask('pilot-build');
-    state.tasks['protected-consumer'] = fakeTask('protected-consumer', { hold: protection === 'guard' ? { reason: 'Consumer owner', kind: 'captain', until: null } : null,
-      deps: [{ type: 'blocked-by', id: 'pilot-build' }] });
-    state.failure = { action: protection === 'guard' ? 'block' : 'hold', when: 'after' };
+    state.tasks['protected-consumer'] = fakeTask('protected-consumer', { hold: protection !== 'hold' ? { reason: 'Consumer owner', kind: 'captain', until: null } : null,
+      deps: [{ type: 'blocked-by', id: 'pilot-build' }, ...(protection === 'preexisting-guard' ? [{ type: 'blocked-by' as const, id: 'permanent-guard' }] : [])] });
+    if (protection !== 'preexisting-guard') state.failure = { action: protection === 'guard' ? 'block' : 'hold', when: 'after' };
   });
   const cancel = taskCommand('pilot-build', 'cancel'); cancel.targetId = 'mapping-1'; cancel.expectedRevision = 1;
   const adapter = { ...flow.adapter, guardTaskId: 'permanent-guard' };
-  assert.equal(manageExecutionTask(flow.store, cancel, adapter).operation.state, 'unknown');
+  assert.equal(manageExecutionTask(flow.store, cancel, adapter).operation.state, protection === 'preexisting-guard' ? 'succeeded' : 'unknown');
+  if (protection === 'preexisting-guard') {
+    const mapping = flow.store.get(projectId, consumer.targetId); assert.ok(mapping?.kind === 'task_mapping');
+    assert.equal(mapping.management!.managedDependencies.includes('permanent-guard'), false);
+    assert.equal(flow.tasks.read().calls.some(call => call.args[0] === 'block' && call.args[1] === 'protected-consumer'), false);
+  }
   disableProject(flow.store, projectId, 'hand_back', adapter);
-  assert.deepEqual(flow.tasks.read().tasks['protected-consumer']!.deps, [{ type: 'blocked-by', id: 'pilot-build' }]);
-  assert.equal(flow.tasks.read().tasks['protected-consumer']!.hold?.reason, protection === 'guard' ? 'Consumer owner' : undefined);
+  assert.deepEqual(flow.tasks.read().tasks['protected-consumer']!.deps, [{ type: 'blocked-by', id: 'pilot-build' },
+    ...(protection === 'preexisting-guard' ? [{ type: 'blocked-by', id: 'permanent-guard' }] : [])]);
+  assert.equal(flow.tasks.read().tasks['protected-consumer']!.hold?.reason, protection !== 'hold' ? 'Consumer owner' : undefined);
 });

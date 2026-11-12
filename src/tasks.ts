@@ -281,13 +281,12 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
       if (target.id === mapping.id) mapping = saved;
       return saved;
     };
-    const requireGuard = (target = mapping) => {
+    const requireGuard = () => {
       if (!options.guardTaskId) throw new DefinitiveTaskRejection('permanent_guard_task_required_without_atomic_hold');
       const guard = wrapper.read(options.guardTaskId);
       if (!guard || guard.state === 'done' || !guard.held || !guard.hold || guard.hold.until !== null) {
         throw new DefinitiveTaskRejection('guard_must_be_permanently_held_and_not_done');
       }
-      retainProtection(target, guard.id);
       return guard.id;
     };
     if (mapping.disposition.state === 'cancelled') {
@@ -304,8 +303,11 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
         const protectiveHold = (value: FirstMateTask) => value.hold?.reason === reason && value.hold.until === null;
         if (!task.hold) task = wrapper.write(['hold', task.id, '--reason', reason, '--kind', 'external'], protectiveHold);
         else if (!protectiveHold(task)) {
-          const guardId = requireGuard(protectedConsumer);
-          if (!taskIds(task).includes(guardId)) wrapper.write(['block', task.id, '--by', guardId], (value) => taskIds(value).includes(guardId));
+          const guardId = requireGuard();
+          if (!taskIds(task).includes(guardId)) {
+            retainProtection(protectedConsumer, guardId);
+            wrapper.write(['block', task.id, '--by', guardId], (value) => taskIds(value).includes(guardId));
+          }
         }
       }
     }
@@ -318,7 +320,11 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
       if (payload.priority !== undefined) args.push('--priority', String(payload.priority));
       for (const id of availableIds) args.push('--blocked-by', id);
       if (atomic) args.push('--hold-reason', holdReason);
-      else args.push('--blocked-by', requireGuard());
+      else {
+        const guardId = requireGuard();
+        retainProtection(mapping, guardId);
+        args.push('--blocked-by', guardId);
+      }
       observed = wrapper.write(args, (task) => task.state === 'queued' && task.body === creationMarker &&
         task.title === newTask.title.trim() && task.repo === newTask.repo.trim() && task.kind === 'ship' &&
         (payload.priority === undefined || task.priority === payload.priority) &&
@@ -328,8 +334,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
       (observed.body !== creationMarker || observed.title !== payload.task.title.trim() || observed.repo !== payload.task.repo.trim())) {
       throw new DefinitiveTaskRejection('stable_task_id_collision');
     }
-    const ownedIds = [...mapping.management!.managedDependencies,
-      ...(options.guardTaskId ? [options.guardTaskId] : [])];
+    const ownedIds = mapping.management!.managedDependencies;
     const fields = payload.action === 'set_priority' ? { priority: payload.priority! } :
       payload.action === 'update' ? payload.update! : {};
     const patch = Object.entries(fields).map(([key, value]) => [key, key === 'title' && typeof value === 'string' ? value.trim() : value] as const)
@@ -346,6 +351,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
       // our independent conditions a permanent native blocker of their own.
       const guardId = requireGuard();
       if (!taskIds(observed).includes(guardId)) {
+        retainProtection(mapping, guardId);
         observed = wrapper.write(['block', observed.id, '--by', guardId], (task) => taskIds(task).includes(guardId));
       }
     }
@@ -389,12 +395,13 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
       }
       for (const id of desiredIds) if (!wrapper.read(id)) reasons.push(`Missing prerequisite ${id}`);
     }
-    if (options.guardTaskId && taskIds(observed).includes(options.guardTaskId) && (ownHold(observed) || !reasons.length)) {
+    if (options.guardTaskId && mapping.management!.managedDependencies.includes(options.guardTaskId) &&
+      taskIds(observed).includes(options.guardTaskId) && (ownHold(observed) || !reasons.length)) {
       const guardId = options.guardTaskId;
       observed = wrapper.write(['unblock', observed.id, '--by', guardId], (task) => !taskIds(task).includes(guardId));
     }
     if (!reasons.length && ownHold(observed)) observed = wrapper.write(['unhold', observed.id], (task) => task.hold === null);
-    const installed = [...new Set([...desiredIds, ...(options.guardTaskId ? [options.guardTaskId] : [])])]
+    const installed = [...new Set([...desiredIds, ...mapping.management!.managedDependencies])]
       .filter((id) => taskIds(observed!).includes(id));
     return recordOutcome(store, operation, 'succeeded', JSON.stringify({ task: observed, unresolved: reasons, events: wrapper.events }), mapping, installed);
   } catch (error) {
