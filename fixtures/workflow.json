@@ -813,7 +813,22 @@
           "revision": "fixture-commit-1"
         },
         "description": "Synthetic fixture: ERPNext and a second system use one interface.",
-        "observedAt": "2026-11-10T10:36:43Z"
+        "observedAt": "2026-11-10T10:36:43Z",
+        "measurement": {
+          "definition": "Count synthetic acceptance cases with stable evidence.",
+          "unit": "cases",
+          "population": "Two synthetic system fixtures",
+          "filters": [],
+          "inputs": [
+            {
+              "uri": "fixture://implementation/feature-x",
+              "revision": "fixture-commit-1"
+            }
+          ],
+          "method": {
+            "uri": "fixture://acceptance-run/1"
+          }
+        }
       }
     ]
   },

@@ -5,6 +5,7 @@ import { taskDependencyIds, taskPrerequisites, taskReadinessReasons } from './ta
 import { executionTaskView, sameRef, uiStaleAfterMs, type ProjectView } from './ui-state.js';
 import { hasDispatchCompatibleFeatureScope, hasCheckedDesignReuse } from './rules.js';
 import type { Assignment } from './records.js';
+import { FleetSnapshotSchema } from './runtime.js';
 
 /** Toolkit observation projection, not a claimed fm-fleet-snapshot wire format.
  * The runtime adapter supplies only fields supported by its structured snapshot.
@@ -28,6 +29,42 @@ export const WorkSnapshotSchema = z.strictObject({
   })),
 });
 export type WorkSnapshot = z.infer<typeof WorkSnapshotSchema>;
+
+/** Project integration observations are captured by the runtime adapter/importer.
+ * Reading Work projects that evidence without invoking FirstMate or refreshing its time. */
+function importedWorkSnapshot(view: ProjectView): WorkSnapshot | undefined {
+  const observation = view.project.integration?.observation;
+  if (observation === undefined) return undefined;
+  const fleet = FleetSnapshotSchema.parse(JSON.parse(observation).snapshot);
+  const omissions = fleet.backlog.records.filter(task => task.structured === false)
+    .map(task => typeof task.raw === 'string' && task.raw.trim() ? task.raw : JSON.stringify(task));
+  if (!fleet.backlog.present) omissions.push('FirstMate backlog unavailable');
+  const inventory = fleet.main_inventory as { valid?: boolean; reason?: unknown } | undefined;
+  if (inventory?.valid === false) omissions.push(`FirstMate inventory incomplete: ${typeof inventory.reason === 'string' ? inventory.reason : 'Unknown reason'}`);
+  for (const value of Array.isArray(fleet.omissions) ? fleet.omissions : []) {
+    omissions.push(typeof value === 'string' && value.trim() ? value : JSON.stringify(value));
+  }
+  return WorkSnapshotSchema.parse({ observedAt: fleet.generated,
+    provenance: `Imported fm-fleet-snapshot.v1 from ${fleet.fm_home}${typeof fleet.provenance === 'string' ? ` — ${fleet.provenance}` : ''}`,
+    omissions,
+    tasks: fleet.tasks.map(task => {
+      const current = task.current_state;
+      const known = current.freshness === 'fresh' && current.observed_at === fleet.generated && current.state !== 'unknown';
+      if (!known) omissions.push(`Task ${task.id}: worker state is stale or unknown (observed ${current.observed_at}; ${current.freshness})`);
+      const pr = z.object({ url: TextSchema }).safeParse(task.pr);
+      const status = z.object({ status_log: z.object({ last_event: z.object({ age_seconds: z.number().finite().nonnegative() }) }) }).safeParse(task.paths);
+      // A PR link alone is not evidence of readiness. Retain the installed crew
+      // state's ready-for-review observation, with unknown timing when absent.
+      const ready = known && current.state === 'done' && typeof current.detail === 'string' && /\bready for review\b/iu.test(current.detail) && pr.success;
+      return { firstMateTaskId: task.id, workerState: known ? current.state : null,
+        executionMs: null, waitingMs: null,
+        reviewWait: ready ? current.detail : null,
+        ready: ready ? [{ kind: 'pr', reference: pr.data.url,
+          readySince: status.success ? new Date(Date.parse(current.observed_at) - status.data.status_log.last_event.age_seconds * 1000).toISOString() : null,
+          nextAction: 'Review the observed PR using the existing task and assignment delivery instructions' }] : null };
+    }),
+  });
+}
 export function durationLabel(milliseconds: number | null | undefined): string {
   if (milliseconds === null || milliseconds === undefined) return 'Unknown';
   if (milliseconds < 1000) return `${milliseconds} ms`;
@@ -42,7 +79,7 @@ export function workView(view: ProjectView, now = Date.parse(view.readAt)) {
   let snapshot: WorkSnapshot | undefined;
   let snapshotError = 'Unknown — FirstMate snapshot unavailable';
   try {
-    const raw = view.options.readSnapshot?.();
+    const raw = view.options.readSnapshot ? view.options.readSnapshot() : importedWorkSnapshot(view);
     const parsed = WorkSnapshotSchema.safeParse(raw);
     if (parsed.success && Date.parse(parsed.data.observedAt) <= now) snapshot = parsed.data;
     else if (raw !== undefined) snapshotError = 'Unknown — invalid FirstMate snapshot';

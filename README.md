@@ -40,20 +40,23 @@ a real Beads database or starts Docker. See [the UI spike report](docs/ui-beads-
 
 ## Local feature, work and dependency UI — BUILD-12/13
 
-Start the fixture UI explicitly (this command is never run by tests):
+Serve an existing project and its imported FirstMate observations:
 
 ```sh
-npm run ui
-# Optional configuration:
-SF_UI_PORT=4712 SF_SCOTTY_URL=http://127.0.0.1:3186 npm run ui
+SF_UI_DB=/absolute/project.sqlite SF_UI_PROJECT=project-1 npm run ui
+# Optional configuration (in addition to the required database and project):
+# SF_UI_PORT=4712 SF_SCOTTY_URL=http://127.0.0.1:3186
+# SF_UI_ADAPTER_CONFIG=/absolute/task-adapter.json
 ```
 
 Open `http://127.0.0.1:3185` (or the configured `SF_UI_PORT`). The server binds
 only `127.0.0.1`. It serves its TypeScript browser client and stylesheet locally,
-with no CDN, UI framework, login or model calls. All requests, task observations
-and evidence are labeled **synthetic fixtures**. Each launch creates an isolated
-temporary SQLite database and task-wrapper fixture; Ctrl-C discards this session.
-It does not read or change an installed FirstMate workspace, Beads or Scotty data.
+with no CDN, UI framework, login or model calls. The launcher opens the existing
+SQLite database selected by `SF_UI_DB` and project selected by `SF_UI_PROJECT`.
+It uses the latest fleet observation recorded by `legacy-import` or
+`reconcile-project`; it does not refresh or fabricate observations. Missing and
+stale evidence stays visible. Configure `SF_UI_ADAPTER_CONFIG` to enable task
+mutations through the existing adapter. Closing the UI preserves project data.
 `SF_SCOTTY_URL` is an optional plain link to an existing loopback Scotty origin.
 `SF_UI_STALE_AFTER_MS` configures snapshot/page freshness (default 60000).
 
@@ -71,9 +74,9 @@ Focused task pages retain their feature, detailed-plan-task and assignment links
 Task forms support canonical priority, dependency add/remove, pause/resume and
 cancel operations. Ready branches or PRs show age since ready and the next action;
 execution and waiting times appear only when observed. Snapshot capture time,
-provenance, omissions and configurable staleness stay visible. The fixture launcher
-uses a synthetic snapshot; an optional read-only provider accepts structured
-runtime projections without making FirstMate calls. See [work-view notes](docs/ui-work.md).
+provenance, omissions and configurable staleness stay visible. Work projects the
+existing runtime adapter’s imported fleet evidence by default, without making
+FirstMate calls during page reads. See [work-view notes](docs/ui-work.md).
 
 All forms post existing command envelopes to `POST /canonical`. CLI callers can
 apply the same envelope through the same function:
@@ -229,6 +232,13 @@ Storing them must not accidentally mean dispatch or completion is permitted:
   instruction and plan comparisons, no unresolved product questions, and evidence
   of the requested improvement. Each passing comparison cites the exact design,
   plan and detailed task revisions named by the review.
+
+A measurement claim can be `checked` only when at least one evidence entry has
+`measurement` naming its `method`, exact versioned `inputs`, `definition`, `unit`,
+`population` and `filters`, matching the claim's declared scope and computation.
+An unsubstantiated count can remain `reported` or `unknown`; validation does not
+invent a replacement number. Structured evidence records the supplied method and
+inputs; it does not execute the computation or certify its truth.
 
 **Semantic limit:** these validators do not understand natural-language scope.
 `ComparisonSchema` records the separate reviewer/source-comparison action with its

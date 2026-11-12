@@ -112,7 +112,7 @@ export function importLegacyTasks(store: ProjectStore, projectId: string, input:
         feature: null, criteria: [], detailedPlanTask: null, dependencies: [], legacy: true, disposition: { state: 'active' },
         importedExecution: { observedAt: snapshot.generated, state: typeof task.state === 'string' ? task.state : 'unknown', verification: 'unverified' } }));
     const project = projectRecord(store, projectId);
-    if (mappings.length || snapshot.backlog.records.some((task) => task.structured === false)) saveProject(store, project,
+    saveProject(store, project,
       { ...(project.integration ?? { state: 'enabled', outstandingConditions: [] }), observation: JSON.stringify({ snapshot }) }, mappings);
     return { mappings, omissions: snapshot.backlog.records.filter((task) => task.structured === false) };
   });

@@ -228,11 +228,25 @@ export const MeasurementClaimSchema = record('measurement_claim', {
   filters: z.array(TextSchema), inputs: z.array(ArtifactSchema).min(1),
   computationRef: SourceRefSchema, numerator: z.number().finite().optional(),
   denominator: z.number().finite().positive().optional(), observedAt: TimestampSchema,
-  state: ClaimStateSchema, correctionOf: RefSchema.optional(), evidence: z.array(EvidenceSchema),
+  state: ClaimStateSchema, correctionOf: RefSchema.optional(), evidence: z.array(EvidenceSchema.extend({
+    measurement: z.strictObject({
+      method: SourceRefSchema, definition: TextSchema, unit: TextSchema, population: TextSchema,
+      filters: z.array(TextSchema), inputs: z.array(ArtifactSchema).min(1),
+    }).optional(),
+  })),
 }).refine((value) => (value.numerator === undefined) === (value.denominator === undefined),
   'Ratio needs both numerator and non-zero denominator')
-  .refine((value) => value.state !== 'checked' || value.evidence.length > 0,
-    'Checked claim requires evidence');
+  .refine((value) => value.state !== 'checked' || value.evidence.some(({ measurement }) => {
+    if (!measurement) return false;
+    const artifacts = (inputs: typeof value.inputs) => inputs.map(input =>
+      JSON.stringify([input.uri, input.revision ?? null, input.digest ?? null])).sort();
+    return measurement.method.uri === value.computationRef.uri &&
+      measurement.method.record?.id === value.computationRef.record?.id &&
+      measurement.method.record?.revision === value.computationRef.record?.revision &&
+      measurement.definition === value.definition && measurement.unit === value.unit && measurement.population === value.population &&
+      JSON.stringify([...measurement.filters].sort()) === JSON.stringify([...value.filters].sort()) &&
+      JSON.stringify(artifacts(measurement.inputs)) === JSON.stringify(artifacts(value.inputs));
+  }), 'Checked claim requires evidence naming the method, inputs and matching measurement scope');
 
 export const ScopeChangeSchema = z.strictObject({
   featureId: IdSchema, fromRevision: RevisionSchema, toRevision: RevisionSchema,

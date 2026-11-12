@@ -56,12 +56,26 @@ feature is intentional; genuinely unlinked legacy work remains Unknown.
 
 ## Observational boundary
 
-`UiOptions.readSnapshot` is an optional, read-only provider of a validated
-`WorkSnapshotSchema` projection. It must read already available structured
-observations, not invoke FirstMate. At implementation time BUILD-15's
-`src/runtime.ts` was not on main. This interface is deliberately a **toolkit
-projection**, not an invented wire contract for `fm-fleet-snapshot.sh --json`.
-A runtime adapter can provide it once that structured read model is available.
+The default Work view reads the fleet snapshot saved in the project's integration
+observation by `importLegacyTasks` or `reconcileProject`. It validates that snapshot
+with the existing runtime adapter's `FleetSnapshotSchema` and projects it through
+`WorkSnapshotSchema`. HTTP and `scripts/ui.mjs` use this same path. Re-importing
+refreshes the observation even when every task already has a canonical mapping.
+
+The projection retains the fleet's generated timestamp, source home/provenance,
+unstructured backlog omissions and incomplete-inventory reason. A stale or unknown
+crew observation remains unknown, with its timestamp/freshness disclosed as an
+omission. An installed `done` state with a “ready for review” detail and PR URL
+supplies readiness. The last status-event age supplies its ready timestamp when
+available; absent timing remains unknown. The next action points to review using
+existing task/assignment delivery instructions, which remain unchanged. Runtime
+execution and waiting intervals are unknown because this wire format does not
+provide them. A PR URL alone does not establish readiness.
+
+`UiOptions.readSnapshot` remains an optional read-only override for existing
+structured providers and tests. It must read already available observations,
+not invoke FirstMate. Invalid overrides are visibly unknown rather than falling
+back to older evidence. Fixtures stay in tests.
 No terminal scraping, polling command, scheduling, mutation, model call or
 second persistence store is introduced here.
 
@@ -90,11 +104,10 @@ on the summary and every ready-work card without fetching or overwriting drafts.
 Reload re-reads the provider and local
 records; reads never retry mutations.
 
-The fixture launcher additionally loads `fixtures/ui-work-snapshot.json`.
-It labels all data synthetic, sets the sample snapshot time to launch time and
-its ready branch to thirty minutes earlier. It does not run FirstMate or claim
-a live fleet observation. Real provider integration and reconnect reconciliation
-remain with BUILD-15; durable browser recovery remains outside this change.
+The launcher requires an existing `SF_UI_DB` absolute SQLite path and
+`SF_UI_PROJECT` ID. It never creates demo tasks, imports synthetic records, or
+rebases observation times to launch time. Task edits optionally use
+`SF_UI_ADAPTER_CONFIG`; page reads use persisted observations only.
 
 ## Validation boundary
 

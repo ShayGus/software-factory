@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { applyCommand, manageExecutionTask, taskReadinessReasons, projectView, ref,
-  captureLearning, consolidateLearning, learningContext, activeGuidance, validateRecords, readFleetSnapshot, importLegacyTasks, workView, WorkSnapshotSchema,
+  captureLearning, consolidateLearning, learningContext, activeGuidance, validateRecords, readFleetSnapshot, importLegacyTasks, workView,
   RecordsSchema, buildEditCommand, type CaptureLearningInput } from '../../src/index.js';
 import { fakeJudge } from '../judge-helper.js';
 import { fakeTask } from '../task-wrapper-helper.js';
@@ -40,20 +40,17 @@ test('CHECK-09 — stale and omitted observations remain uncertain in the UI', a
   assert.ok(view.features[0]!.criteria.every(c => c.label.includes('Missing evidence')));
   assert.match(view.features[0]!.completeness, /^Incomplete/);
   const fleet = readFleetSnapshot(flow.runtimeAdapter);
+  fleet.generated = new Date(Date.now() - 120_000).toISOString();
+  for (const task of fleet.tasks) task.current_state = { state: 'unknown', freshness: 'stale', observed_at: fleet.generated };
   fleet.backlog.records.push({ id: null, structured: false, raw: 'Unstructured current work has no trustworthy task identity' });
   fleet.main_inventory = { valid: false, reason: 'unstructured current row', orphan_in_flight: [], unstructured_current_count: 1 };
   const snapshot = flow.executable('incomplete-fleet.cjs', `process.stdout.write(${JSON.stringify(JSON.stringify(fleet))});`);
-  const imported = importLegacyTasks(flow.store, projectId, { ...flow.runtimeAdapter, snapshotExecutable: snapshot });
+  const imported = importLegacyTasks(flow.store, projectId, { ...flow.runtimeAdapter, snapshotExecutable: snapshot, maxObservationAgeMs: 180_000 });
   assert.equal(imported.omissions.length, 1);
-  const observation = WorkSnapshotSchema.parse(JSON.parse(readFileSync(new URL('../../../fixtures/ui-work-snapshot.json', import.meta.url), 'utf8')));
-  observation.observedAt = new Date(Date.now() - 120_000).toISOString();
-  observation.omissions = imported.omissions.map(row => String(row.raw));
-  const unknown = observation.tasks[1]!;
-  observation.tasks = [{ ...unknown, firstMateTaskId: 'pilot-build' }];
-  const uiOptions = { projectId, readSnapshot: () => observation };
-  const workModel = workView(projectView(flow.store, uiOptions));
+  const uiOptions = { projectId };
+  const workModel = workView(projectView(flow.store, uiOptions, Date.now() + 120_000));
   assert.equal(workModel.stale, true);
-  assert.deepEqual(workModel.snapshot?.omissions, observation.omissions);
+  assert.ok(workModel.snapshot?.omissions.includes(String(imported.omissions[0]!.raw)));
   assert.ok(workModel.rows[0]?.unknowns.some(text => text.includes('Unknown')));
   const http = await flow.http(uiOptions);
   const overview = await http('GET', '/projects/project-1/overview'); assert.equal(overview.status, 200);
@@ -64,7 +61,7 @@ test('CHECK-09 — stale and omitted observations remain uncertain in the UI', a
   const work = await http('GET', '/projects/project-1/work');
   assert.equal(work.status, 200, work.text);
   assert.match(work.text, /Stale — FirstMate snapshot/);
-  assert.ok(work.text.includes('Unknown — omitted: ' + observation.omissions[0]));
+  assert.ok(work.text.includes('Unknown — omitted: ' + String(imported.omissions[0]!.raw)));
   assert.match(work.text, /Worker: Unknown · Execution: Unknown · Waiting: Unknown/);
   assert.match(work.text, /Feature completeness: Incomplete/);
 });
@@ -147,7 +144,7 @@ test('CHECK-11 — UI and agent writes share canonical records and task operatio
   assert.deepEqual(flow.store.get(projectId, 'request-1'), original);
 });
 
-test('CHECK-14 — wrong fixture cannot support a checked count', async t => {
+test('CHECK-14 — wrong fixture cannot support a checked count', t => {
   const flow = setup(t, 'CHECK-14');
   const claim = { kind: 'measurement_claim', id: 'wrong-count', projectId, schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at,
     claim: 'There are 99 supported systems.', definition: 'Count distinct supported system IDs', unit: 'systems', population: 'production fixture', filters: [],
@@ -155,7 +152,25 @@ test('CHECK-14 — wrong fixture cannot support a checked count', async t => {
     observedAt: at, state: 'checked', evidence: [{ artifact: { uri: 'fixture:unrelated-demo', revision: 'demo-v9' },
       description: 'Wrong demonstration fixture; never ran the declared production count', observedAt: at }] };
   const validation = validateRecords([...flow.store.history(projectId), claim]);
-  await t.test('CHECK-14 unresolved — checked count with mismatched inputs', { todo: 'Wrong input evidence accepted; see docs/release-checks.md' }, () => {
-    assert.equal(validation.ok, false, 'Wrong fixture/method must withhold checked status without guessing another number');
-  });
+  assert.equal(validation.ok, false, 'Wrong fixture/method must withhold checked status without guessing another number');
+  assert.ok(validation.issues.some(issue => issue.message.includes('matching measurement scope')), JSON.stringify(validation));
+  const measurement = { method: claim.computationRef, definition: claim.definition, unit: claim.unit,
+    population: claim.population, filters: claim.filters, inputs: claim.inputs };
+  const supported = { ...claim, evidence: [{ artifact: { uri: 'fixture:production-count-run', revision: 'run-1' },
+    description: 'Counted distinct production system IDs using the declared inputs', observedAt: at, measurement }] };
+  assert.equal(validateRecords([...flow.store.history(projectId), supported]).ok, true);
+  for (const mismatch of [
+    { method: { uri: 'fixture:other-method' } },
+    { inputs: [{ uri: 'fixture:unrelated-demo', revision: 'demo-v9' }] },
+    { inputs: [{ uri: 'fixture:production-systems', revision: 'wrong-revision' }] },
+    { inputs: [...claim.inputs, { uri: 'fixture:extra', revision: 'v1' }] },
+    { population: 'demo fixture' }, { definition: 'Count rows including duplicates' },
+    { unit: 'rows' }, { filters: ['demo only'] },
+  ]) {
+    const unsupported = { ...supported, evidence: [{ ...supported.evidence[0]!, measurement: { ...measurement, ...mismatch } }] };
+    assert.equal(validateRecords([...flow.store.history(projectId), unsupported]).ok, false, JSON.stringify(mismatch));
+  }
+  const reported = { ...claim, state: 'reported' };
+  assert.equal(validateRecords([...flow.store.history(projectId), reported]).ok, true);
+  assert.equal(reported.claim, claim.claim, 'Unsupported reports retain the exact claim; no replacement count is invented');
 });

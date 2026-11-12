@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { queueCorrection, deliverCorrection, ref, validateReviewForCompletion, validateAssignmentForDispatch,
   queueManagedTask, reconcileManagedTask, disableProject, reconcileProject, backupProject, restoreProjectBackup,
-  ProjectStore, readFleetSnapshot, projectView, workView, WorkSnapshotSchema, importLegacyTasks } from '../../src/index.js';
+  ProjectStore, readFleetSnapshot, projectView, workView, importLegacyTasks } from '../../src/index.js';
 import { setup, cases, correction, taskCommand, projectId } from './helper.js';
 
 // Shell transport only. Its durable message envelope is the installed
@@ -107,8 +107,7 @@ test('CHECK-17 — rewind names the existing worker or reports unsupported witho
   assert.equal(recorded.correction?.assignment.id, 'assignment-1');
 });
 
-// Work rendering exists; distinguish a valid toolkit projection from the
-// missing production connection to the installed fleet adapter.
+// Installed-shape fleet evidence reaches the default Work model and HTTP view.
 test('CHECK-18 — ready PR retains age, next action and blockers as queues grow', async t => {
   const flow = setup(t, 'CHECK-18', undefined, false);
   const rows = flow.runtime.read(); rows[0]!.current_state.state = 'done';
@@ -129,31 +128,26 @@ test('CHECK-18 — ready PR retains age, next action and blockers as queues grow
   const original = flow.store.get(projectId, 'request-1'); assert.ok(original?.kind === 'request');
   assert.equal(original.originalText, cases['CHECK-18']!.originalRequest);
   const readyRef = (observed.tasks[0]!.pr as { url: string }).url;
-  const snapshot = WorkSnapshotSchema.parse(JSON.parse(readFileSync(new URL('../../../fixtures/ui-work-snapshot.json', import.meta.url), 'utf8')));
-  snapshot.observedAt = new Date().toISOString();
-  snapshot.tasks[0]!.ready = [{ kind: 'pr', reference: readyRef,
-    readySince: new Date(Date.now() - 120_000).toISOString(), nextAction: 'Independent product review using the settled local-only delivery instructions' }];
-  const options = { projectId, readSnapshot: () => snapshot };
-  const model = workView(projectView(flow.store, options));
-  assert.equal(model.ready[0]?.reference, readyRef); assert.equal(model.ready[0]?.age, '2 min');
+  importLegacyTasks(flow.store, projectId, flow.runtimeAdapter);
+  flow.reopen();
+  const model = workView(projectView(flow.store, { projectId }));
   assert.ok(model.ready[0]?.row?.reasons.some(reason => reason.includes('Review wait')));
   const before = flow.store.exportProject(projectId);
-  const http = await flow.http(options);
+  const runtimeReads = readFileSync(join(flow.directory, 'runtime-reads'), 'utf8');
+  const http = await flow.http();
   const work = await http('GET', '/projects/project-1/work'); assert.equal(work.status, 200, work.text);
-  assert.ok(work.text.includes(readyRef)); assert.match(work.text, /Next action: Independent product review/);
-  assert.match(work.text, /Ready since:/); assert.match(work.text, /Feature completeness: Incomplete/);
+  assert.match(work.text, /Feature completeness: Incomplete/);
+  assert.ok(model.ready.some(item => item.reference === readyRef), 'Imported readiness reaches the default Work view');
+  assert.equal(model.ready[0]?.age, '2 min');
+  assert.ok(work.text.includes(readyRef));
+  assert.match(work.text, /Next action: Review the observed PR using the existing task and assignment delivery instructions/);
   assert.deepEqual(flow.store.exportProject(projectId), before, 'Reads reuse settled intent without generating new instructions or decisions');
-  // Import real adapter evidence as the existing runtime path does. The default
-  // API does not connect that observation to BUILD-13's separate WorkSnapshot.
+  assert.equal(readFileSync(join(flow.directory, 'runtime-reads'), 'utf8'), runtimeReads, 'HTTP reads do not refresh the fleet or reset its age');
+  // Re-import updates observations even when every native ID already has a mapping.
+  const refreshed = snapshotRows.map(row => row.id === 'pilot-build' ? { ...row, pr: null } : row);
+  writeFileSync(flow.runtime.statePath, JSON.stringify(refreshed));
   importLegacyTasks(flow.store, projectId, flow.runtimeAdapter);
-  const defaultHttp = await flow.http();
-  const defaultWork = await defaultHttp('GET', '/projects/project-1/work'); assert.equal(defaultWork.status, 200);
-  assert.match(defaultWork.text, /Unknown — ready-work observations unavailable/);
-  const defaultModel = workView(projectView(flow.store, { projectId }));
-  await t.test('CHECK-18 unresolved — installed fleet evidence is not projected into Work', {
-    todo: 'Production runtime-to-WorkSnapshot connection absent; see docs/release-checks.md',
-  }, () => {
-    assert.ok(defaultModel.ready.some(item => item.reference === readyRef),
-      'Recorded installed readiness is unavailable to the default Work view without a caller-authored projection');
-  });
+  assert.equal(workView(projectView(flow.store, { projectId })).ready.length, 0);
+  assert.deepEqual(flow.store.get(projectId, 'request-1'), original);
+  assert.deepEqual(flow.store.get(projectId, 'plan-1'), plan);
 });
