@@ -6,6 +6,9 @@ const forms = [...document.querySelectorAll<HTMLFormElement>('form[data-editor]'
 const states = forms.map(() => ({ dirty: false, pending: undefined as CommandEnvelope | undefined, busy: false, version: 0, submittedVersion: 0 }));
 const protectedEdits = () => states.some((state) => state.dirty || state.pending || state.busy);
 const lastRefresh = Date.now();
+const configuredThreshold = Number(document.querySelector<HTMLElement>('main')?.dataset?.staleAfterMs);
+const staleAfterMs = Number.isFinite(configuredThreshold) && configuredThreshold > 0 ? configuredThreshold : 60000;
+const snapshotLabels = [...document.querySelectorAll<HTMLElement>('[data-snapshot-at]')];
 for (const form of forms) {
   const state = states[forms.indexOf(form)]!;
   const output = form.querySelector('output')!;
@@ -79,7 +82,12 @@ for (const form of forms) {
 window.addEventListener('beforeunload', (event) => { if (protectedEdits()) event.preventDefault(); });
 // Local reads refresh freshness only; unsaved editor values are never replaced.
 setInterval(() => {
-  if (Date.now() - lastRefresh > 60000) pageState.textContent = 'Stale — page was loaded over a minute ago. Reload to inspect current records.';
+  if (Date.now() - lastRefresh > staleAfterMs) pageState.textContent = 'Stale — page has exceeded its freshness threshold. Reload to inspect current records.';
+  for (const label of snapshotLabels) {
+    const at = label.dataset?.snapshotAt;
+    const threshold = Number(label.dataset?.staleAfterMs);
+    if (at && Date.now() - Date.parse(at) > threshold) label.textContent = `Stale — FirstMate snapshot taken ${at}`;
+  }
 }, 10000);
 window.addEventListener('online', () => { pageState.textContent = 'Stale — connection restored. Reload before starting a new edit.'; });
 window.addEventListener('offline', () => { pageState.textContent = 'Unknown — connection unavailable. Saved task outcomes may need reconciliation.'; });

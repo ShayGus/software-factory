@@ -1,15 +1,33 @@
 import { FirstMateTaskSchema } from './firstmate.js';
 import { ref, requestCoverage, unclassifiedRequests } from './intake.js';
 import type { Ref } from './primitives.js';
-import type { FactoryRecord, FeatureRevision, DesignRevision, ImplementationPlanRevision } from './records.js';
+import type { FactoryRecord, FeatureRevision, DesignRevision, ImplementationPlanRevision, TaskMapping } from './records.js';
 import { hasUnchangedFeatureScope, validateReviewForCompletion } from './rules.js';
 import { ProjectStore, StoreError } from './store.js';
 import { currentAssignmentAttempts } from './task-readiness.js';
 import { outstandingTaskCorrections } from './correction-state.js';
 import { bundleUrl, type BundleRefs } from './ui-bundle.js';
 
-export interface UiOptions { bundle?: { featureId: string; refs: BundleRefs }; projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string }
+export interface UiOptions { bundle?: { featureId: string; refs: BundleRefs }; projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string; readSnapshot?: () => unknown }
+export const uiStaleAfterMs = (value?: number) => value !== undefined && Number.isFinite(value) && value > 0 ? value : 60000;
 export const sameRef = (a: Ref | null | undefined, b: Ref | null | undefined) => !!a && !!b && a.id === b.id && a.revision === b.revision;
+/** Last validated BUILD-08 observation; reads never query or mutate FirstMate. */
+export function executionTaskView(records: FactoryRecord[], mapping: TaskMapping, options: UiOptions, now: number) {
+  const operation = mapping.management && records.find((record) => record.id === mapping.management!.operationId);
+  let task;
+  if (operation?.kind === 'operation' && operation.reconciliation) {
+    try {
+      const parsed = FirstMateTaskSchema.safeParse(JSON.parse(operation.reconciliation.note).task);
+      if (parsed.success && parsed.data.id === mapping.firstMateTaskId) task = parsed.data;
+    } catch { /* Malformed/missing observations are unknown, never empty work. */ }
+  }
+  const observedAt = operation?.kind === 'operation' ? operation.reconciliation?.observedAt : undefined;
+  const stale = !observedAt || Date.parse(observedAt) > now || now - Date.parse(observedAt) > uiStaleAfterMs(options.staleAfterMs);
+  return { mapping, operation, task, observedAt, stale,
+    priority: task?.priority,
+    label: operation?.kind === 'operation' && operation.state === 'unknown' ? 'Unknown outcome — reconciliation required' :
+      !task ? 'Unknown — execution observation unavailable' : stale ? `Stale — last observed ${task.state}` : `Observed — ${task.state}` };
+}
 export function projectView(store: ProjectStore, options: UiOptions, now = Date.now()) {
   const history = store.history(options.projectId);
   const records = store.records(options.projectId);
@@ -110,20 +128,7 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
     const corrections = records.filter((record): record is Extract<FactoryRecord, { kind: 'observation' }> => record.kind === 'observation' && !!record.correction &&
       (record.correction.affectedRevision.id === feature.id || assignments.some((assignment) => assignment.id === record.correction!.assignment.id)));
     const tasks = records.filter((record): record is Extract<FactoryRecord, { kind: 'task_mapping' }> => record.kind === 'task_mapping' && record.feature?.id === feature.id).map((mapping) => {
-      const operation = mapping.management && records.find((record) => record.id === mapping.management!.operationId);
-      let task;
-      if (operation?.kind === 'operation' && operation.reconciliation) {
-        try {
-          const parsed = FirstMateTaskSchema.safeParse(JSON.parse(operation.reconciliation.note).task);
-          if (parsed.success && parsed.data.id === mapping.firstMateTaskId) task = parsed.data;
-        } catch { /* Malformed/missing observations are unknown, never empty work. */ }
-      }
-      const observedAt = operation?.kind === 'operation' ? operation.reconciliation?.observedAt : undefined;
-      const stale = !observedAt || now - Date.parse(observedAt) > (options.staleAfterMs ?? 60000);
-      return { mapping, operation, task, observedAt, stale,
-        priority: task?.priority,
-        label: operation?.kind === 'operation' && operation.state === 'unknown' ? 'Unknown outcome — reconciliation required' :
-          !task ? 'Unknown — execution observation unavailable' : stale ? `Stale — last observed ${task.state}` : `Observed — ${task.state}` };
+      return executionTaskView(records, mapping, options, now);
     });
     return { feature, designs, design, displayDesign, designDrafts, plans, plan, displayPlan, planDrafts, editBundle, missingBundle, savedBundles, historicalDetails, assignments, reviews, criteria, decisions, corrections, tasks,
       stages: history.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> => record.kind === 'stage_revision' && record.feature.id === feature.id),

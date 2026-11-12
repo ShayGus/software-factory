@@ -38,7 +38,7 @@ from a `tasks-axi` install on `PATH`. Those are optional prerequisites, not
 requirements for `npm ci`, `npm test`, or type checking. This check never opens
 a real Beads database or starts Docker. See [the UI spike report](docs/ui-beads-scotty.md).
 
-## Local overview and feature UI — BUILD-12
+## Local feature, work and dependency UI — BUILD-12/13
 
 Start the fixture UI explicitly (this command is never run by tests):
 
@@ -55,6 +55,7 @@ and evidence are labeled **synthetic fixtures**. Each launch creates an isolated
 temporary SQLite database and task-wrapper fixture; Ctrl-C discards this session.
 It does not read or change an installed FirstMate workspace, Beads or Scotty data.
 `SF_SCOTTY_URL` is an optional plain link to an existing loopback Scotty origin.
+`SF_UI_STALE_AFTER_MS` configures snapshot/page freshness (default 60000).
 
 The overview keeps unmapped captured requests visible, separates requested
 outcomes from suggestions, lists missing
@@ -63,6 +64,16 @@ deferral. Feature detail shows the exact original request, readable design and
 detailed plan, revisions, criteria/evidence, corrections and affected attempts.
 A worker brief links to the exact plan task and plan revision that produced it.
 Returned or done tasks never establish feature completeness by themselves.
+
+Work and Dependencies navigation opens execution lists, prerequisites and
+consumers, product blockers, correction/review waits and explicit unknowns.
+Focused task pages retain their feature, detailed-plan-task and assignment links.
+Task forms support canonical priority, dependency add/remove, pause/resume and
+cancel operations. Ready branches or PRs show age since ready and the next action;
+execution and waiting times appear only when observed. Snapshot capture time,
+provenance, omissions and configurable staleness stay visible. The fixture launcher
+uses a synthetic snapshot; an optional read-only provider accepts structured
+runtime projections without making FirstMate calls. See [work-view notes](docs/ui-work.md).
 
 All forms post existing command envelopes to `POST /canonical`. CLI callers can
 apply the same envelope through the same function:
@@ -90,7 +101,7 @@ editors. Every task in the chosen bundle has an editor. Prior assignments retain
 existing reconciliation/receipt records. Unknown outcomes stay visible and block
 further edits; explicit reconciliation uses the existing CLI operation.
 
-`npm test` checks the two rendered screens, actual command/HTTP round trips in
+`npm test` checks the feature, work and dependency screens, actual command/HTTP round trips in
 memory, replay after later edits, stale revisions, source preservation, a missing
 criterion, brief traceability, and text state labels. These checks open no listener,
 browser, Beads database or external network connection. Browser end-to-end testing

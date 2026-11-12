@@ -1,0 +1,28 @@
+{
+  "observedAt": "2026-11-12T12:00:00Z",
+  "provenance": "Synthetic toolkit projection for fm-fleet-snapshot.sh --json; no FirstMate command was run",
+  "omissions": ["Historical execution and waiting intervals for pilot-verify are unavailable"],
+  "tasks": [
+    {
+      "firstMateTaskId": "pilot-build",
+      "workerState": "returned",
+      "executionMs": 5400000,
+      "waitingMs": 900000,
+      "reviewWait": "Independent product review pending",
+      "ready": [{
+        "kind": "branch",
+        "reference": "fixture/connected-system",
+        "readySince": "2026-11-12T11:30:00Z",
+        "nextAction": "Review the committed branch against the original request and both-system acceptance cases"
+      }]
+    },
+    {
+      "firstMateTaskId": "pilot-verify",
+      "workerState": null,
+      "executionMs": null,
+      "waitingMs": null,
+      "reviewWait": null,
+      "ready": null
+    }
+  ]
+}

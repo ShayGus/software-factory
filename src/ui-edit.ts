@@ -8,7 +8,7 @@ type ProductContext = { feature: FeatureRevision; design: DesignRevision; plan: 
 export type EditContext =
   | { kind: 'feature'; feature: FeatureRevision }
   | { kind: 'criterion'; feature: FeatureRevision; criterion: Criterion }
-  | { kind: 'task'; mapping: TaskMapping; action: 'set_priority' | 'edit_dependencies' | 'pause' | 'resume' }
+  | { kind: 'task'; mapping: TaskMapping; action: 'set_priority' | 'edit_dependencies' | 'pause' | 'resume' | 'cancel' }
   | (ProductContext & { kind: 'design' | 'plan' | 'plan-task'; taskId?: string });
 export type EditValues = Record<string, string>;
 const ref = ({ id, revision }: { id: string; revision: number }) => ({ id, revision });

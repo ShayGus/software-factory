@@ -34,6 +34,7 @@ the single TypeScript request handler; it contains no independent stub server.
 | `GET /` | Feature overview and focused feature/task editors |
 | `GET /projects/:project/features/:feature[?bundle=encoded-ref-JSON]` | Selected or explicitly named bundle, original request, revisions, plan tasks, briefs, criteria/evidence and corrections |
 | `GET /projects/:project/overview` | Read model, records and freshness metadata as JSON |
+| `GET /projects/:project/work`, `/dependencies`, `/work/:mapping` | BUILD-13 [work, dependency and focused task views](ui-work.md) |
 | `GET /projects/:project/inspect/:id?revision=N` | Readable record, revision history and related links |
 | `GET /projects/:project/records/:id?revision=N` | Existing read-only canonical record JSON |
 | `GET /canonical` | Command contract and field ownership |
@@ -60,6 +61,7 @@ and API responses disable caching. There is no login or remote-hosting mode.
 | Execution-task priority | BUILD-08 `manageExecutionTask`, action `set_priority` (0–4) |
 | Execution-task dependencies | BUILD-08 `edit_dependencies`, logical task IDs |
 | Execution-task deferral/resumption | BUILD-08 `pause` / `resume`; dated holds stay with FirstMate |
+| Execution-task cancellation | BUILD-08 `cancel`; product completeness remains independent |
 
 The combined design/plan envelope already existed in BUILD-02. Its application
 entry point now validates and commits design, plan and their task revisions in a
@@ -154,5 +156,6 @@ Per the task boundary, the local start command and optional Docker/Beads demo ar
 prepared but not launched. Browser end-to-end testing, real project integration
 and review by a separate agent remain later gates. Work/dependency screens,
 decision/learning editors, model/profile configuration and recovery are outside
-BUILD-12. Existing per-step agent configuration remains owned by BUILD-06/10/11;
+BUILD-12. [BUILD-13](ui-work.md) now provides the work/dependency screens on this same server.
+Existing per-step agent configuration remains owned by BUILD-06/10/11;
 this UI runs no agent and invents no substitute review policy.

@@ -9,11 +9,12 @@ import { spawnSync } from 'node:child_process';
 import {
   ProjectStore, RecordsSchema, ToolkitApi, buildEditCommand, createToolkitRequestHandler, projectView, renderFeature,
   type EditContext, type EditValues, type FactoryRecord, captureRequest, validateAssignmentForDispatch, checkPlanReadiness,
+  workView, WorkSnapshotSchema, type UiOptions,
 } from '../src/index.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 
 const fixture = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
-function setup(t: test.TestContext, history: FactoryRecord[] = fixture) {
+function setup(t: test.TestContext, history: FactoryRecord[] = fixture, options: Partial<UiOptions> = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'sf-ui-'));
   const database = join(directory, 'project.sqlite');
   const store = new ProjectStore(database);
@@ -25,7 +26,7 @@ function setup(t: test.TestContext, history: FactoryRecord[] = fixture) {
     state.tasks['pilot-verify'] = fakeTask('pilot-verify', { title: 'Second-system acceptance', priority: 2 });
   });
   const adapter = { fmHome: directory, tasksExecutable: backend.executable };
-  const api = new ToolkitApi(store, adapter, { projectId: 'project-1', fixture: true });
+  const api = new ToolkitApi(store, adapter, { projectId: 'project-1', fixture: true, ...options });
   const handler = createToolkitRequestHandler(api, { port: 4712 });
   async function http(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
     const raw = body === undefined ? '' : JSON.stringify(body);
@@ -627,4 +628,186 @@ test('review 1349 finding 4: named bundle main content, editors and evidence des
   assert.match(criteria, /Evidence revisions:[\s\S]*inspect\/design-1\?revision=1[\s\S]*inspect\/plan-1\?revision=1/u);
   assert.match(page.body, /Incomplete — product behavior still needs verification/u);
   assert.doesNotMatch(page.body, /Complete — current product review passed/u);
+});
+
+// BUILD-13 uses the same handler and canonical operation path as BUILD-12.
+const workSnapshot = WorkSnapshotSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-work-snapshot.json', import.meta.url), 'utf8')));
+const workScreens = ['/projects/project-1/work', '/projects/project-1/dependencies', '/projects/project-1/work/mapping-2'];
+for (const screen of workScreens) for (const action of ['set_priority', 'edit_dependencies', 'pause', 'cancel'] as const) test(`work action ${action} from ${screen} uses revision/idempotency protected BUILD-08`, async (t) => {
+  const flow = setup(t);
+  const page = await flow.http('GET', screen);
+  assert.equal(page.status, 200, page.body);
+  const editor = findEditor(page.body, 'task', action);
+  const { command } = await sendEdit(flow, editor, { priority: '0', dependencies: '' });
+  assert.equal(command.command, 'map_manage_execution_task');
+  assert.equal(command.targetId, 'mapping-2');
+  assert.equal(command.expectedRevision, 1);
+  assert.equal(command.idempotencyKey, 'edit-1');
+  const mapping = flow.store.get('project-1', 'mapping-2'); assert.ok(mapping?.kind === 'task_mapping');
+  assert.ok(mapping.revision > command.expectedRevision, 'Intent and reconciliation advance the canonical mapping');
+  const task = flow.backend.read().tasks['pilot-verify']!;
+  assert.notEqual(task.state, 'done');
+  if (action === 'set_priority') assert.equal(task.priority, 0);
+  if (action === 'cancel') {
+    assert.equal(mapping.disposition.state, 'cancelled');
+    assert.equal(editors((await flow.http('GET', screen)).body).some(({ context }) => context.kind === 'task' && context.mapping.id === mapping.id), false);
+  }
+  if (action === 'edit_dependencies') {
+    assert.deepEqual(task.deps, []);
+    const next = await flow.http('GET', screen);
+    await sendEdit(flow, findEditor(next.body, 'task', 'edit_dependencies'), { dependencies: 'pilot-build' }, 'add-prerequisite');
+    assert.deepEqual(flow.backend.read().tasks['pilot-verify']!.deps, [{ type: 'blocked-by', id: 'pilot-build' }]);
+  }
+  if (action === 'pause') {
+    assert.ok(task.hold);
+    const held = await flow.http('GET', screen);
+    assert.match(held.body, /Task is paused/u);
+    assert.match(held.body, /Hold:/u);
+    await sendEdit(flow, findEditor(held.body, 'task', 'resume'), {}, 'unhold-task');
+    assert.equal(flow.backend.read().tasks['pilot-verify']!.hold, null);
+  }
+});
+
+test('work and dependencies preserve blockers, correction deliveries, review waits and missing observations', async (t) => {
+  const history = structuredClone(fixture);
+  const correction = history.find((record) => record.kind === 'observation' && record.correction); assert.ok(correction?.kind === 'observation' && correction.correction);
+  correction.correction.facts = correction.correction.facts.filter((fact) => fact.fact !== 'incorporated');
+  const mapping = history.find((record) => record.id === 'mapping-2'); assert.ok(mapping?.kind === 'task_mapping');
+  mapping.dependencies.push('unobserved-prerequisite');
+  const flow = setup(t, history, { readSnapshot: () => workSnapshot });
+  for (const screen of workScreens.slice(0, 2)) {
+    const page = await flow.http('GET', screen);
+    assert.match(page.body, /Product readiness — selected plan is incomplete or stale/u);
+    assert.match(page.body, /Unresolved correction delivery\/incorporation: observation-1/u);
+    assert.match(page.body, /Review wait: Independent product review pending/u);
+    assert.match(page.body, /Review wait — current product behavior still needs verification/u);
+    assert.match(page.body, /Dependency unobserved-prerequisite: Unknown/u);
+    assert.match(page.body, /Worker: Unknown · Execution: Unknown · Waiting: Unknown/u);
+    assert.match(page.body, /Unknown — omitted: Historical execution and waiting intervals/u);
+    assert.match(page.body, /inspect\/feature-1\?revision=1/u);
+    assert.match(page.body, /inspect\/task-1\?revision=1/u);
+    assert.match(page.body, /inspect\/assignment-1\?revision=1/u);
+    assert.doesNotMatch(page.body, /Execution: 0|Waiting: 0/u);
+  }
+  assert.equal(flow.backend.read().calls.length, 0, 'Read views never query FirstMate');
+});
+
+test('focused work retains exact feature, plan-task and assignment links; returned worker is not completion', async (t) => {
+  const flow = setup(t, fixture, { readSnapshot: () => workSnapshot });
+  const before = flow.store.exportProject('project-1');
+  const list = await flow.http('GET', '/projects/project-1/work');
+  assert.match(list.body, /href="\/projects\/project-1\/work\/mapping-1"/u);
+  const page = await flow.http('GET', '/projects/project-1/work/mapping-1');
+  assert.match(page.body, /Worker: returned/u);
+  assert.match(page.body, /Execution: 1 h 30 min · Waiting: 15 min/u);
+  for (const id of ['feature-1', 'task-1', 'assignment-1']) assert.ok(page.body.includes(`/inspect/${id}?revision=1`));
+  assert.match(page.body, /Feature completeness: Incomplete/u);
+  assert.doesNotMatch(page.body, /Complete — current product review passed/u);
+  assert.deepEqual(flow.store.exportProject('project-1'), before);
+  assert.equal((await flow.http('GET', '/projects/project-1/work/missing')).status, 404);
+});
+
+test('ready PR age and next action come only from observations and snapshot freshness uses its own timestamp', async (t) => {
+  const snapshot = structuredClone(workSnapshot);
+  const reference = 'https://example.test/forge/pull/13';
+  snapshot.tasks[0]!.ready = [{ kind: 'pr', reference, readySince: '2026-11-12T11:30:00Z', nextAction: 'Independent review against the plan' }];
+  const flow = setup(t, fixture, { readSnapshot: () => snapshot, staleAfterMs: 120000 });
+  const now = Date.parse('2026-11-12T12:01:00Z');
+  const fresh = workView(projectView(flow.store, flow.api.options, now));
+  assert.equal(fresh.ready[0]!.age, '31 min');
+  assert.equal(fresh.stale, false);
+  assert.equal(fresh.snapshot?.provenance, snapshot.provenance);
+  const stale = workView(projectView(flow.store, flow.api.options, now + 120001));
+  assert.equal(stale.stale, true);
+  assert.match(stale.snapshotLabel, /^Stale — FirstMate snapshot taken 2026-11-12T12:00:00Z/u);
+  const page = await flow.http('GET', '/projects/project-1/work');
+  assert.ok(page.body.includes(`href="${reference}"`));
+  assert.match(page.body, /Next action: Independent review against the plan/u);
+  assert.match(page.body, /data-stale-after-ms="120000"/u);
+  assert.match(page.body, /Stale — FirstMate snapshot taken/u);
+  assert.match(page.body, /Ready since: 2026-11-12T11:30:00Z/u);
+});
+
+for (const [name, readSnapshot] of [
+  ['missing', () => undefined], ['malformed', () => ({ tasks: [] })],
+  ['future', () => ({ ...workSnapshot, observedAt: '2099-01-01T00:00:00Z' })],
+  ['failure', () => { throw new Error('Unavailable'); }],
+] as const) test(`${name} snapshot stays Unknown instead of an empty fleet`, async (t) => {
+  const flow = setup(t, fixture, { readSnapshot });
+  const page = await flow.http('GET', '/projects/project-1/work');
+  assert.match(page.body, /Unknown — .*FirstMate snapshot/u);
+  assert.match(page.body, /Unknown — ready-work observations unavailable/u);
+  assert.match(page.body, /Worker: Unknown · Execution: Unknown · Waiting: Unknown/u);
+  assert.doesNotMatch(page.body, /No ready PR or branch reported/u);
+  assert.equal(flow.backend.read().calls.length, 0);
+});
+
+test('partial and ambiguous ready observations keep unknown age, action, and worker state', (t) => {
+  const snapshot = structuredClone(workSnapshot);
+  snapshot.tasks[0]!.ready = [{ kind: 'branch', reference: 'ready-without-timing', readySince: null, nextAction: null }];
+  const flow = setup(t, fixture, { readSnapshot: () => snapshot });
+  let work = workView(projectView(flow.store, flow.api.options));
+  assert.equal(work.ready[0]!.age, 'Unknown');
+  assert.equal(work.ready[0]!.nextAction, null);
+  snapshot.tasks.push(structuredClone(snapshot.tasks[0]!));
+  work = workView(projectView(flow.store, flow.api.options));
+  assert.equal(work.ready.length, 0);
+  assert.ok(work.rows[0]!.unknowns.includes('Unknown — ambiguous worker observations'));
+  assert.equal(work.rows[0]!.observation, undefined);
+});
+
+test('lost work mutation output locks every action while preserving blockers and context', async (t) => {
+  const flow = setup(t);
+  const editor = findEditor((await flow.http('GET', '/projects/project-1/work')).body, 'task', 'set_priority');
+  flow.backend.edit((state) => { state.failure = { action: 'update', when: 'after' }; });
+  const command = buildEditCommand(editor.context, { priority: '0', reason: 'Change execution priority' }, 'work-lost-key', new Date().toISOString());
+  const result = await flow.http('POST', '/canonical', command);
+  assert.equal(result.status, 202);
+  for (const screen of workScreens) {
+    const page = await flow.http('GET', screen);
+    assert.match(page.body, /Unknown outcome — reconciliation required/u);
+    assert.match(page.body, /Edits unavailable — inspect and reconcile/u);
+    assert.match(page.body, /Product readiness/u);
+    assert.equal(editors(page.body).some(({ context }) => context.kind === 'task' && context.mapping.id === 'mapping-2'), false);
+  }
+  const calls = flow.backend.read().calls.length;
+  assert.deepEqual((await flow.http('POST', '/canonical', command)).json(), result.json());
+  assert.equal(flow.backend.read().calls.length, calls);
+});
+
+test('observed zero time differs from unknown time and unmapped ready work remains visible', async (t) => {
+  const snapshot = structuredClone(workSnapshot);
+  snapshot.tasks[0]!.executionMs = 0;
+  snapshot.tasks[0]!.waitingMs = null;
+  snapshot.tasks.push({ firstMateTaskId: 'unmapped-ready-task', workerState: 'returned', executionMs: null, waitingMs: null,
+    reviewWait: null, ready: [{ kind: 'branch', reference: 'unmapped/ready-branch', readySince: null, nextAction: null }] });
+  const flow = setup(t, fixture, { readSnapshot: () => snapshot });
+  const page = await flow.http('GET', '/projects/project-1/work');
+  assert.match(page.body, /Execution: 0 ms · Waiting: Unknown/u);
+  assert.match(page.body, /unmapped\/ready-branch/u);
+  assert.match(page.body, /unmapped-ready-task — Unknown task mapping/u);
+  assert.match(page.body, /Age since ready: Unknown · Ready since: Unknown · Next action: Unknown/u);
+});
+
+test('legacy execution mappings stay visible with unknown feature context and plain read-only Scotty navigation', async (t) => {
+  const history = structuredClone(fixture);
+  const mapping = history.find((record) => record.id === 'mapping-2'); assert.ok(mapping?.kind === 'task_mapping');
+  mapping.feature = null; mapping.criteria = []; mapping.detailedPlanTask = null; mapping.legacy = true;
+  const flow = setup(t, history, { scottyUrl: 'http://127.0.0.1:3186' });
+  const page = await flow.http('GET', '/projects/project-1/dependencies');
+  assert.match(page.body, /Feature: Unknown — feature not linked/u);
+  assert.match(page.body, /Unknown — detailed plan task unavailable/u);
+  assert.match(page.body, /href="http:\/\/127\.0\.0\.1:3186" rel="noreferrer">Scotty execution list \(read-only\)/u);
+  assert.equal(flow.backend.read().calls.length, 0);
+});
+
+test('snapshot content and ready references stay escaped text rather than executable markup', async (t) => {
+  const snapshot = structuredClone(workSnapshot);
+  snapshot.provenance = '<script>untrusted()</script>';
+  snapshot.tasks[0]!.ready = [{ kind: 'branch', reference: 'javascript:untrusted()', readySince: null, nextAction: '<img src=x onerror=untrusted()>' }];
+  const flow = setup(t, fixture, { readSnapshot: () => snapshot });
+  const page = await flow.http('GET', '/projects/project-1/work');
+  assert.match(page.body, /&lt;script&gt;untrusted\(\)&lt;\/script&gt;/u);
+  assert.match(page.body, /&lt;img src=x onerror=untrusted\(\)&gt;/u);
+  assert.doesNotMatch(page.body, /href="javascript:|<img|<script>untrusted/u);
 });

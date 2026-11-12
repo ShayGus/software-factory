@@ -5,7 +5,7 @@ import { IdSchema } from './primitives.js';
 import { type TaskAdapterOptions } from './tasks.js';
 import { applyCommand } from './application.js';
 import { projectView, featureView, type UiOptions } from './ui-state.js';
-import { renderOverview, renderFeature, renderRecord } from './ui-pages.js';
+import { renderOverview, renderFeature, renderRecord, renderWork } from './ui-pages.js';
 import { ProjectStore, StoreError } from './store.js';
 
 /** BUILD-05 field ownership retained by the focused toolkit editors. */
@@ -50,6 +50,9 @@ export class ToolkitApi {
       if (method === 'GET' && parts[0] === 'projects' && parts[1]) {
         const options = { ...this.options, projectId: parts[1] };
         if (parts.length === 3 && parts[2] === 'overview') return { status: 200, body: projectView(this.store, options) };
+        if ((parts.length === 3 && ['work', 'dependencies'].includes(parts[2]!)) || (parts.length === 4 && parts[2] === 'work')) {
+          return { status: 200, body: renderWork(projectView(this.store, options), parts[2] === 'dependencies', parts[3]), contentType: 'text/html; charset=utf-8' };
+        }
         if (parts.length === 4 && parts[2] === 'features') {
           const raw = url.searchParams.get('bundle');
           const view = projectView(this.store, raw === null ? options : { ...options, bundle: { featureId: parts[3]!, refs: BundleRefsSchema.parse(JSON.parse(raw)) } });

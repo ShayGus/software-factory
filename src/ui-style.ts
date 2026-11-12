@@ -20,6 +20,7 @@ section { margin-top:3rem; padding-top:1.5rem; border-top:1px solid var(--line);
 article { padding:1.2rem 0; }
 article + article, .plan-tasks > li + li { border-top:1px solid var(--line); }
 .feature-row { display:grid; grid-template-columns:minmax(0,2fr) minmax(240px,1fr); gap:2rem; }
+.task-row { overflow-wrap:anywhere; }
 .prose, blockquote { max-width:75ch; white-space:pre-wrap; overflow-wrap:anywhere; }
 blockquote { margin:1rem 0; padding:1.2rem; background:#e9efea; font-size:1.1rem; }
 .notice { display:flex; flex-wrap:wrap; justify-content:space-between; gap:.4rem 1rem; color:var(--muted); font-size:.85rem; }

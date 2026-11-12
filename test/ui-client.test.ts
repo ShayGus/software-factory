@@ -115,3 +115,26 @@ test('review 1335: an artifact save reloads with its exact returned bundle URL',
   assert.deepEqual(form.assigned, [resumeUrl]);
   assert.equal(form.reloads(), 0);
 });
+
+test('work snapshot becomes stale at the configured threshold without polling or replacing drafts', () => {
+  const source = readFileSync(new URL('../src/ui-client.js', import.meta.url), 'utf8').replace(/^import .*;\n/gmu, '');
+  const at = '2026-11-12T12:00:00Z';
+  let now = Date.parse(at);
+  const pageState = { textContent: '' };
+  const snapshot = { textContent: `Observed — FirstMate snapshot taken ${at}`, dataset: { snapshotAt: at, staleAfterMs: '120000' } };
+  let tick = () => {};
+  runInNewContext(source, { buildEditCommand,
+    document: { querySelector: (selector: string) => selector === 'main' ? { dataset: { staleAfterMs: '120000' } } : pageState,
+      querySelectorAll: (selector: string) => selector === '[data-snapshot-at]' ? [snapshot] : [] },
+    Date: class extends Date { static now() { return now; } },
+    window: { addEventListener() {} },
+    setInterval(callback: () => void) { tick = callback; },
+    fetch() { assert.fail('Freshness must not poll FirstMate or the network'); },
+  });
+  now += 61000; tick();
+  assert.match(snapshot.textContent, /^Observed/u);
+  assert.equal(pageState.textContent, '');
+  now += 60000; tick();
+  assert.match(snapshot.textContent, /^Stale — FirstMate snapshot taken/u);
+  assert.match(pageState.textContent, /^Stale — page has exceeded its freshness threshold/u);
+});
