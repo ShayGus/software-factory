@@ -1,4 +1,4 @@
-import { markdownSectionRange } from './markdown-sections.js';
+import { legacyContextSections } from './learning-context.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -8,7 +8,7 @@ import { EvidenceSchema } from './primitives.js';
 import { ref, stableId } from './intake.js';
 import { type FactoryRecord, type Project, TaskMappingSchema } from './records.js';
 import { readFleetSnapshot, RuntimeAdapterSchema, type RuntimeAdapter } from './runtime.js';
-import { ProjectExportSchema, ProjectStore, StoreError } from './store.js';
+import { ProjectExportSchema, ProjectStore, StoreError, type ProjectExport } from './store.js';
 import { TaskWrapper, TaskAdapterOptionsSchema, type TaskAdapterOptions } from './tasks.js';
 import { taskReadinessReasons } from './task-readiness.js';
 
@@ -125,22 +125,19 @@ const localPath = (uri: string, base?: string, unresolved?: Set<string>) => {
   if (base) return resolve(base, uri);
   unresolved?.add(uri); return undefined;
 };
-type SectionIdentity = { heading: string; digest: string };
-function referencedArtifacts(value: unknown, found = new Map<string, string[]>(), base?: string, unresolved?: Set<string>, sections = new Map<string, SectionIdentity[]>()) {
-  if (Array.isArray(value)) for (const item of value) referencedArtifacts(item, found, base, unresolved, sections);
+type SectionContext = { uri: string; records: FactoryRecord[] };
+function referencedArtifacts(value: unknown, found = new Map<string, string[]>(), base?: string, unresolved?: Set<string>) {
+  if (Array.isArray(value)) for (const item of value) referencedArtifacts(item, found, base, unresolved);
   else if (value && typeof value === 'object') {
     const object = value as Record<string, unknown>;
     if (typeof object.uri === 'string') {
       const path = localPath(object.uri, base, unresolved);
       if (path) {
-        const digest = typeof object.digest === 'string' ? object.digest : undefined;
-        const section = digest && typeof object.heading === 'string' ? { heading: object.heading, digest } : undefined;
-        if (section) {
-          const retained = sections.get(path) ?? [];
-          if (!retained.some((entry) => entry.heading === section.heading && entry.digest === section.digest)) sections.set(path, [...retained, section]);
-        }
+        // Section identities are selected through the current adoption lineage,
+        // never promoted into whole-file constraints by this recursive scan.
+        const digest = typeof object.digest === 'string' && typeof object.heading !== 'string' ? object.digest : undefined;
         const prior = found.get(path) ?? [];
-        found.set(path, [...new Set([...prior, ...(digest && !section ? [digest] : [])])]);
+        found.set(path, [...new Set([...prior, ...(digest ? [digest] : [])])]);
       }
     }
     // Saved brief and return locations are local artifacts too.
@@ -149,21 +146,31 @@ function referencedArtifacts(value: unknown, found = new Map<string, string[]>()
         const expected = key === 'sidecarPath' && typeof object.sidecarDigest === 'string' && object.sidecarDigest.startsWith('sha256:') ? [object.sidecarDigest] : [];
         found.set(item, [...new Set([...(found.get(item) ?? []), ...expected])]);
       }
-      referencedArtifacts(item, found, base, unresolved, sections);
+      referencedArtifacts(item, found, base, unresolved);
     }
   }
   return found;
 }
-function artifactIdentities(value: unknown, base?: string, unresolved?: Set<string>) {
-  const sections = new Map<string, SectionIdentity[]>();
-  return { files: referencedArtifacts(value, undefined, base, unresolved, sections), sections };
+function artifactIdentities(project: ProjectExport, base?: string, unresolved?: Set<string>) {
+  const files = referencedArtifacts(project, undefined, base, unresolved);
+  const sections = new Map<string, SectionContext[]>();
+  const adoptedUris = new Set(project.history.flatMap((record) => record.kind === 'guidance_revision' ?
+    (record.legacyReplacements ?? []).map((replacement) => replacement.uri) : []));
+  for (const uri of adoptedUris) {
+    const path = localPath(uri, base, unresolved);
+    if (path) sections.set(path, [...(sections.get(path) ?? []), { uri, records: project.history }]);
+  }
+  return { files, sections };
 }
-function mismatchingSection(content: Buffer, sections: SectionIdentity[] = []) {
+function mismatchingSection(content: Buffer, sections: SectionContext[] = []) {
   const text = content.toString('utf8');
-  return sections.find((section) => {
-    try { return sha(markdownSectionRange(text, section.heading).before) !== section.digest; }
-    catch { return true; }
-  });
+  for (const section of sections) {
+    // Context assembly selects the current covering adoption before validating
+    // bytes. Superseded snapshots stay in history, not in live restore duties.
+    try { legacyContextSections(section.records, section.uri, text); }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  }
+  return undefined;
 }
 const BackupArtifactSchema = z.strictObject({ path: z.string().refine(isAbsolute), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).nullable(),
   expectedDigests: z.array(z.string()).optional(), content: z.string().nullable(), issue: z.enum(['missing', 'changed']).optional() });
@@ -200,7 +207,7 @@ export function backupProject(store: ProjectStore, projectId: string, artifactBa
       projectDigest: sha(JSON.stringify(project)), ...(base ? { artifactBase: base } : {}), unresolvedReferences: [...unresolved], excludedDirectories, artifacts });
   });
 }
-function inspectArtifacts(artifacts: { path: string; digest: string | null }[], sections: Map<string, SectionIdentity[]>) {
+function inspectArtifacts(artifacts: { path: string; digest: string | null }[], sections: Map<string, SectionContext[]>) {
   return artifacts.flatMap<{ path: string; issue: 'missing' | 'changed' | 'verification_required' }>(({ path, digest }) => {
     try {
       const content = readFileSync(path);
@@ -261,7 +268,7 @@ export function resolveRestoredReference(store: ProjectStore, input: unknown) {
       const content = readFileSync(path);
       if (!data.digest || sha(content) !== data.digest) throw new Error('resolved_reference_digest_mismatch');
       const mismatch = mismatchingSection(content, identities.sections.get(path));
-      if (mismatch) throw new Error(`resolved_reference_section_digest_mismatch: ${data.reference} ${mismatch.heading}`);
+      if (mismatch) throw new Error(`resolved_reference_section_digest_mismatch: ${data.reference} ${mismatch}`);
     }
     const retained = artifacts.filter((entry) => entry.path !== path);
     if (!directory) retained.push({ path, digest: data.digest! });

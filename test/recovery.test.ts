@@ -907,3 +907,55 @@ try {
     assert.equal(reconcileProject(changedRestore, projectId, flow.adapter).state, 'reconciling');
   } finally { changedRestore.close(); }
 });
+
+for (const scenario of [
+  { name: 'changed section re-adoption', before: '# Memory\n\n## Rule\nOld advice.\n\n## Notes\nOther content.\n',
+    after: '# Memory\n\n## Rule\nUpdated advice.\n\n## Notes\nOther content.\n', oldHeadings: ['## Rule'], heading: '## Rule' },
+  { name: 'replacement by a covering parent', before: '# Memory\n\n## Parent\nOld parent.\n\n### Child\nOld child.\n\n## Notes\nOther content.\n',
+    after: '# Memory\n\n## Parent\nReplacement parent without the child heading.\n\n## Notes\nOther content.\n', oldHeadings: ['## Parent', '### Child'], heading: '## Parent' },
+]) test(`review 1370-3: ${scenario.name} restores using current covering adoption`, async t => {
+  const flow = setup(t, true); const reference = 'memory.md'; const path = join(flow.home, reference);
+  const config = flow.save('adoption-scenario.json', scenario);
+  const seeded = spawnSync(process.execPath, ['--input-type=module', '-e', `
+import { readFileSync, writeFileSync } from 'node:fs';
+import { ProjectStore, captureLearning, readLegacySection, ref } from ${JSON.stringify(fileURLToPath(new URL('../src/index.js', import.meta.url)))};
+const config = JSON.parse(readFileSync(${JSON.stringify(config)}, 'utf8'));
+const store = new ProjectStore(${JSON.stringify(flow.database)});
+const capture = (id, headings, supersedes) => {
+  const at = new Date().toISOString();
+  return captureLearning(store, { projectId: 'project-1', id, idempotencyKey: id, issuedAt: at,
+    identity: { scope: { kind: 'project' }, topic: 'memory-policy' }, finding: id + ' explicit policy',
+    inputKind: 'standing_instruction', captureReason: 'direct', supersedes,
+    legacySections: headings.map(heading => readLegacySection('memory.md', heading)),
+    evidence: [{ artifact: { uri: 'memory.md', revision: id }, description: 'Standing memory policy', observedAt: at }] });
+};
+try {
+  writeFileSync('memory.md', config.before); capture('adopt-old', config.oldHeadings, []);
+  writeFileSync('memory.md', config.after); capture('adopt-new', [config.heading], [ref(store.get('project-1', 'adopt-old:guidance'))]);
+} finally { store.close(); }
+`], { cwd: flow.home, encoding: 'utf8' });
+  assert.equal(seeded.status, 0, seeded.stderr);
+  const { projectLegacyContext } = await import('../src/index.js');
+  assert.doesNotThrow(() => projectLegacyContext(flow.store.history(projectId), reference, scenario.after));
+  const bundle = backupProject(flow.store, projectId); rmSync(path);
+  const restored = new ProjectStore(join(flow.home, 'current-adoption.sqlite'));
+  try {
+    restoreProjectBackup(restored, bundle, flow.home); writeFileSync(path, scenario.after);
+    for (const unresolved of bundle.unresolvedReferences) {
+      const source = join(flow.home, unresolved); const digest = digestText(readFileSync(source, 'utf8'));
+      resolveRestoredReference(restored, { projectId, reference: unresolved, base: flow.home, digest,
+        evidence: [{ artifact: { uri: source, digest }, description: 'Current recovered memory source', observedAt: new Date().toISOString() }] });
+    }
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
+    const learningHistory = (records: ReturnType<ProjectStore['history']>) => records.filter((record) =>
+      record.kind === 'observation' || record.kind === 'guidance_revision');
+    assert.deepEqual(learningHistory(restored.history(projectId)), learningHistory(bundle.project.history));
+  } finally { restored.close(); }
+  const based = backupProject(flow.store, projectId, flow.home);
+  assert.equal(based.artifacts.some((artifact) => artifact.path === path && artifact.issue === 'changed'), false);
+  const basedRestore = new ProjectStore(join(flow.home, 'current-adoption-with-base.sqlite'));
+  try {
+    restoreProjectBackup(basedRestore, based, flow.home);
+    assert.equal(reconcileProject(basedRestore, projectId, flow.adapter).state, 'enabled');
+  } finally { basedRestore.close(); }
+});
