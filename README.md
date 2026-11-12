@@ -56,7 +56,8 @@ temporary SQLite database and task-wrapper fixture; Ctrl-C discards this session
 It does not read or change an installed FirstMate workspace, Beads or Scotty data.
 `SF_SCOTTY_URL` is an optional plain link to an existing loopback Scotty origin.
 
-The overview separates requested outcomes from suggestions, lists missing
+The overview keeps unmapped captured requests visible, separates requested
+outcomes from suggestions, lists missing
 criteria and open questions, and edits feature/task priorities, dependencies and
 deferral. Feature detail shows the exact original request, readable design and
 detailed plan, revisions, criteria/evidence, corrections and affected attempts.
@@ -72,9 +73,13 @@ node dist/src/cli.js apply-command --db /absolute/project.sqlite --input /absolu
 ```
 
 Every edit supplies an idempotency key and expected revision. Stale edits return
-structured conflicts and preserve entered text; a retry reuses its command. Design,
+structured conflicts and preserve entered text; a retry reuses its command. Each
+form tracks its own drafts and pending command, and saving one form never reloads
+away other drafts or input entered during the save. Design,
 plan and task-detail edits create a coherent revisioned artifact set through
-`design_plan_feature` and clear readiness for rechecking with BUILD-06. Prior
+`design_plan_feature` and clear draft readiness for rechecking with BUILD-06.
+Stage and reuse selections remain explicit; newer unselected drafts are labeled
+separately from the selected design and plan. Prior
 assignments retain their old revision links. Task edits use BUILD-08 and its
 existing reconciliation/receipt records. Unknown outcomes stay visible and block
 further edits; explicit reconciliation uses the existing CLI operation.

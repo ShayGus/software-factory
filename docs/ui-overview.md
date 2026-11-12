@@ -65,11 +65,17 @@ The combined design/plan envelope already existed in BUILD-02. Its application
 entry point now validates and commits design, plan and their task revisions in a
 single store transaction. The editor includes expected revisions for the feature
 and each artifact, updates the internal revision references, clears readiness and
-marks source comparisons untested. Existing staged `recordStage` and
+marks source comparisons untested. Changed criterion references are reconciled
+across task criteria, slices and criterion dependencies. Priority-only feature
+decisions are linked through affectedRecords without changing product-scope
+decisions, preserving otherwise valid dispatch. Existing staged `recordStage` and
 `checkPlanReadiness` operations remain available through the same dispatcher and
-the original CLI. Historical stages and assignments are retained and visibly
-stale until checked against current revisions; an edit never claims a new product
-review or silently upgrades a worker's old instructions.
+the original CLI. Applicable stage and reuse records select the displayed artifacts, including an
+older selected design or plan with newer drafts. Readiness-check revisions remain
+linked to the selected detail stage. Newer drafts are labeled unselected; editing
+a selected older revision allocates a new revision after the current head,
+retaining every intervening draft. Assignments keep their exact historical links.
+An edit never claims a product review or silently upgrades worker instructions.
 
 All mutations carry expected revision and idempotency key. Product command
 replays use the canonical store receipt. Task response replays reconstruct the
@@ -84,19 +90,27 @@ Feature completeness requires an existing passing product review accepted by
 `validateReviewForCompletion` and matching the displayed design/plan. A done or
 returned execution task alone never establishes it. Criterion results are shown
 separately as reviewed behavior, reported evidence awaiting review, missing
-untested evidence, or stale/non-passing history. Original request coverage reuses
+untested evidence, or stale/non-passing history. Review findings or conformance
+outcomes establish accomplished criteria independently of aggregate feature
+completion, so an incomplete review can still demonstrate one behavior.
+Original request coverage reuses
 BUILD-04 and preserves `semanticReview: not_performed` rather than claiming a
-semantic check was executed by rendering the page.
+semantic check was executed by rendering the page. Unclassified requests and
+unmapped ranges appear on the overview even without any linked feature.
 
 Task state/priority comes from the validated task observation recorded by
-BUILD-08. Observations retain timestamps and show Unknown when absent, Unknown
+BUILD-08; requested priority is never substituted for a missing observation.
+Observations retain timestamps and show Unknown when absent, Unknown
 outcome when ambiguous, and Stale after the configurable read-model threshold
 (default 60 seconds). The page also labels itself stale after a minute. Reads
 never poll FirstMate, schedule a worker or mutate records.
 
+Each form tracks its own dirty state, input version and unresolved command.
 Every form shows Loading while saving, preserves entered values on structured
 validation/conflict, and offers reload/compare on stale revision. A lost response
 keeps the exact pending command in the open page for Retry same operation. A
+successful save reloads only when no other draft, newer input or unresolved
+command remains; the leave-page guard covers pending commands as well as drafts. A
 recorded unknown/failed task outcome links to its operation and locks further
 edits pending inspection/reconciliation. Unsaved changes trigger the browser's
 leave-page prompt. Closing that page after a lost response requires inspection of

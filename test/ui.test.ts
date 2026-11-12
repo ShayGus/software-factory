@@ -8,17 +8,17 @@ import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import {
   ProjectStore, RecordsSchema, ToolkitApi, buildEditCommand, createToolkitRequestHandler, projectView, renderFeature,
-  type EditContext, type EditValues,
+  type EditContext, type EditValues, type FactoryRecord, captureRequest, validateAssignmentForDispatch,
 } from '../src/index.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 
 const fixture = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
-function setup(t: test.TestContext) {
+function setup(t: test.TestContext, history: FactoryRecord[] = fixture) {
   const directory = mkdtempSync(join(tmpdir(), 'sf-ui-'));
   const database = join(directory, 'project.sqlite');
   const store = new ProjectStore(database);
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  store.importProject({ schemaVersion: 1, projectId: 'project-1', history: fixture, receipts: [] });
+  store.importProject({ schemaVersion: 1, projectId: 'project-1', history, receipts: [] });
   const backend = fakeTaskWrapper(directory, true, database);
   backend.edit((state) => {
     state.tasks['pilot-build'] = fakeTask('pilot-build', { title: 'Common feature', state: 'done', priority: 1 });
@@ -129,12 +129,23 @@ for (const kind of ['design', 'plan', 'plan-task', 'criterion'] as const) test(`
 });
 for (const screen of ['/', '/projects/project-1/features/feature-1']) for (const action of ['set_priority', 'edit_dependencies', 'pause'] as const) test(`task ${action} from ${screen} uses BUILD-08 with stable replay and no native lifecycle edits`, async (t) => {
   const flow = setup(t);
+  if (action === 'edit_dependencies') {
+    flow.backend.edit((state) => { state.tasks['pilot-verify']!.deps = [{ id: 'pilot-build', type: 'blocked-by' }]; });
+    const mapping = flow.store.get('project-1', 'mapping-2');
+    assert.ok(mapping?.kind === 'task_mapping');
+    assert.deepEqual(mapping.dependencies, ['pilot-build']);
+    assert.deepEqual(flow.backend.read().tasks['pilot-verify']!.deps, [{ id: 'pilot-build', type: 'blocked-by' }]);
+  }
   const page = await flow.http('GET', screen);
-  const { command, first } = await sendEdit(flow, findEditor(page.body, 'task', action), { priority: '0', dependencies: 'pilot-build' });
+  const { command, first } = await sendEdit(flow, findEditor(page.body, 'task', action), { priority: '0', dependencies: '' });
   const saved = flow.backend.read().tasks['pilot-verify']!;
   assert.equal(saved.state, 'queued');
   if (action === 'set_priority') assert.equal(saved.priority, 0);
-  if (action === 'edit_dependencies') assert.deepEqual(saved.deps, [{ id: 'pilot-build', type: 'blocked-by' }]);
+  if (action === 'edit_dependencies') {
+    assert.deepEqual(saved.deps, []);
+    const mapping = flow.store.get('project-1', 'mapping-2'); assert.ok(mapping?.kind === 'task_mapping');
+    assert.deepEqual(mapping.dependencies, []);
+  }
   if (action === 'pause') {
     assert.ok(saved.hold);
     const next = await flow.http('GET', '/projects/project-1/features/feature-1');
@@ -152,8 +163,12 @@ test('rendered pages retain original intent, a brief-to-plan route, evidence gap
   assert.match(page.body, /Missing evidence — untested/u);
   assert.match(page.body, /A non-ERPNext connected system uses the same feature\./u);
   assert.match(page.body, /Worker briefs → plan tasks/u);
-  assert.match(page.body, /inspect\/task-1\?revision=1/u);
-  assert.match(page.body, /inspect\/plan-1\?revision=1/u);
+  const briefs = page.body.match(/<section id="briefs">([\s\S]*?)<\/section>/u)?.[1]; assert.ok(briefs);
+  const assignment = [...briefs.matchAll(/<article>([\s\S]*?)<\/article>/gu)].find((match) => match[1]!.includes('inspect/assignment-1?revision=1'))?.[1];
+  assert.ok(assignment, 'assignment-1 article must exist inside the briefs section');
+  const derived = assignment.match(/<p>Derived from ([\s\S]*?)<\/p>/u)?.[1]; assert.ok(derived);
+  assert.match(derived, /href="\/projects\/project-1\/inspect\/task-1\?revision=1"/u);
+  assert.match(derived, /href="\/projects\/project-1\/inspect\/plan-1\?revision=1"/u);
   assert.match(page.body, /Attempt: attempt-1/u);
   assert.match(page.body, /Active feature revision/u);
   assert.match(page.body, /Unknown — execution observation unavailable/u);
@@ -246,4 +261,103 @@ test('HTTP stage envelopes reuse the existing staged operation, preserve project
   assert.deepEqual((await flow.http('POST', '/canonical', command)).json(), response.json());
   assert.equal((await flow.http('POST', '/canonical', { ...command, idempotencyKey: 'stale-stage' })).status, 409);
   assert.equal(flow.store.get('project-1', understanding.id)!.revision, 2);
+});
+
+const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
+for (const kind of ['design', 'plan', 'plan-task'] as const) test(`review 1: criterion changes can be followed by a ${kind} edit`, async (t) => {
+  const history = structuredClone(fixture);
+  const plan = history.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+  plan.dependencies = [{ prerequisiteTaskId: 'task-1', consumerTaskId: 'task-2', reason: 'Consumes the common behavior', needs: { kind: 'criterion', criterion: { id: 'criterion-general', revision: 1 } } }];
+  const flow = setup(t, history);
+  const originalAssignment = flow.store.get('project-1', 'assignment-1');
+  await sendEdit(flow, findEditor((await flow.http('GET', '/projects/project-1/features/feature-1')).body, 'criterion'), { verificationMethod: 'Verify the amended criterion through the common interface' }, 'amend-criterion');
+  await sendEdit(flow, findEditor((await flow.http('GET', '/projects/project-1/features/feature-1')).body, kind), {}, `after-criterion-${kind}`);
+  const current = flow.store.get('project-1', 'plan-1'); assert.ok(current?.kind === 'implementation_plan_revision');
+  const expected = { id: 'criterion-general', revision: 2 };
+  assert.deepEqual(current.workflow!.slices[0]!.criteria.find((criterion) => criterion.id === expected.id), expected);
+  assert.deepEqual(current.dependencies[0]!.needs, { kind: 'criterion', criterion: expected });
+  const task = flow.store.get('project-1', 'task-1'); assert.ok(task?.kind === 'detailed_plan_task');
+  assert.deepEqual(task.criteria.find((criterion) => criterion.id === expected.id), expected);
+  assert.deepEqual(flow.store.get('project-1', 'assignment-1'), originalAssignment);
+});
+
+test('review 3: UI priority-only changes preserve dispatch eligibility and product decisions', async (t) => {
+  const flow = setup(t, baseline);
+  const target = { id: 'assignment-1', revision: 1 };
+  const before = validateAssignmentForDispatch(flow.store.history('project-1'), target);
+  assert.equal(before.ok, true, JSON.stringify(before));
+  const feature = flow.store.get('project-1', 'feature-1'); assert.ok(feature?.kind === 'feature_revision');
+  await sendEdit(flow, findEditor((await flow.http('GET', '/')).body, 'feature'), { priority: '4' }, 'priority-only');
+  const after = validateAssignmentForDispatch(flow.store.history('project-1'), target);
+  assert.equal(after.ok, true, JSON.stringify(after));
+  const current = flow.store.get('project-1', feature.id); assert.ok(current?.kind === 'feature_revision');
+  assert.deepEqual(current.decisions, feature.decisions);
+  assert.ok(projectView(flow.store, { projectId: 'project-1' }).features[0]!.decisions.some((decision) => decision.id === 'change-priority-only'));
+});
+
+test('review 4: selected reused design stays visible and editable beside newer drafts', async (t) => {
+  const history = structuredClone(baseline);
+  const design = history.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+  history.push({ ...design, revision: 2, updatedAt: '2026-11-12T10:00:00Z', productBehavior: 'Unselected draft behavior', sourceComparison: { ...design.sourceComparison, result: 'untested' } });
+  const understanding = fixture.find((record) => record.kind === 'understanding_revision'); assert.ok(understanding?.kind === 'understanding_revision');
+  const first = fixture.find((record) => record.kind === 'stage_revision' && record.stage === 'understand'); assert.ok(first?.kind === 'stage_revision');
+  const selected = fixture.find((record) => record.kind === 'stage_revision' && record.stage === 'design'); assert.ok(selected?.kind === 'stage_revision');
+  history.push(understanding, first, { ...selected, reuse: { check: { ...design.sourceComparison, sourceRefs: [...design.sourceComparison.sourceRefs, { uri: 'fixture://selected-design', record: { id: design.id, revision: 1 } }] }, criterionMap: first.criteria.map((criterion) => ({ existing: criterion, current: criterion })) } });
+  const plan = history.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+  const planStage = fixture.find((record) => record.kind === 'stage_revision' && record.stage === 'plan'); assert.ok(planStage?.kind === 'stage_revision');
+  history.push(planStage, { ...plan, revision: 2, updatedAt: '2026-11-12T11:00:00Z', integrationApproach: 'Unselected plan draft',
+    readiness: { ...plan.readiness, ready: false }, workflow: { slices: [{ id: 'draft-slice', behavior: 'Draft behavior', criteria: first.criteria, tasks: plan.deliverySequence }],
+      scope: [], integrationSteps: [], finalVerification: [], changeReason: 'Unselected draft', retainedTasks: plan.deliverySequence.map((task) => ({ task, reason: 'Keep original task detail' })) } });
+
+  const flow = setup(t, history);
+  const view = projectView(flow.store, { projectId: 'project-1' });
+  assert.equal(view.features[0]!.design?.revision, 1);
+  assert.equal(view.features[0]!.plan?.revision, 1);
+  assert.match(view.features[0]!.completeness, /^Complete/u);
+  const page = await flow.http('GET', '/projects/project-1/features/feature-1');
+  assert.match(page.body, /Newer draft/u);
+  const editor = findEditor(page.body, 'design'); assert.ok(editor.context.kind === 'design');
+  assert.equal(editor.context.design.revision, 1);
+  assert.equal(editor.values.productBehavior, design.productBehavior);
+  await sendEdit(flow, editor, { productBehavior: 'Edit selected behavior while retaining draft history' }, 'selected-design-edit');
+  assert.equal(flow.store.get('project-1', design.id)!.revision, 3);
+  assert.equal(flow.store.get('project-1', design.id, 2)?.kind, 'design_revision');
+});
+
+test('review 5: unclassified captured requests remain visible without any feature mapping', async (t) => {
+  const flow = setup(t);
+  const result = captureRequest(flow.store, { projectId: 'project-1', clientRequestId: 'unmapped-extra', originalText: 'Also preserve this separate request exactly.', channel: 'cli', source: { uri: 'fixture://unmapped-request' }, attachments: [] });
+  const page = await flow.http('GET', '/');
+  assert.match(page.body, /Unmapped requests/u);
+  assert.match(page.body, /Also preserve this separate request exactly\./u);
+  assert.ok(page.body.includes(`/inspect/${encodeURIComponent(result.request.id)}?revision=1`));
+});
+
+test('review 6: a partial product review demonstrates one criterion while retaining the missing one', async (t) => {
+  const history = structuredClone(baseline);
+  const review = history.find((record) => record.kind === 'product_review'); assert.ok(review?.kind === 'product_review');
+  const common = history.find((record) => record.id === 'result-general'); assert.ok(common?.kind === 'criterion_result');
+  const missing = history.find((record) => record.id === 'result-second'); assert.ok(missing?.kind === 'criterion_result');
+  missing.result = 'untested'; missing.evidence = []; missing.artifact = null;
+  review.outcome = 'incomplete';
+  review.planConformance = { ...review.planConformance, result: 'untested', findings: [
+    { criterionId: 'criterion-general', result: 'passed', description: 'Common behavior was reviewed', sourceRefs: review.sourceRefs, evidence: common.evidence },
+    { criterionId: 'criterion-second-system', result: 'untested', description: 'Second-system acceptance remains untested', sourceRefs: review.sourceRefs, evidence: [] },
+  ] };
+  const flow = setup(t, history);
+  const view = projectView(flow.store, { projectId: 'project-1' }).features[0]!;
+  assert.equal(view.criteria.find((criterion) => criterion.target.id === 'criterion-general')?.label, 'Demonstrated (reviewed)');
+  assert.deepEqual(view.remaining.map((criterion) => criterion.target.id), ['criterion-second-system']);
+  assert.match(view.completeness, /^Incomplete/u);
+});
+
+test('review 7: a requested priority without an observation remains Unknown after adapter failure', async (t) => {
+  const flow = setup(t);
+  const editor = findEditor((await flow.http('GET', '/')).body, 'task', 'set_priority');
+  const command = buildEditCommand(editor.context, { priority: '0', reason: 'Request priority change' }, 'missing-adapter', new Date().toISOString());
+  const api = new ToolkitApi(flow.store, { fmHome: flow.directory, tasksExecutable: join(flow.directory, 'missing-wrapper') });
+  assert.equal(api.handle('POST', '/canonical', command).status, 502);
+  const task = projectView(flow.store, { projectId: 'project-1' }).features[0]!.tasks.find((task) => task.mapping.id === 'mapping-2'); assert.ok(task);
+  assert.equal(task.priority, undefined);
+  assert.match(task.label, /^Unknown/u);
 });

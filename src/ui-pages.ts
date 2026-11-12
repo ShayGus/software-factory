@@ -79,6 +79,9 @@ function taskRows(feature: FeatureView) {
 }
 export function renderOverview(view: ProjectView) {
   return shell(view, 'Features', `<h1>Requested outcomes</h1>${text(view.project.goal)}
+    <section><h2>Unmapped requests</h2>${view.unclassified.map((request) => `<article><h3>${recordLink(view.options.projectId, request)}</h3>
+      <p>Incomplete — original text still needs classification.</p><blockquote>${h(request.originalText)}</blockquote>
+      <h4>Unmapped ranges</h4>${items(request.coverage.unmapped.map((range) => range.text))}</article>`).join('') || empty('No unmapped request text.')}</section>
     <section aria-labelledby="requested"><h2 id="requested">Requested features</h2>${view.features.sort((a, b) => a.feature.priority - b.feature.priority).map((item) => featureRow(view, item)).join('') || empty('No requested features recorded.')}</section>
     <section aria-labelledby="suggestions"><h2 id="suggestions">Suggestions · outside current scope</h2>${view.suggestions.map((suggestion) => `<article><h3>${recordLink(view.options.projectId, suggestion, suggestion.questionOrChange)}</h3>${text(suggestion.rationale)}<p>Proposed — not selected. Related records: ${links(view.options.projectId, suggestion.affectedRecords)}</p></article>`).join('') || empty('No suggestions recorded.')}</section>
     <section><h2>Decisions needing input</h2>${view.input.map((decision) => `<p>${recordLink(view.options.projectId, decision, decision.questionOrChange)} — Open ${h(decision.choice?.kind)} question. ${h(decision.rationale)}</p>`).join('') || empty('No open decisions recorded.')}</section>
@@ -97,8 +100,15 @@ function artifacts(view: ProjectView, feature: FeatureView) {
     const task = view.history.find((record) => sameRef(record, target));
     return task?.kind === 'detailed_plan_task' ? [task] : [];
   }) ?? [];
-  const context = design && plan && tasks.length === plan.deliverySequence.length ? { feature: feature.feature, design, plan, tasks } : undefined;
+  const context = design && plan && tasks.length === plan.deliverySequence.length ? { feature: feature.feature, design, plan, tasks,
+    expectedRevisions: [feature.feature, design, plan, ...tasks].map((record) => {
+      const head = view.records.find((candidate) => candidate.id === record.id) ?? record;
+      return { id: head.id, revision: head.revision };
+    }),
+    criterionMap: feature.stages.filter((stage) => sameRef(stage.feature, feature.feature)).flatMap((stage) => stage.reuse?.criterionMap ?? []),
+  } : undefined;
   return `<section id="design"><h2>Product design</h2><p>Revision history: ${links(view.options.projectId, feature.designs)}</p>
+    ${feature.designDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.designDrafts)}. Editing the selected design creates a new draft revision.</p>` : ''}
     ${design ? `<p>${recordLink(view.options.projectId, design)} · ${sameRef(design.feature, feature.feature) ? 'Current feature revision' : 'Stale — design names an earlier feature revision'}</p>
       <h3>Product behavior</h3>${text(design.productBehavior)}<h3>Technical design</h3>${text(design.technicalDesign)}<h3>Data flow</h3>${text(design.dataFlow)}
       <h3>Reuse findings</h3>${items(design.reuseFindings)}<h3>Interfaces</h3>${items(design.interfaces)}<h3>Examples</h3>${items(design.examples)}
@@ -108,6 +118,7 @@ function artifacts(view: ProjectView, feature: FeatureView) {
         (['productBehavior', 'technicalDesign', 'dataFlow', 'testingApproach'] as const).map((name) => field(name, name.replace(/[A-Z]/gu, (letter) => ` ${letter.toLowerCase()}`), design[name])).join('') +
         (['reuseFindings', 'interfaces', 'examples', 'alternatives', 'exclusions', 'unresolvedQuestions'] as const).map((name) => field(name, `${labelName(name)} (one per line)`, design[name].join('\n'))).join('')) : empty('Incomplete — a coherent design, plan and task set is required before editing.')}` : empty('Unknown — product design not recorded.')}</section>
     <section id="plan"><h2>Detailed plan</h2><p>Revision history: ${links(view.options.projectId, feature.plans)}</p>
+    ${feature.planDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.planDrafts)}. Editing the selected plan creates a new draft revision.</p>` : ''}
     ${plan ? `<p>${recordLink(view.options.projectId, plan)} · ${plan.readiness.ready && sameRef(plan.feature, feature.feature) && sameRef(plan.design, design) ? 'Recorded ready — see readiness evidence' : 'Incomplete or stale — readiness needs checking'}</p>
       <p>Strategy: ${h(plan.strategy)} · ${h(plan.strategyReason)}</p>${text(plan.integrationApproach)}
       <h3>Integration steps</h3>${items(plan.workflow?.integrationSteps ?? [])}<h3>Final verification</h3>${items(plan.workflow?.finalVerification ?? [])}

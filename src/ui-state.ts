@@ -1,9 +1,11 @@
 import { FirstMateTaskSchema } from './firstmate.js';
-import { ref, requestCoverage } from './intake.js';
+import { ref, requestCoverage, unclassifiedRequests } from './intake.js';
 import type { Ref } from './primitives.js';
 import type { FactoryRecord, FeatureRevision } from './records.js';
 import { hasUnchangedFeatureScope, validateReviewForCompletion } from './rules.js';
 import { ProjectStore, StoreError } from './store.js';
+import { currentAssignmentAttempts } from './task-readiness.js';
+import { outstandingTaskCorrections } from './correction-state.js';
 
 export interface UiOptions { projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string }
 export const sameRef = (a: Ref | null | undefined, b: Ref | null | undefined) => !!a && !!b && a.id === b.id && a.revision === b.revision;
@@ -17,10 +19,28 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
   const featureViews = features.map((feature) => {
     const designs = history.filter((record): record is Extract<FactoryRecord, { kind: 'design_revision' }> => record.kind === 'design_revision' && record.feature?.id === feature.id);
     designs.sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
-    const design = designs.at(-1);
     const plans = history.filter((record): record is Extract<FactoryRecord, { kind: 'implementation_plan_revision' }> => record.kind === 'implementation_plan_revision' && record.feature?.id === feature.id);
     plans.sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
-    const plan = plans.at(-1);
+    const stages = records.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> =>
+      record.kind === 'stage_revision' && sameRef(record.feature, feature))
+      .sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
+    const detailStage = stages.filter((stage) => stage.stage === 'detail').at(-1);
+    const planStage = detailStage ?? stages.filter((stage) => stage.stage === 'plan').at(-1);
+    const selectedPlan = planStage && lookup(planStage.artifact);
+    const readyPlan = detailStage && plans.filter((candidate) => {
+      const check = candidate.workflow?.readinessCheck && lookup(candidate.workflow.readinessCheck);
+      return candidate.readiness.ready && check?.kind === 'plan_readiness_revision' && check.ready &&
+        sameRef(check.detailStage, detailStage) && sameRef(check.plan, detailStage.artifact);
+    }).at(-1);
+    const plan = readyPlan || (selectedPlan?.kind === 'implementation_plan_revision' ? selectedPlan : plans.at(-1));
+    const designStage = stages.filter((stage) => stage.stage === 'design').at(-1);
+    const selectedDesign = designStage ? lookup(designStage.artifact) : plan && lookup(plan.design);
+    const design = selectedDesign?.kind === 'design_revision' ? selectedDesign : designs.at(-1);
+    const newer = (candidate: Ref & { updatedAt: string }, selected: (Ref & { updatedAt: string }) | undefined) => selected &&
+      !sameRef(candidate, selected) && (Date.parse(candidate.updatedAt) > Date.parse(selected.updatedAt) ||
+        (candidate.id === selected.id && candidate.revision > selected.revision));
+    const designDrafts = designs.filter((candidate) => newer(candidate, design));
+    const planDrafts = plans.filter((candidate) => newer(candidate, plan));
     const assignments = records.filter((record): record is Extract<FactoryRecord, { kind: 'assignment' }> => record.kind === 'assignment' && record.feature?.id === feature.id);
     const reviews = records.filter((record): record is Extract<FactoryRecord, { kind: 'product_review' }> => record.kind === 'product_review' && record.feature?.id === feature.id);
     const passedReviews = reviews.filter((review) => validateReviewForCompletion(history, ref(review)).ok &&
@@ -31,9 +51,23 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
       const demonstrated = results.filter((result) => {
         const assignment = lookup(result.assignment);
         return result.result === 'passed' && assignment?.kind === 'assignment' && assignment.feature &&
-          hasUnchangedFeatureScope(history, assignment.feature, feature) && sameRef(assignment.design, design) && sameRef(assignment.plan, plan);
+          hasUnchangedFeatureScope(history, assignment.feature, feature) && sameRef(assignment.design, design) && sameRef(assignment.plan, plan) &&
+          currentAssignmentAttempts(records, (candidate) => candidate.firstMateTaskId === assignment.firstMateTaskId)
+            .every((candidate, _index, all) => all.length === 1 && sameRef(candidate, assignment)) &&
+          !outstandingTaskCorrections(records, assignment.firstMateTaskId).length;
       });
-      const verified = demonstrated.some((result) => passedReviews.some((review) => review.results.some((entry) => sameRef(entry, result))));
+      const verified = demonstrated.some((result) => reviews.some((review) => {
+        if (!review.feature || !hasUnchangedFeatureScope(history, review.feature, feature) ||
+          !sameRef(review.design, design) || !sameRef(review.plan, plan) ||
+          !review.results.some((entry) => sameRef(entry, result)) || !review.assignments.some((entry) => sameRef(entry, result.assignment))) return false;
+        if (review.conformance) return !review.conformance.error && review.conformance.verdict?.criteria.some((outcome) =>
+          sameRef(outcome.criterion, target) && outcome.state === 'accomplished') === true;
+        const comparisons = [review.sourceComparison, review.instructionFidelity, review.planConformance];
+        const findings = comparisons.flatMap((comparison) => comparison.findings).filter((finding) => finding.criterionId === target.id);
+        if (findings.some((finding) => finding.result !== 'passed' && !finding.resolvedBy)) return false;
+        return findings.some((finding) => finding.result === 'passed' && finding.evidence.length) ||
+          comparisons.every((comparison) => comparison.result === 'passed');
+      }));
       return { target, criterion, results, demonstrated, label: verified ? 'Demonstrated (reviewed)' :
         demonstrated.length ? 'Reported evidence; product review pending' : results.length ? 'Incomplete — no current passing evidence' : 'Missing evidence — untested' };
     });
@@ -43,7 +77,6 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
       (record.correction.affectedRevision.id === feature.id || assignments.some((assignment) => assignment.id === record.correction!.assignment.id)));
     const tasks = records.filter((record): record is Extract<FactoryRecord, { kind: 'task_mapping' }> => record.kind === 'task_mapping' && record.feature?.id === feature.id).map((mapping) => {
       const operation = mapping.management && records.find((record) => record.id === mapping.management!.operationId);
-      const receipt = operation?.kind === 'operation' && store.receipt(options.projectId, operation.idempotencyKey);
       let task;
       if (operation?.kind === 'operation' && operation.reconciliation) {
         try {
@@ -54,11 +87,11 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
       const observedAt = operation?.kind === 'operation' ? operation.reconciliation?.observedAt : undefined;
       const stale = !observedAt || now - Date.parse(observedAt) > (options.staleAfterMs ?? 60000);
       return { mapping, operation, task, observedAt, stale,
-        priority: task?.priority ?? (receipt && receipt.command.command === 'map_manage_execution_task' ? receipt.command.payload.priority : undefined),
+        priority: task?.priority,
         label: operation?.kind === 'operation' && operation.state === 'unknown' ? 'Unknown outcome — reconciliation required' :
           !task ? 'Unknown — execution observation unavailable' : stale ? `Stale — last observed ${task.state}` : `Observed — ${task.state}` };
     });
-    return { feature, designs, design, plans, plan, assignments, reviews, criteria, decisions, corrections, tasks,
+    return { feature, designs, design, designDrafts, plans, plan, planDrafts, assignments, reviews, criteria, decisions, corrections, tasks,
       stages: history.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> => record.kind === 'stage_revision' && record.feature.id === feature.id),
       requests: feature.sourceRequests.map((target) => ({ target, record: lookup(target),
         coverage: requestCoverage(store, options.projectId, target.id) })),
@@ -68,7 +101,8 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
   });
   const suggestions = records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && record.disposition === 'proposed' && record.choice?.state !== 'open');
   const input = records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && record.choice?.state === 'open');
-  return { project, options, history, records, features: featureViews, suggestions, input, readAt: new Date(now).toISOString() };
+  return { project, options, history, records, features: featureViews, suggestions, input,
+    unclassified: unclassifiedRequests(store, options.projectId), readAt: new Date(now).toISOString() };
 }
 export type ProjectView = ReturnType<typeof projectView>;
 export type FeatureView = ProjectView['features'][number];

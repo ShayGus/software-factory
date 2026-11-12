@@ -6,27 +6,34 @@ import { buildEditCommand } from '../src/ui-edit.js';
 
 // Run the actual compiled client against a minimal form surface and in-memory
 // fetch. No browser, listener, timers, network or parallel command builder.
-function client(fetch: (url: string, options: { body: string }) => Promise<unknown>) {
-  const listeners = new Map<string, (event: { preventDefault(): void }) => Promise<void>>();
+function client(fetch: (url: string, options: { body: string }) => Promise<unknown>, count = 1) {
+  type Listener = (event: { preventDefault(): void }) => unknown;
   const pageState = { textContent: '' };
-  const output = { textContent: '', children: [] as unknown[], append(value: unknown) { this.children.push(value); } };
-  const button = { disabled: false, textContent: 'Save change', type: 'submit', addEventListener() {} };
-  const mapping = { kind: 'task_mapping', id: 'mapping-1', projectId: 'project-1', revision: 1,
-    feature: { id: 'feature-1', revision: 1 }, criteria: [], detailedPlanTask: { id: 'task-1', revision: 1 },
-    firstMateTaskId: 'worker-1', dependencies: [] };
-  const values = new Map([['context', JSON.stringify({ kind: 'task', action: 'set_priority', mapping })], ['priority', '0'], ['reason', 'Preserve intent']]);
-  const form = { querySelector: (selector: string) => selector === 'output' ? output : button,
-    addEventListener(name: string, listener: (event: { preventDefault(): void }) => Promise<void>) { listeners.set(name, listener); } };
+  const windows = new Map<string, Listener>();
+  const surfaces = Array.from({ length: count }, (_, index) => {
+    const listeners = new Map<string, Listener>();
+    const output = { textContent: '', children: [] as unknown[], append(value: unknown) { this.children.push(value); } };
+    const button = { disabled: false, textContent: 'Save change', type: 'submit', addEventListener() {} };
+    const mapping = { kind: 'task_mapping', id: `mapping-${index + 1}`, projectId: 'project-1', revision: 1,
+      feature: { id: 'feature-1', revision: 1 }, criteria: [], detailedPlanTask: { id: 'task-1', revision: 1 },
+      firstMateTaskId: `worker-${index + 1}`, dependencies: [] };
+    const values = new Map([['context', JSON.stringify({ kind: 'task', action: 'set_priority', mapping })], ['priority', '0'], ['reason', 'Preserve intent']]);
+    const form = { values, querySelector: (selector: string) => selector === 'output' ? output : button,
+      addEventListener(name: string, listener: Listener) { listeners.set(name, listener); } };
+    return { form, output, button, values, listeners };
+  });
   let reloads = 0;
   let sequence = 0;
   const source = readFileSync(new URL('../src/ui-client.js', import.meta.url), 'utf8').replace(/^import .*;\n/gmu, '');
   runInNewContext(source, { buildEditCommand, fetch,
-    document: { querySelector: () => pageState, querySelectorAll: () => [form], createElement: () => ({ href: '', textContent: '' }) },
-    FormData: class { get(key: string) { return values.get(key); } entries() { return values.entries(); } },
-    crypto: { randomUUID: () => `key-${++sequence}` }, window: { addEventListener() {} }, setInterval() {},
+    document: { querySelector: () => pageState, querySelectorAll: () => surfaces.map((surface) => surface.form), createElement: () => ({ href: '', textContent: '' }) },
+    FormData: class { constructor(readonly form: { values: Map<string, string> }) {} get(key: string) { return this.form.values.get(key); } entries() { return this.form.values.entries(); } },
+    crypto: { randomUUID: () => `key-${++sequence}` }, window: { addEventListener(name: string, listener: Listener) { windows.set(name, listener); } }, setInterval() {},
     location: { reload: () => { reloads++; } }, confirm: () => true });
-  return { output, pageState, button, values, reloads: () => reloads,
-    submit: () => listeners.get('submit')!({ preventDefault() {} }) };
+  return { output: surfaces[0]!.output, button: surfaces[0]!.button, values: surfaces[0]!.values, surfaces, pageState, reloads: () => reloads,
+    edit(index: number, key: string, value: string) { surfaces[index]!.values.set(key, value); surfaces[index]!.listeners.get('input')!({ preventDefault() {} }); },
+    guarded() { let prevented = false; windows.get('beforeunload')!({ preventDefault() { prevented = true; } }); return prevented; },
+    submit: async (index = 0) => { await surfaces[index]!.listeners.get('submit')!({ preventDefault() {} }); } };
 }
 for (const [status, state] of [[202, 'unknown'], [502, 'failed']] as const) test(`client locks ${state} task outcomes and links to the operation`, async () => {
   const form = client(async () => ({ status, ok: status < 400, json: async () => ({ operation: { id: 'operation-1', state },
@@ -61,4 +68,40 @@ test('a revision conflict preserves typed values and labels the page stale', asy
   assert.match(form.pageState.textContent, /Stale/u);
   assert.equal(form.button.textContent, 'Reload current records');
   assert.equal(form.reloads(), 0);
+});
+
+
+test('review 2: saving one editor preserves another editor draft and its leave-page guard', async () => {
+  const form = client(async () => ({ status: 200, ok: true, json: async () => ({ records: [] }) }), 2);
+  form.edit(1, 'priority', '3');
+  await form.submit(0);
+  assert.equal(form.reloads(), 0);
+  assert.equal(form.guarded(), true);
+  assert.match(form.surfaces[0]!.output.textContent, /Saved/u);
+});
+test('review 2: another save cannot discard a lost-response retry', async () => {
+  const bodies: string[] = [];
+  const form = client(async (_url, options) => {
+    bodies.push(options.body);
+    if (bodies.length === 1) throw new TypeError('Response lost');
+    return { status: 200, ok: true, json: async () => ({ records: [] }) };
+  }, 2);
+  await form.submit(0);
+  assert.equal(form.guarded(), true);
+  await form.submit(1);
+  assert.equal(form.reloads(), 0);
+  assert.equal(form.guarded(), true);
+  await form.submit(0);
+  assert.equal(bodies[0], bodies[2]);
+  assert.equal(form.reloads(), 1);
+});
+test('review 2: input entered during a pending save is retained after that save succeeds', async () => {
+  let respond!: (response: unknown) => void;
+  const form = client(() => new Promise((resolve) => { respond = resolve; }));
+  const saving = form.submit();
+  form.edit(0, 'priority', '4');
+  respond({ status: 200, ok: true, json: async () => ({ records: [] }) });
+  await saving;
+  assert.equal(form.reloads(), 0);
+  assert.equal(form.guarded(), true);
 });
