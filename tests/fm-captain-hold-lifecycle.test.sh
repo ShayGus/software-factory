@@ -77,7 +77,11 @@ run_teardown() {  # <home> <id>
 tasks_in() {  # <home> <tasks-axi args...>
   local home=$1
   shift
-  (cd "$home" && tasks-axi "$@")
+  if [ -x "$home/beads-tasks-axi" ]; then
+    (cd "$home" && REAL_TASKS_AXI="$TASKS_AXI_BIN" "$home/beads-tasks-axi" "$@")
+  else
+    (cd "$home" && tasks-axi "$@")
+  fi
 }
 
 run_captain() {  # <home> <command args...>
@@ -221,78 +225,129 @@ write_origin_meta() {  # <home> <id> [kind]
 # A home on the Beads backend no longer carries the legacy markdown ids a scout
 # report attested: fm-hold-migration rehomed each held row under a prefixed fm-
 # id and recorded its markdown identity in the row's notes as the exact line
-# "migrated from data/backlog.md id <legacy id>". The fixture graph is driven
-# through bd directly where possible because the npm-published tasks-axi ships
-# the markdown backend only; the hold itself needs a beads-capable tasks-axi,
-# so that family probes once and skips itself with an explicit reason on
-# markdown-only installs, mirroring tests/fm-control-relaunch.test.sh.
+# "migrated from data/backlog.md id <legacy id>".
 
-# Build a fixture home whose configured backend is a scratch Beads graph.
-# Echoes "<home>|<graph-beads-dir>". The graph repo dir is named "fm" because
-# bd derives the row-id prefix from the repo directory name.
+# Portable Beads backend fixture: tasks-axi's real command/model layer persists
+# to a private file behind a shim, never data/backlog.md. A fake transport emits
+# native rows with distinct physical/logical IDs, pagination and due policy.
+# This tests Firstmate's integration contract, not Beads SQL/concurrency.
 make_beads_home() {  # <name>
-  local name=$1 case_dir home graph fb
-  case_dir="$TMP_ROOT/$name"
-  home="$case_dir/home"
-  graph="$case_dir/fm"
-  mkdir -p "$home/data" "$home/config" "$home/projects" "$graph"
-  (umask 077; mkdir -p "$home/state")
-  git -C "$graph" init -q
-  if ! (cd "$graph" && bd init >"$case_dir/bd-init.log" 2>&1); then
-    cat "$case_dir/bd-init.log" >&2
-    fail "fixture bd init failed on $graph"
-  fi
+  local home graph fb
+  home="$TMP_ROOT/$1/home"
+  graph="$home/graph/.beads"
+  mkdir -p "$home/data" "$home/config" "$home/projects" "$home/state" "$graph"
+  fb=$(fm_fakebin "$home")
+  printf '[]\n' > "$graph/rows.json"
+  printf '## In flight\n\n## Queued\n\n## Done\n' > "$graph/store.md"
   cat > "$home/.tasks.toml" <<EOF
 backend = "beads"
-
 [beads]
-path = "$graph/.beads"
-binary = "bd"
+path = "graph/.beads"
+binary = "./fakebin/bd"
 prefix = "fm"
-
-[markdown]
-path = "data/backlog.md"
-archive = "data/done-archive.md"
-done_keep = 10
 EOF
-  fb=$(fm_fakebin "$home")
+  cat > "$fb/bd" <<'SH'
+#!/usr/bin/env bash
+set -eu
+store="$BEADS_DIR/rows.json"
+printf 'due=%s %s\n' "${BD_DUE_REQUIRED:-unset}" "$*" >> "$BEADS_DIR/transport.log"
+case "$1" in
+  list)
+    case "${FM_TEST_BEADS_SCAN:-}" in
+      hang) sleep 300 ;;
+      error) printf '{"error":"server unavailable"}\n'; exit 1 ;;
+      envelope) printf '{"error":"server unavailable"}\n'; exit 0 ;;
+      malformed) printf 'not json\n'; exit 0 ;;
+      bad-metadata) printf '[{"id":"fm-call","notes":"migrated from data/backlog.md id old-call","metadata":"bad json"}]\n'; exit 0 ;;
+    esac
+    case " $* " in
+      *' --limit 0 '*) cat "$store" ;;
+      *) jq '.[0:50]' "$store" ;;
+    esac
+    ;;
+  note)
+    jq --arg id "fm-$2" --arg notes "$3" 'map(if .id == $id then .notes = $notes else . end)' "$store" > "$store.new"
+    mv "$store.new" "$store"
+    ;;
+  fixture-create|create)
+    id=$2
+    if [ "$1" = create ]; then
+      case " $* " in *' --type captain '*) exit 1 ;; esac
+    fi
+    due=${BD_DUE_REQUIRED:-}
+    if [ -z "$due" ] && [ -f "$BEADS_DIR/config.yaml" ]; then due=true; fi
+    case "$due" in
+      true|1|yes|on) printf 'error: due-required policy needs an explicit due date\ncode: VALIDATION_ERROR\n' >&2; exit 1 ;;
+    esac
+    jq --arg id "$id" '. + [{id:("fm-" + $id), issue_type:"task", notes:"", metadata:{tasks_axi:{version:1, logical_id:$id}}}]' "$store" > "$store.new"
+    mv "$store.new" "$store"
+    ;;
+  show) jq --arg id "fm-$2" '.[] | select(.id == $id)' "$store" ;;
+  *) exit 1 ;;
+esac
+SH
+  cat > "$fb/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+set -eu
+home=$(cd "$(dirname "$0")/.." && pwd)
+export BEADS_DIR="$home/graph/.beads"
+printf 'due=%s %s\n' "${BD_DUE_REQUIRED:-unset}" "$*" >> "$home/backend.log"
+[ -z "${TASKS_AXI_FILE:-}" ] || { printf 'code: VALIDATION_ERROR\n' >&2; exit 9; }
+case " $* " in *' --file '*|*' --due '*) exit 9 ;; esac
+case "${1:-}" in
+  --version)
+    [ "${FM_TEST_BEADS_PROBE:-}" != hang ] || sleep 300
+    exec "$REAL_TASKS_AXI" --version
+    ;;
+  add) "$home/fakebin/bd" fixture-create "$2" ;;
+  show)
+    [ ! -f "$home/read-hang" ] || sleep 300
+    if [ -f "$home/read-error" ]; then
+      printf 'error: server unavailable\ncode: CONFLICT\n' >&2
+      exit 1
+    fi
+    ;;
+  hold)
+    if [ "${2:-}" != --help ]; then
+      case "${FM_TEST_BEADS_HOLD:-}" in
+        hang) sleep 300 ;;
+        error) printf 'error: hold transaction failed\ncode: CONFLICT\n' >&2; exit 1 ;;
+        stdout-error) printf 'error: hold transaction failed\ncode: CONFLICT\n'; exit 1 ;;
+        closed)
+          "$REAL_TASKS_AXI" "$@" --backend markdown --file "$BEADS_DIR/store.md" >/dev/null
+          exec "$REAL_TASKS_AXI" done "$2" --backend markdown --file "$BEADS_DIR/store.md"
+          ;;
+        lost) exit 0 ;;
+        wrong-reason) set -- hold "$2" --kind captain --reason 'stale reason' ;;
+        wrong-until)
+          args=("$@")
+          args[${#args[@]}-1]=2098-01-01
+          set -- "${args[@]}"
+          ;;
+        read-error) touch "$home/read-error" ;;
+        read-hang) touch "$home/read-hang" ;;
+      esac
+    fi
+    ;;
+esac
+exec "$REAL_TASKS_AXI" "$@" --backend markdown --file "$BEADS_DIR/store.md"
+SH
+  chmod +x "$fb/bd" "$fb/tasks-axi"
+  cp "$fb/tasks-axi" "$home/beads-tasks-axi"
+  # The stable copy is used only for fixture setup after a case replaces the shim.
+  # shellcheck disable=SC2016 # Match the literal variable in the generated shim.
+  sed -i.bak 's|dirname "$0")/..|dirname "$0")|' "$home/beads-tasks-axi"
+  rm -f "$home/beads-tasks-axi.bak"
   fm_fake_exit0 "$fb" tmux treehouse no-mistakes gh gh-axi
-  printf '%s\n' "$home|$graph/.beads"
+  printf '%s\n' "$home|$graph"
 }
 
-bdrow() {  # <beads-dir> <args...>
-  BEADS_DIR="$1" bd "${@:2}"
+bdrow() {  # <beads-dir> <args...>; fixture calls use logical IDs
+  BEADS_DIR="$1" "${1%/graph/.beads}/fakebin/bd" "${@:2}"
 }
-
-# One capability probe for the migration family: can the installed tasks-axi
-# operate on a beads-backed home? The npm-published tasks-axi cannot, and the
-# hold fixture needs its beads backend; those installs skip with this reason.
-probe_tasks_axi_beads() {
-  local probe_home="$TMP_ROOT/.probe" probe_graph="$TMP_ROOT/.probe-fm"
-  rm -rf "$probe_home" "$probe_graph"
-  mkdir -p "$probe_home/data" "$probe_graph"
-  git -C "$probe_graph" init -q
-  (cd "$probe_graph" && bd init >/dev/null 2>&1) || return 1
-  cat > "$probe_home/.tasks.toml" <<PROBEEOF
-backend = "beads"
-
-[beads]
-path = "$probe_graph/.beads"
-binary = "bd"
-prefix = "fm"
-PROBEEOF
-  (cd "$probe_home" && tasks-axi list) >/dev/null 2>&1
-}
-TASKS_AXI_BEADS_OK=0
-if bd --version >/dev/null 2>&1 && jq --version >/dev/null 2>&1 \
-   && probe_tasks_axi_beads; then
-  TASKS_AXI_BEADS_OK=1
-fi
 
 require_tasks_axi_beads() {  # <what>
-  [ "$TASKS_AXI_BEADS_OK" = 1 ] && return 0
-  pass "skipped on markdown-only tasks-axi: $1"
-  return 1
+  return 0  # Portable fixture, no host bd or live workspace.
 }
 
 write_scout_with_attested_inventory() {  # <home> <scout-id> <keys>
@@ -318,11 +373,11 @@ test_verify_resolves_a_hold_migrated_to_beads_notes() {
   home=${fixture%%|*}
   beads=${fixture##*|}
   scout=sample-beads-scout
-  (cd "$home" && BEADS_ACTOR=fixture tasks-axi add fm-herald-github-delete \
-    "Delete the herald repo" --repo herald) >/dev/null 2>&1 \
+  tasks_in "$home" add fm-herald-github-delete \
+    "Delete the herald repo" --repo herald >/dev/null 2>&1 \
     || fail "could not create the migrated hold fixture"
-  (cd "$home" && BEADS_ACTOR=fixture tasks-axi hold fm-herald-github-delete \
-    --kind captain --reason "captain must confirm the delete") >/dev/null 2>&1 \
+  tasks_in "$home" hold fm-herald-github-delete \
+    --kind captain --reason "captain must confirm the delete" >/dev/null 2>&1 \
     || fail "could not hold the migrated fixture row"
   bdrow "$beads" note fm-herald-github-delete \
     "Origin: herald-retire
@@ -339,10 +394,7 @@ migrated from data/backlog.md id herald-retire-decision-github-delete on 2026-09
   pass "verify resolves a captain hold migrated to a beads row with a marker note"
 }
 
-# A tasks-axi stub that knows ONLY the row ids it is given. The real
-# beads-capable tasks-axi resolves a bare legacy id onto its prefixed row
-# itself, answering before any migration lookup runs; against this stub the
-# migrated-hold resolution order is what has to answer.
+# A tasks-axi stub that knows only the given row IDs for legacy migration cases.
 write_known_rows_stub() {  # <fakebin> <row-id...>
   local fb=$1 known
   shift
@@ -387,11 +439,11 @@ test_verify_resolves_a_hold_migrated_under_the_configured_prefix() {
   fixture=$(make_beads_home migrated-prefix)
   home=${fixture%%|*}
   scout=sample-prefix-scout
-  (cd "$home" && BEADS_ACTOR=fixture tasks-axi add fm-other-legacy-row \
-    "Second migrated hold" --repo sample) >/dev/null 2>&1 \
+  tasks_in "$home" add fm-other-legacy-row \
+    "Second migrated hold" --repo sample >/dev/null 2>&1 \
     || fail "could not create the prefix-migrated fixture row"
-  (cd "$home" && BEADS_ACTOR=fixture tasks-axi hold fm-other-legacy-row \
-    --kind captain --reason "captain must decide") >/dev/null 2>&1 \
+  tasks_in "$home" hold fm-other-legacy-row \
+    --kind captain --reason "captain must decide" >/dev/null 2>&1 \
     || fail "could not hold the prefix-migrated fixture row"
   # No row in this graph carries a marker note, so the narrowed prefix guess is
   # the only resolution left for the attested legacy id.
@@ -418,10 +470,10 @@ test_marker_noted_row_wins_over_a_prefix_namesake() {
   beads=${fixture##*|}
   scout=sample-marker-wins-scout
   for row in fm-dual-row fm-marked-dual-row fm-solo-row; do
-    (cd "$home" && BEADS_ACTOR=fixture tasks-axi add "$row" "Captain call $row" \
-      --repo sample) >/dev/null 2>&1 || fail "could not create the fixture row $row"
-    (cd "$home" && BEADS_ACTOR=fixture tasks-axi hold "$row" --kind captain \
-      --reason "captain must decide") >/dev/null 2>&1 \
+    tasks_in "$home" add "$row" "Captain call $row" \
+      --repo sample >/dev/null 2>&1 || fail "could not create the fixture row $row"
+    tasks_in "$home" hold "$row" --kind captain \
+      --reason "captain must decide" >/dev/null 2>&1 \
       || fail "could not hold the fixture row $row"
   done
   bdrow "$beads" note fm-marked-dual-row \
@@ -449,11 +501,11 @@ test_complete_accepts_a_migrated_inventory_on_beads() {
   home=${fixture%%|*}
   beads=${fixture##*|}
   scout=sample-complete-scout
-  (cd "$home" && BEADS_ACTOR=fixture tasks-axi add fm-herald-github-delete \
-    "Delete the herald repo" --repo herald) >/dev/null 2>&1 \
+  tasks_in "$home" add fm-herald-github-delete \
+    "Delete the herald repo" --repo herald >/dev/null 2>&1 \
     || fail "could not create the migrated hold fixture"
-  (cd "$home" && BEADS_ACTOR=fixture tasks-axi hold fm-herald-github-delete \
-    --kind captain --reason "captain must confirm the delete") >/dev/null 2>&1 \
+  tasks_in "$home" hold fm-herald-github-delete \
+    --kind captain --reason "captain must confirm the delete" >/dev/null 2>&1 \
     || fail "could not hold the migrated fixture row"
   bdrow "$beads" note fm-herald-github-delete \
     "migrated from data/backlog.md id herald-retire-decision-github-delete on 2026-09-04" \
@@ -506,11 +558,11 @@ test_verify_resolves_a_pre_collapse_key_through_its_derived_marker() {
   scout=sample-derived-scout
   # The row was migrated under the DERIVED pre-collapse identity, keyed by a
   # bare decision key the origin's old metadata attests.
-  (cd "$home" && BEADS_ACTOR=fixture tasks-axi add fm-dec-call \
-    "Migrated pre-collapse call" --repo sample) >/dev/null 2>&1 \
+  tasks_in "$home" add fm-dec-call \
+    "Migrated pre-collapse call" --repo sample >/dev/null 2>&1 \
     || fail "could not create the derived-marker fixture row"
-  (cd "$home" && BEADS_ACTOR=fixture tasks-axi hold fm-dec-call \
-    --kind captain --reason "captain must decide") >/dev/null 2>&1 \
+  tasks_in "$home" hold fm-dec-call \
+    --kind captain --reason "captain must decide" >/dev/null 2>&1 \
     || fail "could not hold the derived-marker fixture row"
   bdrow "$beads" note fm-dec-call \
     "migrated from data/backlog.md id $scout-decision-github-delete on 2026-09-04" \
@@ -579,6 +631,11 @@ case "${1:-}" in
         exit 1
         ;;
     esac
+    stub_prev=
+    for stub_arg in "$@"; do
+      if [ "$stub_prev" = --reason ]; then printf '%s\n' "$stub_arg" > "@HOME@/last-reason"; fi
+      stub_prev=$stub_arg
+    done
     printf 'ok: hold %s\n' "${2:-}"
     ;;
   done)
@@ -603,6 +660,7 @@ case "${1:-}" in
     printf '  id: %s\n' "@ID@"
     printf '%s\n' '  state: queued' '  held: yes' '  blocked: no' \
       '  hold_kind: captain'
+    if [ -f "@HOME@/last-reason" ]; then printf '  hold_reason: %s\n' "$(cat "@HOME@/last-reason")"; fi
     if [ -f "@HOME@/last-body" ]; then
       printf '%s' '  body: '
       perl -MJSON::PP -e 'local $/; print encode_json(<STDIN>)' < "@HOME@/last-body"
@@ -673,6 +731,124 @@ test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type() {
   [ "$issue_type" = task ] \
     || fail "create did not map to native Beads type task, got ${issue_type:-empty}"
   pass "hold creates a captain row when Beads requires due and has no captain type"
+}
+
+test_beads_scan_is_unlimited_and_uses_root_settings_with_overrides() {
+  local fixture home beads selected rows
+  for selected in environment user; do
+    fixture=$(make_beads_home "scan-overrides-$selected")
+    home=${fixture%%|*}; beads=${fixture##*|}
+    # Selection comes from elsewhere; graph keys still come from the root.
+    sed -i.bak '/^backend =/d' "$home/.tasks.toml"
+    rm "$home/.tasks.toml.bak"
+    mkdir -p "$home/user/.tasks-axi"
+    printf 'backend = "beads"\n[beads]\npath = "wrong-graph"\nbinary = "missing-binary"\nprefix = "wrong"\n' > "$home/user/.tasks-axi/config.toml"
+    tasks_in "$home" add actual-call 'Migrated call' >/dev/null || fail 'fixture create failed'
+    tasks_in "$home" hold actual-call --kind captain --reason decide >/dev/null || fail 'fixture hold failed'
+    bdrow "$beads" note actual-call 'migrated from data/backlog.md id old-call' >/dev/null
+    # Put the only marker after 60 unrelated rows; the fake's default is 50.
+    rows=$(jq '[range(0;60) | {id:("noise-" + tostring),notes:""}] + .' "$beads/rows.json")
+    printf '%s\n' "$rows" > "$beads/rows.json"
+    if [ "$selected" = user ]; then
+      rows=$(jq 'map(if .metadata then .metadata |= tojson else . end)' "$beads/rows.json")
+      printf '%s\n' "$rows" > "$beads/rows.json"
+    fi
+    write_scout_with_attested_inventory "$home" origin old-call
+    if [ "$selected" = environment ]; then
+      HOME="$home/user" TASKS_AXI_BACKEND=beads TASKS_AXI_FILE=/wrong/backlog \
+        run_captain "$home" verify origin >/dev/null || fail 'environment override lost root Beads keys'
+      # Shared transitions must clear the same ambient Markdown pin as reads.
+      # shellcheck disable=SC2016
+      PATH="$home/fakebin:$PATH" REAL_TASKS_AXI="$TASKS_AXI_BIN" FM_HOME="$home" \
+        TASKS_AXI_BACKEND=beads TASKS_AXI_FILE=/wrong/backlog bash -c '
+          . "$1/bin/fm-tasks-axi-lib.sh"
+          . "$1/bin/fm-backlog-transition-lib.sh"
+          fm_backlog_mutate "$2/data" update actual-call --body "Migration evidence retained"
+        ' _ "$ROOT" "$home" || fail 'transition inherited a Markdown file override'
+    else
+      HOME="$home/user" run_captain "$home" verify origin >/dev/null || fail 'user override lost root Beads keys'
+    fi
+    assert_grep 'list --all --limit 0 --json' "$beads/transport.log" 'migration scan retained the default cap'
+    # Physical fm-actual-call differs from the backend's logical actual-call.
+    assert_grep 'show actual-call' "$home/backend.log" 'scan did not use the backend logical ID'
+    tasks_in "$home" add fm-prefix-only 'Prefix fallback' >/dev/null || fail 'prefix fixture create failed'
+    tasks_in "$home" hold fm-prefix-only --kind captain --reason decide >/dev/null || fail 'prefix fixture hold failed'
+    write_scout_with_attested_inventory "$home" prefix-origin prefix-only
+    HOME="$home/user" run_captain "$home" verify prefix-origin >/dev/null || fail 'user backend selection lost the root prefix'
+  done
+  pass 'Beads migration scans all rows with root settings under environment and user selection'
+}
+
+test_beads_hold_due_override_and_readback() {
+  local fixture home beads out mode rc
+  fixture=$(make_beads_home due-forwarding)
+  home=${fixture%%|*}; beads=${fixture##*|}
+  printf 'due:\n    required: true\n' > "$beads/config.yaml"
+  BD_DUE_REQUIRED=true run_captain "$home" hold new-call --title 'Choose route' \
+    --reason decide --until 2099-01-01 >/dev/null || fail 'captain create did not waive due policy'
+  assert_grep 'due=false fixture-create new-call' "$beads/transport.log" 'due override did not reach the transport'
+  grep -q '^due=true hold new-call .*--until 2099-01-01' "$home/backend.log" || fail 'due override leaked beyond captain creation'
+  out=$(tasks_in "$home" show new-call --full)
+  assert_contains "$out" 'hold_until: 2099-01-01' 'deferral failed to round-trip'
+  rc=0
+  BD_DUE_REQUIRED=true tasks_in "$home" add ordinary 'Ordinary work' > "$home/ordinary.err" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail 'ordinary work bypassed due-required policy'
+  assert_grep 'code: VALIDATION_ERROR' "$home/ordinary.err" 'ordinary due refusal lost its structured error'
+  assert_no_grep ' --due ' "$home/backend.log" 'hold synthesized a due date'
+  for mode in lost wrong-reason wrong-until closed read-error read-hang error stdout-error hang; do
+    fixture=$(make_beads_home "hold-readback-$mode")
+    home=${fixture%%|*}
+    tasks_in "$home" add existing 'Existing row' >/dev/null || fail 'fixture create failed'
+    rc=0
+    FM_TEST_BEADS_HOLD="$mode" FM_TASKS_AXI_TIMEOUT=2 FM_BACKLOG_ROW_TIMEOUT_SECS=2 \
+      run_captain "$home" hold existing --reason decide --until 2099-01-01 > "$home/refusal" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "hold silently succeeded after $mode"
+    case "$mode" in
+      read-error|error|stdout-error) assert_grep 'code: CONFLICT' "$home/refusal" 'backend read/write error was hidden' ;;
+      hang|read-hang) assert_equals 124 "$rc" 'hanging hold lost timeout status'; assert_grep 'code: TIMEOUT' "$home/refusal" 'timeout was unstructured' ;;
+      wrong-reason) assert_grep 'did not retain its captain hold reason' "$home/refusal" 'read-back did not detect the wrong reason' ;;
+      wrong-until) assert_grep 'did not retain its captain hold deferral' "$home/refusal" 'read-back did not detect the wrong deferral' ;;
+      *) assert_grep 'did not retain' "$home/refusal" 'read-back did not detect the lost hold fields' ;;
+    esac
+    case "$mode" in
+      lost|wrong-reason|wrong-until|closed) assert_grep 'code: BACKEND_ERROR' "$home/refusal" 'failed hold verification was unstructured' ;;
+    esac
+    if [ "$mode" = hang ]; then
+      out=$(tasks_in "$home" show existing --full)
+      assert_contains "$out" 'Captain hold set:' 'timeout erased provenance of a potentially committed hold'
+    fi
+  done
+  pass 'captain creation alone waives due policy and holds verify reason and deferral through the backend'
+}
+
+test_beads_scan_errors_are_bounded_and_structured() {
+  local mode fixture home rc
+  for mode in hang error envelope malformed bad-metadata; do
+    fixture=$(make_beads_home "scan-error-$mode")
+    home=${fixture%%|*}
+    write_scout_with_attested_inventory "$home" origin old-call
+    rc=0
+    FM_TEST_BEADS_SCAN="$mode" FM_BACKLOG_ROW_TIMEOUT_SECS=2 \
+      run_captain "$home" verify origin > "$home/refusal" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "migration scan accepted $mode"
+    assert_grep 'code: ' "$home/refusal" 'scan failure lost structured code'
+    assert_no_grep 'no captain-held task' "$home/refusal" 'scan error became absence'
+  done
+  fixture=$(make_beads_home read-error-no-create)
+  home=${fixture%%|*}
+  touch "$home/read-error"
+  rc=0
+  run_captain "$home" hold new-call --title 'New call' --reason decide > "$home/refusal" 2>&1 || rc=$?
+  assert_equals 2 "$rc" 'backend error was treated as absence'
+  assert_no_grep ' add ' "$home/backend.log" 'failed read created a duplicate row'
+  assert_grep 'code: CONFLICT' "$home/refusal" 'read failure lost its backend code'
+  rm "$home/read-error"
+  rc=0
+  FM_TEST_BEADS_PROBE=hang FM_TASKS_AXI_TIMEOUT=2 \
+    run_captain "$home" hold new-call --title 'New call' --reason decide > "$home/refusal" 2>&1 || rc=$?
+  assert_equals 124 "$rc" 'hanging compatibility probe lost timeout status'
+  assert_grep 'code: TIMEOUT' "$home/refusal" 'compatibility timeout was unstructured'
+  pass 'Beads scan failures and read errors fail closed within their bounds'
 }
 
 # Reproduces the loss exactly with privacy-safe synthetic names: the investigation
@@ -4814,7 +4990,8 @@ SH
   if run_captain "$home" complete o fm-call >/dev/null 2> "$home/read.err"; then
     fail "an unreadable backend identity was treated as an absent origin"
   fi
-  assert_grep 'could not resolve the backend identity of o' "$home/read.err" "the identity read failure was hidden"
+  assert_grep 'could not read task o from the backlog backend' "$home/read.err" "the identity read failure was hidden"
+  assert_grep 'code: READ_FAILED' "$home/read.err" "the identity read failure lost its structured code"
   assert_equals "$before" "$(cat "$home/state/o.meta")" "a failed identity read changed the inventory"
   rm "$home/fail-identity"
   write_origin_meta "$home" report-only
@@ -5182,5 +5359,8 @@ test_verify_names_the_unresolvable_legacy_id_once
 test_verify_resolves_a_pre_collapse_key_through_its_derived_marker
 test_captain_hold_mutations_address_the_beads_backend
 test_hold_creates_a_captain_row_when_beads_requires_due_without_custom_type
+test_beads_scan_is_unlimited_and_uses_root_settings_with_overrides
+test_beads_hold_due_override_and_readback
+test_beads_scan_errors_are_bounded_and_structured
 test_archived_answered_hold_still_satisfies_the_gate
 test_archived_answer_in_a_user_configured_archive_satisfies_the_gate

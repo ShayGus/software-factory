@@ -341,6 +341,9 @@ fm_tasks_axi_timeout_expired() {  # <status>
 
 fm_tasks_axi() {
   local bound=${FM_TASKS_AXI_TIMEOUT:-}
+  # Addressing belongs to this home's root and explicit markdown --file flag.
+  # An ambient markdown pin must never redirect or invalidate another adapter.
+  unset TASKS_AXI_FILE
   if [ -z "$bound" ]; then
     exec tasks-axi "$@"
   fi
@@ -391,7 +394,7 @@ fm_backlog_row_show() {  # <resolved-data-dir> <id> [flag...]
     set -- "$@" --file "$FM_BACKLOG_AXI_FILE"
   fi
   # shellcheck disable=SC2016  # Expansion is deliberately deferred to the child shell.
-  out=$(fm_run_timed "$secs" bash -c 'cd "$1" 2>/dev/null || exit 1; shift; exec tasks-axi show "$@"' \
+  out=$(fm_run_timed "$secs" bash -c 'cd "$1" 2>/dev/null || exit 1; shift; unset TASKS_AXI_FILE; exec tasks-axi show "$@"' \
     _ "$FM_BACKLOG_AXI_ROOT" "$id" "$@" 2>&1)
   status=$?
   # A backend that wrote a header or a progress line before wedging leaves that

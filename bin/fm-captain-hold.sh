@@ -302,6 +302,11 @@ fail() {
   exit 1
 }
 
+fail_backend() {
+  printf 'code: BACKEND_ERROR\n' >&2
+  fail "$@"
+}
+
 validate_slug() {  # <label> <value>
   local label=$1 value=$2
   case "$value" in
@@ -370,27 +375,50 @@ load_decision() {  # <path>; sets DECISION_TEXT and DECISION_DIGEST
 # with a relocated data directory keeps one backlog. The explicit --file file
 # belongs to the markdown backend only; a non-markdown backend is addressed by
 # the root's own tasks-axi configuration, exactly like the transition library's
-# mutate path.
+# mutate path. Commands have a 30-second bound (FM_TASKS_AXI_TIMEOUT overrides
+# it); reads and migration scans use FM_BACKLOG_ROW_TIMEOUT_SECS, default 10.
+# Timeout diagnostics carry code: TIMEOUT; other transport/scan errors retain
+# the backend code or carry code: BACKEND_ERROR and never count as absence.
 tasks_axi() {
-  local data file root backend
+  local data file root backend output rc=0 secs=${FM_TASKS_AXI_TIMEOUT:-30}
   data=$(fm_backlog_data_absolute "$DATA") || fail "data directory cannot be resolved: $DATA"
   root=$(fm_backlog_root "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
   backend=$(fm_tasks_axi_backend "$root") || return 2
   if [ "$backend" = markdown ]; then
     file=$(fm_backlog_file "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
-    (cd "$root" && tasks-axi "$@" --file "$file")
-  else
-    (cd "$root" && tasks-axi "$@")
+    set -- "$@" --file "$file"
   fi
+  case "$secs" in ''|0*|*[!0-9]*) secs=30 ;; esac
+  output=$(cd "$root" && unset TASKS_AXI_FILE && fm_run_timed "$secs" tasks-axi "$@" 2>&1) || rc=$?
+  if fm_timed_out "$rc"; then
+    printf 'fm-captain-hold: tasks-axi %s exceeded its %ss command bound\ncode: TIMEOUT\n' "$1" "$secs" >&2
+    return 124
+  fi
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$output" >&2
+    printf '%s\n' "$output" | grep -q '^code: ' || printf 'code: BACKEND_ERROR\n' >&2
+    return "$rc"
+  fi
+  printf '%s\n' "$output"
+  return "$rc"
 }
 
 require_tasks_axi() {
-  fm_tasks_axi_compatible || fail "compatible tasks-axi is required"
-  tasks-axi hold --help 2>&1 | grep -F -- '--kind captain' >/dev/null \
+  local output rc=0 secs=${FM_TASKS_AXI_TIMEOUT:-30}
+  case "$secs" in ''|0*|*[!0-9]*) secs=30 ;; esac
+  # A transport may connect even for help/version; bound the whole probe too.
+  # shellcheck disable=SC2016
+  output=$(fm_run_timed "$secs" bash -c 'unset TASKS_AXI_FILE; . "$1/fm-tasks-axi-lib.sh"; fm_tasks_axi_compatible && tasks-axi hold --help' _ "$SCRIPT_DIR" 2>&1) || rc=$?
+  if fm_timed_out "$rc"; then
+    printf 'fm-captain-hold: tasks-axi compatibility probe exceeded its %ss command bound\ncode: TIMEOUT\n' "$secs" >&2
+    exit 124
+  fi
+  [ "$rc" -eq 0 ] || fail "compatible tasks-axi is required: $output"
+  printf '%s\n' "$output" | grep -F -- '--kind captain' >/dev/null \
     || fail "tasks-axi does not expose the captain-hold contract"
 }
 
-# Read one row into TASK_SHOW_OUTPUT; a non-zero return means the row is
+# Read one row into TASK_SHOW_OUTPUT; only NOT_FOUND means the row is
 # absent. A read that could not finish inside its bound is NOT absence, and
 # every caller below would otherwise spend it as one - minting a duplicate task,
 # skipping a keyed answer, or reporting a task that exists as missing. So the
@@ -402,14 +430,23 @@ TASK_SHOW_OUTPUT=
 task_show() {  # <id>; sets TASK_SHOW_OUTPUT
   local data status=0 reason
   data=$(fm_backlog_data_absolute "$DATA") || fail "data directory cannot be resolved: $DATA"
-  TASK_SHOW_OUTPUT=$(fm_backlog_row_show "$data" "$1" --full 2>/dev/null) || status=$?
+  TASK_SHOW_OUTPUT=$(fm_backlog_row_show "$data" "$1" --full 2>&1) || status=$?
   if [ "$status" -eq 124 ]; then
     reason=${TASK_SHOW_OUTPUT%%$'\n'*}
     printf 'fm-captain-hold: %s\n' \
       "${reason:-tasks-axi show $1 exceeded its backlog read bound}" >&2
+    printf 'code: TIMEOUT\n' >&2
     exit 124
   fi
-  return "$status"
+  if [ "$status" -ne 0 ]; then
+    if printf '%s\n' "$TASK_SHOW_OUTPUT" | grep -qx 'code: NOT_FOUND'; then
+      return 1
+    fi
+    printf 'fm-captain-hold: could not read task %s from the backlog backend\n%s\n' "$1" "$TASK_SHOW_OUTPUT" >&2
+    printf '%s\n' "$TASK_SHOW_OUTPUT" | grep -q '^code: ' || printf 'code: BACKEND_ERROR\n' >&2
+    exit 2
+  fi
+  return 0
 }
 
 # Read one row into `show`, failing with <absence-message> only when the read
@@ -635,7 +672,7 @@ captain_beads_setting() {  # <entries-output> <setting>
 # report's handful of attested ids. Returns 0 when the listing loads, and 2
 # with the reason on stderr when the graph cannot be read.
 captain_migration_scan_load() {  # <resolved-data-dir>
-  local data=$1 root entries bd_bin bd_path backend
+  local data=$1 root entries bd_bin bd_path backend rc=0 secs=${FM_BACKLOG_ROW_TIMEOUT_SECS:-10}
   [ "$CAPTAIN_MIGRATION_SCAN_LOADED" = 1 ] && return 0
   root=$(fm_backlog_root "$data") || {
     printf 'fm-captain-hold: the configured data directory cannot be resolved for a migration scan: %s\n' "$FM_BACKLOG_TRANSITION_ERROR" >&2
@@ -660,6 +697,10 @@ captain_migration_scan_load() {  # <resolved-data-dir>
     /*) ;;
     *) bd_path="$root/$bd_path" ;;
   esac
+  case "$bd_bin" in
+    /*) ;;
+    */*) bd_bin="$root/$bd_bin" ;;
+  esac
   command -v "$bd_bin" >/dev/null 2>&1 || {
     printf 'fm-captain-hold: the beads binary %s is not on PATH, so a migrated hold cannot be found\n' "$bd_bin" >&2
     return 2
@@ -673,13 +714,25 @@ captain_migration_scan_load() {  # <resolved-data-dir>
     printf 'fm-captain-hold: cannot stage the beads graph read diagnostics\n' >&2
     return 2
   }
-  if ! CAPTAIN_MIGRATION_SCAN_JSON=$(BEADS_DIR="$bd_path" "$bd_bin" list --all --json 2>"$bd_err"); then
+  case "$secs" in ''|*[!0-9]*) secs=10 ;; esac
+  [ "$secs" -gt 0 ] 2>/dev/null || secs=10
+  CAPTAIN_MIGRATION_SCAN_JSON=$(BEADS_DIR="$bd_path" BEADS_DOLT_AUTO_START=0 fm_run_timed "$secs" "$bd_bin" list --all --limit 0 --json 2>"$bd_err") || rc=$?
+  if [ "$rc" -ne 0 ]; then
     printf 'fm-captain-hold: reading the beads graph at %s failed (%s), so a migrated hold cannot be found\n' \
       "$bd_path" "$(sanitize_field "$(head -c 200 "$bd_err" | tr '\n' ' ')")" >&2
     rm -f "$bd_err"
+    if fm_timed_out "$rc"; then
+      printf 'fm-captain-hold: beads migration scan exceeded its %ss read bound\ncode: TIMEOUT\n' "$secs" >&2
+    else
+      printf 'code: BACKEND_ERROR\n' >&2
+    fi
     return 2
   fi
   rm -f "$bd_err"
+  if ! printf '%s\n' "$CAPTAIN_MIGRATION_SCAN_JSON" | jq -e 'type == "array" and all(.[]; type == "object" and (.id | type == "string") and ((.notes // "") | type == "string"))' >/dev/null 2>&1; then
+    printf 'fm-captain-hold: beads migration scan returned an invalid row listing\ncode: BACKEND_ERROR\n' >&2
+    return 2
+  fi
   CAPTAIN_MIGRATION_SCAN_LOADED=1
   return 0
 }
@@ -724,8 +777,8 @@ resolve_migrated_entry() {  # <origin-or-empty> <entry>
       candidate_matches=$(printf '%s\n' "$CAPTAIN_MIGRATION_SCAN_JSON" | jq -r \
         --arg exact "migrated from data/backlog.md id $candidate" \
         --arg dated "migrated from data/backlog.md id $candidate on " \
-        '.[] | select(((.notes // "") | split("\n")) | any(. == $exact or startswith($dated))) | .id' 2>/dev/null) || {
-        printf 'fm-captain-hold: the beads graph scan for the migrated hold of %s could not be parsed\n' "$candidate" >&2
+        '.[] | select(((.notes // "") | split("\n")) | any(. == $exact or startswith($dated))) | . as $row | .metadata as $m | (if ($m | type) == "string" then ($m | fromjson) else $m end) | .tasks_axi.logical_id // $row.id' 2>/dev/null) || {
+        printf 'fm-captain-hold: the beads graph scan for the migrated hold of %s could not be parsed\ncode: BACKEND_ERROR\n' "$candidate" >&2
         return 2
       }
       matches="${matches}${matches:+$NL_SEP}${candidate_matches}"
@@ -755,7 +808,7 @@ resolve_migrated_entry() {  # <origin-or-empty> <entry>
     esac
     # Same shell rule as task_show_or_fail: the row is read out of
     # TASK_SHOW_OUTPUT, so the read cannot sit inside a command substitution.
-    task_show "$prefixed" 2>/dev/null || {
+    task_show "$prefixed" || {
       [ "$?" -ne 124 ] || return 124
       continue
     }
@@ -1184,17 +1237,28 @@ command_hold() {
       || hold_status=$?
   fi
   if [ "$hold_status" -ne 0 ]; then
+    # A timed-out write may already have committed. Preserve its stamp so a
+    # read/retry can reconcile that outcome instead of erasing its provenance.
+    [ "$hold_status" -ne 124 ] || exit 124
     # Restore the body without resolving its old origin again. The new origin
     # is still unpublished even if this best-effort restoration fails.
     restore_hold_body "$id" "$original_body" || true
     fail "could not hold task $id for the captain"
   fi
-  task_show "$id" || fail "task $id disappeared while holding it"
+  task_show "$id" || fail_backend "task $id disappeared while holding it"
   show=$TASK_SHOW_OUTPUT
+  case "$(show_field "$show" state)" in
+    queued|in_flight) : ;;
+    *) fail_backend "task $id did not retain an open lifecycle state while holding it" ;;
+  esac
   hold_kind=$(show_field_value "$show" hold_kind)
-  [ "$hold_kind" = captain ] || fail "task $id did not retain its captain hold"
+  [ "$hold_kind" = captain ] || fail_backend "task $id did not retain its captain hold"
+  [ "$(show_field_value "$show" hold_reason)" = "$stored_reason" ] \
+    || fail_backend "task $id did not retain its captain hold reason"
+  [ "$(show_field_value "$show" hold_until)" = "$until" ] \
+    || fail_backend "task $id did not retain its captain hold deferral"
   [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
-    || fail "task $id lost its hold-set stamp while being held"
+    || fail_backend "task $id lost its hold-set stamp while being held"
   occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))
   publish_parent_hold "$id" "$occurrence" needs-decision "$reason" "$until"
   if [ -n "$origin" ]; then

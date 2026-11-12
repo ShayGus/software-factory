@@ -484,7 +484,10 @@ A home may instead select another tasks-axi adapter such as Beads through its ow
 Captain-hold row creation is owned by [`bin/fm-captain-hold.sh`](../bin/fm-captain-hold.sh) `hold`: when no work item exists, it creates an ordinary backlog row (`--kind captain` metadata; Beads native type `task`) and then applies the captain hold.
 Captain rows have no Beads due semantics, so that create path waives a Beads `due.required` setting rather than passing a synthetic `--due`; `--until` remains the optional hold deferral.
 
-Do not register a Beads `types.custom` `captain` type for this: captain is a hold kind, and the fleet Beads `due.required` policy for ordinary work stays in the federated beads config.
+Do not register a Beads `types.custom` `captain` type for this: captain is a hold kind.
+Only the captain-row create call sets `BD_DUE_REQUIRED=false`; the caller's policy remains in force for ordinary work and subsequent hold operations, and an executable transport must forward that override to bd.
+The one-home tasks-axi Beads backend refuses ordinary creation with `BD_DUE_REQUIRED=true` because it has no due-date input; native Beads configuration alone does not enforce that policy on the adapter's SQL writes.
+Homes requiring ordinary-work due dates must retain that explicit environment policy and its refusal until the backend supports due-date input.
 
 ### Automatic dispatch and completion
 
@@ -511,7 +514,9 @@ Any other configured adapter is addressed by that root alone, because `--file` w
 The gate does not apply to persistent secondmates, manual-backend homes, or markdown homes without a backlog file.
 Those retain their existing persistent-agent, manual, or ad-hoc lifecycle behavior.
 Configured non-markdown adapters remain active without that file.
-Migrated-hold resolution on a beads home reads its graph path, binary, and prefix from the root `.tasks.toml` `[beads]` section only, and refuses (rc=2) when the beads backend is selected elsewhere (a `TASKS_AXI_BACKEND` override or user-level config) with no root-level `[beads]` section.
+Migrated-hold resolution on a beads home reads its graph path, binary, and prefix from the root `.tasks.toml` `[beads]` section even when a `TASKS_AXI_BACKEND` override or user-level config selects the backend, and refuses (rc=2) without that root graph configuration.
+The scan includes every row, resolves relative graph and executable paths against the backlog root, and uses the backend's logical identity when migration markers name native physical rows.
+Captain holds are read back through tasks-axi after writing, including their reason and optional deferral; backend failures remain errors rather than missing rows ([command bounds and error codes](../bin/fm-captain-hold.sh)).
 
 On an automatic-backend home, missing or incompatible `tasks-axi`, an unresolvable configured data directory, or one containing a control byte fails lifecycle work before mutation.
 An unreadable backend configuration can refuse lifecycle work before the no-backlog exemption applies; repair the configuration named in the diagnostic ([backend resolution contract](../bin/fm-tasks-axi-lib.sh)).
