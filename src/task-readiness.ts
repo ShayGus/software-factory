@@ -1,4 +1,4 @@
-import type { FactoryRecord, TaskMapping } from './records.js';
+import type { Assignment, FactoryRecord, TaskMapping } from './records.js';
 
 export const currentTaskMappings = (records: FactoryRecord[]) =>
   records.filter((record): record is TaskMapping => record.kind === 'task_mapping');
@@ -50,6 +50,16 @@ export function assertTaskDependencyAcyclic(records: FactoryRecord[]): void {
   for (const id of graph.keys()) visit(id);
 }
 
+/** Collapse revisions within each ID, then resolve current task attempts by
+ * update time. Ties across IDs remain explicit ambiguity for every caller. */
+export function currentAssignmentAttempts(records: FactoryRecord[], accepts: (assignment: Assignment) => boolean): Assignment[] {
+  const byId = new Map<string, Assignment>();
+  for (const record of records) if (record.kind === 'assignment' && record.revision > (byId.get(record.id)?.revision ?? 0)) byId.set(record.id, record);
+  const assignments = [...byId.values()].filter(accepts);
+  const latestTime = Math.max(...assignments.map((assignment) => Date.parse(assignment.updatedAt)));
+  return assignments.filter((assignment) => Date.parse(assignment.updatedAt) === latestTime);
+}
+
 /** Product facts are independent of tasks-axi's done flag. Artifact availability
  * can be supported by a non-passing result; a criterion requires passing current
  * evidence from the specifically mapped producer's current assignment. */
@@ -68,20 +78,13 @@ export function taskReadinessReasons(records: FactoryRecord[], mapping: TaskMapp
       reasons.push(`Unresolved prerequisite ${requirement.prerequisiteTaskId}: ${requirement.reason}`);
       continue;
     }
-    const byAssignmentId = new Map<string, Extract<FactoryRecord, { kind: 'assignment' }>>();
-    for (const record of records) if (record.kind === 'assignment' &&
-      record.revision > (byAssignmentId.get(record.id)?.revision ?? 0)) byAssignmentId.set(record.id, record);
-    const assignments = [...byAssignmentId.values()].filter((record) =>
+    const latest = currentAssignmentAttempts(records, (record) =>
       record.firstMateTaskId === producer.firstMateTaskId &&
       record.detailedPlanTask.id === producer.detailedPlanTask?.id &&
       record.detailedPlanTask.revision === producer.detailedPlanTask.revision &&
       record.feature?.id === producer.feature?.id && record.feature?.revision === producer.feature?.revision &&
       record.criteria.length === producer.criteria.length && record.criteria.every((criterion) =>
         producer.criteria.some((entry) => entry.id === criterion.id && entry.revision === criterion.revision)));
-    // Revisions order records only within one assignment ID. Distinct IDs tied
-    // at the latest time remain unresolved without a task-wide attempt order.
-    const latestTime = Math.max(...assignments.map((assignment) => Date.parse(assignment.updatedAt)));
-    const latest = assignments.filter((assignment) => Date.parse(assignment.updatedAt) === latestTime);
     const available = records.some((result) => result.kind === 'criterion_result' && result.artifact &&
       result.evidence.length > 0 && latest.length === 1 && latest.some((assignment) =>
         assignment.id === result.assignment.id && assignment.revision === result.assignment.revision) &&

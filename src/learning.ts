@@ -1,3 +1,5 @@
+import { currentAssignmentAttempts } from './task-readiness.js';
+import { markdownSectionRange } from './markdown-sections.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -8,7 +10,7 @@ import { ProjectAgentConfigSchema } from './agent-profiles.js';
 import { runStepAgent } from './agent-runner.js';
 import { parseStrictJson } from './strict-json.js';
 import { ProjectStore, StoreError } from './store.js';
-import { activeGuidance, learningDigest, learningKey, legacySectionsForGuidance } from './learning-context.js';
+import { activeGuidance, learningDigest, learningKey, legacySectionsForGuidance, uniqueLegacySections } from './learning-context.js';
 
 const ref = ({ id, revision }: Ref): Ref => ({ id, revision });
 const same = (a: Ref, b: Ref) => a.id === b.id && a.revision === b.revision;
@@ -56,19 +58,26 @@ export function captureLearning(store: ProjectStore, input: unknown) {
       if (data.feature.changeReason !== data.finding) fail('correction_reason_must_preserve_instruction');
       // The transaction commits both the exact proposed feature revision and the current
       // assignment projections. Revision checks in the store cover all writes.
-      const assignments = data.feature ? records.filter((record) => record.kind === 'assignment' && record.feature?.id === data.feature!.id).map((record) => {
-        if (record.kind !== 'assignment') throw new Error('unreachable');
+      const taskIds = new Set(records.filter((record) => record.kind === 'task_mapping' && record.disposition.state === 'active' &&
+        record.feature?.id === data.feature!.id).map((record) => record.kind === 'task_mapping' ? record.firstMateTaskId : ''));
+      const activeAssignments = [...taskIds].flatMap((taskId) => {
+        const attempts = currentAssignmentAttempts(records, (assignment) => assignment.firstMateTaskId === taskId);
+        if (attempts.length > 1) throw new StoreError('conflict', 'ambiguous_active_assignment');
+        return attempts.filter((assignment) => assignment.feature?.id === data.feature!.id);
+      });
+      const assignments = activeAssignments.map((record) => {
         const correctionSource = { uri: `factory:record/${encodeURIComponent(observation.id)}@1`, record: ref(observation) };
         return { ...record, revision: record.revision + 1, updatedAt: data.issuedAt,
           sourceRefs: [...record.sourceRefs, correctionSource],
           selectedContext: [...record.selectedContext, { source: correctionSource, extract: data.finding, truncated: false }],
           instructionText: `${record.instructionText}\n\nCurrent feature correction:\n${data.finding}`,
           instructionFidelity: { ...record.instructionFidelity, result: 'blocked' as const, comparedAt: data.issuedAt } };
-      }) : [];
+      });
       writes.push(data.feature, ...assignments);
     } else if (data.feature) fail('feature_write_requires_local_correction');
     if (data.inputKind === 'standing_instruction') {
-      const overlapping = activeGuidance(records).filter((record) => record.learning && learningKey(record.learning) === learningKey(data.identity));
+      const overlapping = activeGuidance(records).filter((record) => record.learning && (learningKey(record.learning) === learningKey(data.identity) ||
+        data.identity.scope.kind === 'project' && record.learning.topic === data.identity.topic && record.learning.authority !== 'explicit'));
       if (!overlapping.every((record) => data.supersedes.some((r) => same(r, record))) ||
         !data.supersedes.every((r) => overlapping.some((record) => same(r, record)))) fail('standing_instruction_requires_exact_supersession');
       writes.push({ kind: 'guidance_revision', ...meta(data.projectId, `${data.id}:guidance`, data.issuedAt),
@@ -78,7 +87,7 @@ export function captureLearning(store: ProjectStore, input: unknown) {
     } else if (data.supersedes.length) fail('supersession_requires_standing_instruction_or_consolidation');
     return writes;
   });
-  return { ...result, sectionDiffs: data.inputKind === 'standing_instruction' ? data.legacySections.map((section) => legacySectionDiff(section, data.finding)) : [] };
+  return { ...result, sectionDiffs: data.inputKind === 'standing_instruction' ? uniqueLegacySections(data.legacySections).map((section) => legacySectionDiff(section, data.finding)) : [] };
 }
 
 export function captureStowObservation(store: ProjectStore, input: Omit<CaptureLearningInput, 'captureReason' | 'inputKind'> & { compaction?: boolean }) {
@@ -90,13 +99,7 @@ export function captureStowObservation(store: ProjectStore, input: Omit<CaptureL
  * exact bytes for a reviewable section replacement. Never writes the source. */
 export function readLegacySection(uri: string, heading: string) {
   const text = readFileSync(uri.startsWith('file:') ? fileURLToPath(uri) : uri, 'utf8');
-  const matches = [...text.matchAll(/^#{1,6} .+$/gm)];
-  const indices = matches.filter((match) => match[0] === heading);
-  if (indices.length !== 1) fail('legacy_heading_missing_or_ambiguous');
-  const start = indices[0]!.index!;
-  const level = heading.indexOf(' ');
-  const next = matches.find((match) => match.index! > start && match[0].indexOf(' ') <= level);
-  const before = text.slice(start, next?.index ?? text.length);
+  const { before } = markdownSectionRange(text, heading);
   return LegacySectionSchema.parse({ uri, heading, before, digest: learningDigest(before) });
 }
 
@@ -166,8 +169,7 @@ export function consolidateLearning(store: ProjectStore, input: unknown, agentCo
         replaced.forEach((g) => touched.add(g.id));
         if (decision.outcome === 'update' && replaced.length !== 1) fail('update_requires_one_guidance');
         const old = decision.outcome === 'update' ? replaced[0] : undefined;
-        const legacy = [...replaced.flatMap((g) => legacySectionsForGuidance(store.history(data.projectId), g)), ...group.observations.flatMap((o) => o.legacySections ?? [])]
-          .filter((section, index, sections) => sections.findIndex((other) => other.uri === section.uri && other.heading === section.heading && other.digest === section.digest) === index);
+        const legacy = uniqueLegacySections([...replaced.flatMap((g) => legacySectionsForGuidance(store.history(data.projectId), g)), ...group.observations.flatMap((o) => o.legacySections ?? [])]);
         for (const section of legacy) {
           if (learningDigest(section.before) !== section.digest) fail('legacy_digest_mismatch');
           const current = readLegacySection(section.uri, section.heading);

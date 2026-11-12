@@ -12,7 +12,8 @@ export function workerAssignmentMetadata(assignment: Assignment) {
     plan: assignment.plan, detailedPlanTask: assignment.detailedPlanTask, criteria: assignment.criteria,
     returnLocation: assignment.returnLocation, briefPath: assignment.brief?.path, sidecarPath: assignment.brief?.sidecarPath,
     sourceRefs: assignment.sourceRefs, prerequisiteArtifacts: assignment.prerequisiteArtifacts,
-    contextPointers: assignment.selectedContext.map(({ source, artifact, truncated }) => ({ source, artifact, truncated })) };
+    contextPointers: assignment.selectedContext.map(({ source, artifact, projectedArtifact, truncated }) => ({ source, artifact,
+      ...(projectedArtifact ? { projectedArtifact } : {}), truncated })) };
 }
 export const assignmentBlockBegin = '<!-- software-factory-assignment:v1:begin -->';
 export const assignmentBlockEnd = '<!-- software-factory-assignment:v1:end -->';

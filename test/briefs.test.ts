@@ -443,7 +443,8 @@ for (const labelled of [false, true]) test(`review 1102-3: excerpt context is in
   } finally { flow.close(); }
 });
 
-test('adopted legacy sections survive real brief preparation and fidelity checks without retired text', () => {
+for (const inputKind of ['inferred', 'operational'] as const) for (const snapshot of ['full', 'pinned', 'range'] as const)
+test(`adopted legacy sections survive real brief preparation and fidelity checks (${inputKind}, ${snapshot})`, () => {
   const directory = mkdtempSync(join(tmpdir(), 'sf-adopted-memory-'));
   const memoryPath = join(directory, 'memory.md');
   const memory = '# Memory\n\n## Guidance\nRetired guidance text.\n\n## Continuity\nRetain current operational context.\n';
@@ -451,13 +452,21 @@ test('adopted legacy sections survive real brief preparation and fidelity checks
   const flow = setup({ editRecords: (records) => {
     const design = records.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
     design.sourceRefs.push({ uri: memoryPath });
+    if (snapshot === 'pinned') {
+      const request = records.find((record) => record.kind === 'request'); assert.ok(request?.kind === 'request');
+      request.attachments.push({ uri: memoryPath, digest: digestText(memory) });
+    }
   } });
   try {
     const sourceFile = flow.sourceFiles.find((source) => source.source.uri === memoryPath); assert.ok(sourceFile);
     writeFileSync(sourceFile.path, memory);
+    if (snapshot === 'range') {
+      const extract = 'Retain current operational context.'; const start = memory.indexOf(extract);
+      flow.input.sourceFiles = flow.sourceFiles.map((file) => file === sourceFile ? { ...file, start, end: start + extract.length } : file);
+    }
     const at = '2026-11-12T08:30:00.000Z';
     captureLearning(flow.store, { projectId, id: 'legacy-observation', idempotencyKey: 'legacy-capture', issuedAt: at,
-      identity: { scope: { kind: 'project' }, topic: 'legacy-adoption' }, inputKind: 'inferred', captureReason: 'stow',
+      identity: { scope: { kind: 'project' }, topic: 'legacy-adoption' }, inputKind, captureReason: 'stow',
       finding: 'The legacy guidance is obsolete.', proposedGeneralization: 'Use current consolidated guidance.',
       evidence: [{ artifact: { uri: memoryPath, digest: digestText(memory) }, description: 'Legacy guidance source', observedAt: at }],
       legacySections: [readLegacySection(memoryPath, '## Guidance')] });
@@ -471,6 +480,11 @@ test('adopted legacy sections survive real brief preparation and fidelity checks
     assert.ok(brief.includes('Use current consolidated guidance.'));
     assert.ok(sidecar.includes('Retain current operational context.'));
     assert.ok(!brief.includes('Retired guidance text.') && !sidecar.includes('Retired guidance text.'));
+    const context = flow.assignment().selectedContext.find((entry) => entry.source.uri === memoryPath); assert.ok(context);
+    if (snapshot === 'pinned') assert.equal(context.artifact?.digest, digestText(memory));
+    if (snapshot === 'range') assert.equal(context.extract, 'Retain current operational context.');
+    const originalObservation = flow.store.get(projectId, 'legacy-observation'); assert.ok(originalObservation?.kind === 'observation');
+    assert.ok(originalObservation.legacySections?.[0]?.before.includes('Retired guidance text.'));
     const check = flow.check(); assert.equal(check.ok, true, JSON.stringify(check));
     assert.equal(readFileSync(memoryPath, 'utf8'), memory);
     assert.equal(readFileSync(sourceFile.path, 'utf8'), memory);

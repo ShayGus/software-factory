@@ -9,7 +9,7 @@ import {
   ProjectStore, RecordsSchema, captureLearning, captureStowObservation, consolidateLearning,
   learningContext, activeGuidance, projectLegacyContext, readLegacySection, runScheduledLearning,
   latestLearningWindow, prepareLearningSchedule, selectAssignmentContext, validateRecords,
-  LearningVerdictSchema, renderWorkerBrief, type CaptureLearningInput, type ProjectAgentConfig, type GuidanceRevision,
+  LearningVerdictSchema, renderWorkerBrief, digestText, taskReadinessReasons, type FactoryRecord, type TaskMapping, type CaptureLearningInput, type ProjectAgentConfig, type GuidanceRevision,
 } from '../src/index.js';
 import { fakeJudge } from './judge-helper.js';
 const fixtures = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
@@ -18,11 +18,11 @@ const evidence = [{ artifact: { uri: 'fixture:transcript', digest: 'sha256:captu
 const identity = { scope: { kind: 'project' as const }, topic: 'rule-writing' };
 const schedule = { id: 'daily', projectId: 'project-1', timezone: 'Asia/Jerusalem', hours: [9, 21], startsAt: '2026-11-01T00:00:00.000Z' };
 const fakeUrl = new URL('../../fixtures/fake-learning-agent.mjs', import.meta.url);
-function setup(t: TestContext) {
+function setup(t: TestContext, records = fixtures) {
   const dir = mkdtempSync(join(tmpdir(), 'sf-learning-'));
   const path = join(dir, 'store.sqlite');
   const store = new ProjectStore(path);
-  store.importProject({ schemaVersion: 1, projectId: 'project-1', history: fixtures, receipts: [] });
+  store.importProject({ schemaVersion: 1, projectId: 'project-1', history: records, receipts: [] });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { store, dir, path };
 }
@@ -298,4 +298,142 @@ test('explicit legacy adoption returns an immediate section diff and projects ev
   const projected = projectLegacyContext(store.history('project-1'), path, memory);
   assert.ok(projected.trim().length > 0); assert.ok(!projected.includes('Use the retired format.'));
   assert.equal(readFileSync(path, 'utf8'), memory);
+});
+
+
+test('review 1228 finding 1: corrections update only the current task attempt and preserve producer readiness', (t) => {
+  const original = fixtures.find((record) => record.kind === 'assignment'); assert.ok(original?.kind === 'assignment');
+  const current = { ...original, id: 'assignment-current', attemptId: 'current-attempt', updatedAt: '2026-11-11T12:00:00.000Z' };
+  const { store } = setup(t, [...fixtures, current]);
+  const feature = store.get('project-1', 'feature-1'); assert.ok(feature?.kind === 'feature_revision');
+  const finding = 'Preserve the current feature correction.';
+  captureLearning(store, observation('current-only', { inputKind: 'local_correction', finding,
+    identity: { scope: { kind: 'feature', featureId: feature.id }, topic: 'current-attempt' },
+    feature: { ...feature, revision: 2, previousRevision: feature.revision, updatedAt: at, changeReason: finding } }));
+  assert.deepEqual(store.get('project-1', original.id), original, 'Retired attempts must retain their revision and timestamp');
+  const updated = store.get('project-1', current.id); assert.ok(updated?.kind === 'assignment'); assert.equal(updated.revision, 2);
+  const producer = fixtures.find((record) => record.kind === 'task_mapping'); assert.ok(producer?.kind === 'task_mapping');
+  const criterion = updated.criteria[0]!;
+  const consumer: TaskMapping = { ...producer, id: 'consumer', firstMateTaskId: 'consumer',
+    detailedPlanTask: { id: 'consumer-detail', revision: 1 }, management: { operationId: 'consumer-op',
+      managedDependencies: [], readiness: [], paused: false, holdReason: 'Product dependencies',
+      requirements: [{ prerequisiteTaskId: producer.detailedPlanTask!.id, consumerTaskId: 'consumer-detail',
+        reason: 'Current producer evidence', needs: { kind: 'criterion', criterion } }] } };
+  const result = fixtures.find((record) => record.kind === 'criterion_result'); assert.ok(result?.kind === 'criterion_result');
+  const records: FactoryRecord[] = [...store.records('project-1'), consumer,
+    { ...result, id: 'corrected-evidence', assignment: { id: updated.id, revision: updated.revision }, criterion, result: 'passed' }];
+  assert.deepEqual(taskReadinessReasons(records, consumer), []);
+});
+
+test('review 1228 finding 2: operational observation extracts and sidecar records omit adopted section bodies', (t) => {
+  const { store, dir } = setup(t); const path = join(dir, 'operational-memory.md');
+  const text = '## Rules\nRetired operational guidance.\n\n## Continuity\nKeep live context.\n'; writeFileSync(path, text);
+  captureLearning(store, observation('operational-adoption', { inputKind: 'operational', legacySections: [readLegacySection(path, '## Rules')] }));
+  consolidateLearning(store, invocation(), config(dir, { text: 'Use the current operational guidance.' }));
+  const assignment = store.get('project-1', 'assignment-1'); assert.ok(assignment?.kind === 'assignment');
+  const selected = selectAssignmentContext(store.history('project-1'), assignment, (source) => ({ uri: source.uri, text: 'Other source' }));
+  assert.ok(!JSON.stringify(learningContext(store.history('project-1'))).includes('Retired operational guidance.'), 'The learning context API must also project retired evidence');
+  assert.ok(!JSON.stringify(selected.selectedContext).includes('Retired operational guidance.'), 'Extracts must omit retired section bodies');
+  assert.ok(!JSON.stringify(selected.records).includes('Retired operational guidance.'), 'Sidecar record projection must omit retired section bodies');
+  const brief = renderWorkerBrief(store.history('project-1'), { ...assignment, selectedContext: selected.selectedContext },
+    readFileSync(new URL('../../fixtures/firstmate-brief.md', import.meta.url), 'utf8'));
+  assert.ok(!brief.includes('Retired operational guidance.'));
+  const original = store.get('project-1', 'operational-adoption'); assert.ok(original?.kind === 'observation');
+  assert.ok(original.legacySections?.[0]?.before.includes('Retired operational guidance.'), 'Original evidence stays in history');
+});
+
+test('review 1228 finding 3: re-adoption uses the current section even when the replacement has the same timestamp', (t) => {
+  const { store, dir } = setup(t); const path = join(dir, 'readopt.md');
+  writeFileSync(path, '## Rules\nFirst retired content.\n');
+  captureLearning(store, observation('first-adoption', { inputKind: 'standing_instruction', legacySections: [readLegacySection(path, '## Rules')] }));
+  const old = managed(store)[0]!;
+  const text = '## Rules\nSecond retired content.\n'; writeFileSync(path, text);
+  captureLearning(store, observation('second-adoption', { inputKind: 'standing_instruction', legacySections: [readLegacySection(path, '## Rules')],
+    supersedes: [{ id: old.id, revision: old.revision }] }));
+  const projected = projectLegacyContext(store.history('project-1'), path, text);
+  assert.ok(!projected.includes('Second retired content.'));
+});
+
+test('review 1228 finding 3: overlapping parent and child adoptions validate once against original bytes', (t) => {
+  const { store, dir } = setup(t); const path = join(dir, 'nested.md');
+  const text = '## Rules\nRetired parent.\n### Detail\nRetired child.\n## Continuity\nKeep context.\n'; writeFileSync(path, text);
+  captureLearning(store, observation('nested-adoption', { inputKind: 'standing_instruction',
+    legacySections: [readLegacySection(path, '## Rules'), readLegacySection(path, '### Detail')] }));
+  const projected = projectLegacyContext(store.history('project-1'), path, text);
+  assert.ok(!projected.includes('Retired parent.') && !projected.includes('Retired child.'));
+  assert.ok(projected.includes('Keep context.'));
+  assert.equal(projected.split('[Adopted guidance').length - 1, 1);
+});
+
+function projectionFixture(t: TestContext) {
+  const setupResult = setup(t); const { store, dir } = setupResult; const path = join(dir, 'pinned-memory.md');
+  const text = '## Rules\n' + 'Retired content. '.repeat(100) + '\n## Current\nKeep this exact selected tail.\n'; writeFileSync(path, text);
+  captureLearning(store, observation('pinned-adoption', { inputKind: 'standing_instruction', legacySections: [readLegacySection(path, '## Rules')] }));
+  const assignment = store.get('project-1', 'assignment-1'); assert.ok(assignment?.kind === 'assignment');
+  return { ...setupResult, path, text, assignment };
+}
+
+test('review 1228 finding 4: unchanged digest-pinned sources retain original and projected identities', (t) => {
+  const { store, path, text, assignment } = projectionFixture(t);
+  const artifact = { uri: path, digest: digestText(text) };
+  const records = store.history('project-1').map((record) => record.kind === 'request' ? { ...record, attachments: [...record.attachments, artifact] } : record);
+  const selected = selectAssignmentContext(records, assignment, (source) => ({ uri: source.uri, text: source.uri === path ? text : 'Other source' }));
+  assert.ok(!selected.missing.some((missing) => missing.uri === path), 'Original digest is verified before projection');
+  const context = selected.selectedContext.find((entry) => entry.source.uri === path); assert.ok(context);
+  assert.equal(context.artifact?.digest, artifact.digest);
+  const projected = context as typeof context & { projectedArtifact?: { digest?: string } };
+  assert.equal(projected.projectedArtifact?.digest, digestText(projectLegacyContext(records, path, text)));
+  assert.notEqual(projected.projectedArtifact?.digest, artifact.digest);
+  assert.ok(!context.extract?.includes('Retired content.'));
+});
+
+test('review 1228 finding 4: source snapshot offsets survive projection before the requested range', (t) => {
+  const { store, path, text, assignment } = projectionFixture(t);
+  const records = store.history('project-1').map((record) => record.kind === 'design_revision' ? { ...record, sourceRefs: [...record.sourceRefs, { uri: path }] } : record);
+  const extract = 'Keep this exact selected tail.'; const start = text.indexOf(extract);
+  const selected = selectAssignmentContext(records, assignment, (source) => source.uri === path ?
+    { uri: path, text, start, end: start + extract.length } : { uri: source.uri, text: 'Other source' });
+  assert.equal(selected.selectedContext.find((entry) => entry.source.uri === path)?.extract, extract);
+});
+
+test('review 1228 finding 5: broad standing instructions supersede overlapping inferred guidance and retain explicit feature overrides', (t) => {
+  const { store, dir } = setup(t);
+  captureLearning(store, observation('narrow-inference', { identity: { scope: { kind: 'feature', featureId: 'feature-1' }, topic: identity.topic } }));
+  consolidateLearning(store, invocation(), config(dir)); const narrow = managed(store)[0]!;
+  captureLearning(store, observation('broad-standing', { inputKind: 'standing_instruction', finding: 'Apply this instruction project-wide.',
+    supersedes: [{ id: narrow.id, revision: narrow.revision }] }));
+  assert.equal(managed(store).length, 1); assert.equal(managed(store)[0]?.learning?.scope.kind, 'project');
+  captureLearning(store, observation('explicit-feature', { inputKind: 'standing_instruction', finding: 'Use the explicit feature exception.',
+    identity: { scope: { kind: 'feature', featureId: 'feature-1' }, topic: identity.topic } }));
+  const broad = managed(store).find((guidance) => guidance.learning?.scope.kind === 'project')!;
+  captureLearning(store, observation('broad-replacement', { inputKind: 'standing_instruction', finding: 'Updated project instruction.',
+    supersedes: [{ id: broad.id, revision: broad.revision }] }));
+  assert.deepEqual(learningContext(store.history('project-1'), 'feature-1').guidance.filter((guidance) => guidance.learning).map((guidance) => guidance.text), ['Use the explicit feature exception.']);
+});
+
+test('review 1228 finding 6: guidance without learning metadata respects legacy feature scope and unclassified scope stays out', (t) => {
+  const records = structuredClone(fixtures);
+  const guidance = records.find((record) => record.kind === 'guidance_revision'); assert.ok(guidance?.kind === 'guidance_revision');
+  guidance.scope = [{ uri: 'factory:feature/feature-1', record: { id: 'feature-1', revision: 1 } }];
+  assert.ok(learningContext(records, 'feature-1').guidance.some((record) => record.id === guidance.id));
+  assert.ok(!learningContext(records, 'feature-other').guidance.some((record) => record.id === guidance.id));
+  assert.ok(!learningContext(records).guidance.some((record) => record.id === guidance.id));
+  guidance.scope = [{ uri: 'fixture:unclassified-scope' }];
+  assert.ok(!learningContext(records, 'feature-1').guidance.some((record) => record.id === guidance.id));
+  const { store } = setup(t, records); assert.ok(store.get('project-1', guidance.id), 'Unclassified legacy guidance remains in storage');
+});
+
+test('review 1228 finding 7: fenced headings neither terminate a section nor create target ambiguity', (t) => {
+  const { dir } = setup(t); const path = join(dir, 'fenced.md');
+  const rules = '## Rules\nKeep the example.\n```markdown\n## Rules\n## Fake terminator\n```\nAfter backticks.\n~~~markdown\n## Fake tilde terminator\n~~~\nActual final rule.\n';
+  writeFileSync(path, rules + '## Next\nUnrelated section.\n');
+  const captured = readLegacySection(path, '## Rules');
+  assert.equal(captured.before, rules);
+});
+
+test('review 1228 finding 8: duplicate sections produce one immediate adoption diff', (t) => {
+  const { store, dir } = setup(t); const path = join(dir, 'duplicate-section.md'); writeFileSync(path, '## Rules\nRetired text.\n');
+  const section = readLegacySection(path, '## Rules');
+  const result = captureLearning(store, observation('duplicate-section', { inputKind: 'standing_instruction', legacySections: [section, section] }));
+  assert.equal(result.sectionDiffs.length, 1);
 });

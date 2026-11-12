@@ -1,4 +1,4 @@
-import { projectLegacyContext } from './learning-context.js';
+import { projectContextSource, projectedContextArtifact } from './learning-context.js';
 import { randomUUID } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -56,8 +56,10 @@ function fileFindings(records: FactoryRecord[], assignment: Assignment): Instruc
     const record = context.source.record && planningRecord(records, context.source.record);
     const originalText = record ? record.kind === 'request' ? record.originalText : JSON.stringify(record, null, 2) :
       context.artifact && localText(context.artifact.uri);
-    const text = originalText && projectLegacyContext(records, context.source.uri, originalText);
-    if (!text || !context.artifact || context.artifact.digest !== digestText(text) || !context.extract ||
+    const text = originalText && projectContextSource(records, context.source.uri, originalText, record).text;
+    const projectedIdentity = text && originalText !== text ? projectedContextArtifact(context.artifact?.uri ?? '', text) : undefined;
+    if (!text || !originalText || !context.artifact || context.artifact.digest !== digestText(originalText) ||
+      (projectedIdentity ? !context.projectedArtifact || !sameArtifactIdentity(context.projectedArtifact, projectedIdentity) : context.projectedArtifact !== undefined) || !context.extract ||
       !text.includes(context.extract) || context.truncated !== (context.extract !== text)) {
       findings.push({ code: 'missing_required_context', path: 'selectedContext',
         message: `Context missing, changed, or unfaithful: ${JSON.stringify(context.source)}` });

@@ -161,7 +161,7 @@ export const TaskMappingSchema = record('task_mapping', {
   'Managed mapping requires a detailed task and a feature for product criteria');
 
 export const SelectedContextSchema = z.strictObject({
-  source: SourceRefSchema, artifact: ArtifactSchema.optional(), extract: TextSchema.optional(),
+  source: SourceRefSchema, artifact: ArtifactSchema.optional(), projectedArtifact: ArtifactSchema.optional(), extract: TextSchema.optional(),
   truncated: z.boolean(),
 }).refine((value) => !value.truncated || value.extract !== undefined,
   'Truncated context must retain the supplied extract and reachable source');

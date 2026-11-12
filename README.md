@@ -817,16 +817,17 @@ result, a `factory:criterion-output/<task>/<criterion>@<revision>` source names 
 missing handover; an explicit local output snapshot can supply that context.
 This records received context; execution dependency/hold management uses [managed execution tasks](#managed-execution-tasks---build-08).
 
-Each supplied source has an original reference, a full-text SHA-256 identity and a
-verbatim extract. Optional `start`/`end` are half-open UTF-16 offsets selecting the
-task-relevant range. `maxSourceChars` caps each extract; `truncated: true` records
-any omitted prefix or suffix. Without a range, the source beginning is selected.
-The full original stays reachable through its local snapshot or the full record
-original bundled in the sidecar. Truncation never rewrites Captain's intent.
+Each supplied source has an original reference and a full-text SHA-256 identity.
+Extracts are verbatim unless [learning projection](#legacy-sections) removes adopted legacy evidence; projected views retain a separate content identity.
+Optional `start`/`end` are half-open UTF-16 offsets in the original snapshot selecting the task-relevant range.
+`maxSourceChars` caps each extract; `truncated: true` records any omitted prefix or suffix.
+Without a range, the source beginning is selected.
+The full original stays reachable through its local snapshot, store history, or the original record bundled in the sidecar.
+Truncation never rewrites Captain's intent.
 
 Coverage is written beside the brief as `brief.sf.json` by default; `sidecarPath`
 can override it. The sidecar names the assignment revision, every selected record
-revision, full record originals, source references and digests, extracts,
+revision, record snapshots (with learning evidence projected for workers), source references and digests, extracts,
 truncation, criterion IDs, prerequisite artifacts and missing context. The
 assignment stores the same selection, exact source-derived instruction text,
 fidelity comparison, original scaffold, output paths and sidecar digest.
@@ -1189,13 +1190,14 @@ A capture input has this form:
 
 Use `inputKind: "local_correction"`, `captureReason: "correction"`, feature scope (`{ "kind": "feature", "featureId": "..." }`), and the next complete `feature` revision to correct a feature immediately.
 Its `changeReason` must preserve the correction text exactly.
-The feature revision and corrections to current assignment records commit atomically.
+The feature revision and corrections to the current attempt per task commit atomically; retired attempts retain their timestamps and revisions.
 Assignments retain their frozen design/plan/feature references, receive the correction in their instructions and selected context, and require a fresh fidelity check before dispatch.
 Delivery to an already running FirstMate worker remains the correction-delivery operation's responsibility.
 Only the possible broader lesson waits for consolidation.
 
 Use `inputKind: "standing_instruction"` for an explicit instruction that applies immediately in its stated scope.
 When replacing existing guidance in that scope/topic, include every current guidance reference in `supersedes`; an omitted or stale reference refuses the mutation.
+A broader project instruction can also supersede overlapping inferred feature guidance while preserving explicit feature overrides.
 An explicit feature instruction overrides the project default for that topic in that feature's context.
 Operational observations are immediately available as continuity context; a consolidation result of `no_rule` retires that operational context.
 
@@ -1214,11 +1216,13 @@ Malformed output, incomplete coverage, or a changed observation/guidance snapsho
 Its input includes project/idempotency IDs, issue time, scheduled-window ID/time, schedule digest, and project timezone.
 `learning-context --db <sqlite> --project <id> [--feature <id>]` shows applicable guidance, immediate corrections/operational context, and open conflicts.
 New worker briefs and sidecars use the same scoped guidance selection.
+Guidance without learning metadata must have resolvable scope record references; unclassified legacy guidance stays in history until its scope is classified.
 Historical records remain available through the normal store history/export APIs.
 
 ### Legacy sections
 
 `readLegacySection(pathOrFileUri, markdownHeading)` reads exactly one named section, including nested subsections, with its digest.
+Heading-shaped lines inside backtick or tilde fences remain part of the source section.
 The CLI is `learning-legacy --db <sqlite> --source <path> --heading '## Section'`.
 Include the returned object in the capture's `legacySections`, with evidence identifying that source.
 The consolidation agent decides whether to adopt it; explicit standing instructions can adopt their sections immediately.
@@ -1226,7 +1230,10 @@ Each adopted section links to its original observation, and the learning run rec
 An immediate standing-instruction adoption returns the same section diff in its capture result.
 Duplicate sections produce one diff.
 No operation writes or overwrites a legacy memory file.
-Context assembly projects adopted sections out of loaded memory and includes current applicable guidance instead.
+Context assembly resolves the current adoption per source and heading, validates original bytes, and projects overlapping section ranges once.
+It supplies current applicable guidance instead of retired section text, including in observation extracts, sidecar records, and the learning-context API.
+Original artifact identities are verified before projection and retained as `selectedContext[].artifact`; changed views have a separate `projectedArtifact` identity.
+Snapshot ranges address original UTF-16 offsets and are remapped into projected text before extraction.
 The replacement record carries source pointers rather than the superseded text; full source text and diffs stay in observation/run history.
 A changed adopted section fails context assembly until its source is reconciled.
 
