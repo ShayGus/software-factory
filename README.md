@@ -236,6 +236,7 @@ Storing them must not accidentally mean dispatch or completion is permitted:
 A measurement claim can be `checked` only when at least one evidence entry has
 `measurement` naming its `method`, exact versioned `inputs`, `definition`, `unit`,
 `population` and `filters`, matching the claim's declared scope and computation.
+Method identity includes the exact query `excerpt` when supplied.
 An unsubstantiated count can remain `reported` or `unknown`; validation does not
 invent a replacement number. Structured evidence records the supplied method and
 inputs; it does not execute the computation or certify its truth.

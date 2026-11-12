@@ -23,11 +23,11 @@ The immutable original text for every case is in [release-checks.json](../fixtur
 | CHECK-11 | Pass | BUILD-14 Decisions is now on main. HTTP and agent task-priority mutations share canonical task/mapping records with stable replay and unchanged original source. An answer built through the existing UI command builder and posted through real HTTP resolves the canonical decision; agent replay is byte-stable, and a new identical-context question reuses that exact recorded answer with revision provenance. The refreshed Decisions view shows the settled result; no native task calls occur for decision edits. |
 | CHECK-12 | Pass | Handback leaves existing execution available, releases toolkit-owned holds, records the missing-evidence condition and retires pending side effects. Re-enabling observes both native task and fleet interfaces without replay; restored missing attachments keep the reconciliation gate closed. |
 | CHECK-13 | Pass | Planning records the working connection interface, the absent feature and the bounded change; the brief retains that reuse finding and only one design exists. Source-based checking refuses an unjustified parallel connection implementation. |
-| CHECK-14 | Pass | A checked production count is rejected when evidence lacks a method/input attestation or names a different method, fixture, revision, population, definition, unit or filters. Matching structured evidence is accepted; the unsupported original can remain reported without a guessed replacement number. These are evidence-consistency checks, not execution of the count or semantic certification of the report. |
+| CHECK-14 | Pass | A checked production count is rejected when evidence lacks a method/input attestation or names a different method (including a different or missing query excerpt), fixture, revision, population, definition, unit or filters. Matching structured evidence is accepted; the unsupported original can remain reported without a guessed replacement number. These are evidence-consistency checks, not execution of the count or semantic certification of the report. |
 | CHECK-15 | Pass | A technical pass with baseline-only code produces a persisted “Baseline preserved; no requested behavior improves” finding, no improvement evidence and refused completion. |
 | CHECK-16 | Pass | Focused and parallel plans each retain their own strategy, reason and full selected context through readiness and brief preparation. Selection is per plan, with no global execution-mode switch. |
 | CHECK-17 | Pass | The correction retains the original rewind request and exact existing assignment. The real adapter reports unsupported rewind explicitly; no control call, replacement assignment or worker is created. |
-| CHECK-18 | Pass | The production runtime adapter imports installed-shape ready work alongside growing review/new-work queues. Default Work and HTTP show the observed PR, two-minute ready age, review wait, incomplete feature and next action using existing task/assignment delivery instructions. Reads leave settled request/plan records unchanged. Re-importing updates readiness even when no new task mappings are created. No caller-authored snapshot conversion is used. |
+| CHECK-18 | Pass | The production runtime adapter imports installed-shape ready work alongside growing review/new-work queues. Default Work and HTTP show the current-run PR, unknown readiness age when no attributed transition is available, review wait, incomplete feature and next action using existing task/assignment delivery instructions. Crew-state PR identity is required; conflicting metadata is disclosed and withholds readiness. Reads leave settled request/plan records unchanged. Re-importing updates readiness even when no new task mappings are created. No caller-authored snapshot conversion is used. |
 | CHECK-19 | Pass | A correct ready plan plus narrowed operative instructions is refused by the agent instruction gate. The shared real worker-start hook also vetoes the narrowed launch overlay before the fake worker starts. |
 | CHECK-20 | Pass | A legacy bad brief can receive a perfectly faithful implementation and green technical review, yet the independent product reviewer records original-plan narrowing and leaves the feature incomplete. |
 
@@ -57,11 +57,17 @@ Only Bash and embedded JavaScript syntax were checked. **The Docker script was n
 ## Validation
 
 The focused release suite passes **20 scenarios, 0 failures, 0 TODOs**.
-`npm run typecheck` passes. Full `npm test` exits 0 with **638 tests: 637 passed, 1 existing
+`npm run typecheck` passes. Full `npm test` exits 0 with **649 tests: 648 passed, 1 existing
 opt-in integration skip, 0 failures, 0 TODOs**. The production launcher smoke check
-serves imported readiness, two-minute age, next action and the exact omission over
+serves imported readiness, next action and the exact omission over
 HTTP, then shuts down with the persisted project unchanged. After adding reopen
 and no-runtime-refresh assertions, the focused lifecycle suite also passes.
+Review 1424 adds regressions for method excerpt identity, unsupported readiness
+age, current-run PR identity/conflicts, and visibility after both recovery writes.
+Each new regression failed before its fix; the focused release/regression run
+passes all 31 tests. The final full suite includes both recovery operations after
+multiple imports, proving that the latest snapshot survives without a runtime
+refresh. Typecheck and the updated production launcher smoke check also pass.
 Proof output for these fixes is retained outside the worktree under
 `/home/shayg/fm-homes/linux-mate/data/sf-release-check-fixes/`.
 

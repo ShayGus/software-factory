@@ -241,6 +241,7 @@ export const MeasurementClaimSchema = record('measurement_claim', {
     const artifacts = (inputs: typeof value.inputs) => inputs.map(input =>
       JSON.stringify([input.uri, input.revision ?? null, input.digest ?? null])).sort();
     return measurement.method.uri === value.computationRef.uri &&
+      measurement.method.excerpt === value.computationRef.excerpt &&
       measurement.method.record?.id === value.computationRef.record?.id &&
       measurement.method.record?.revision === value.computationRef.record?.revision &&
       measurement.definition === value.definition && measurement.unit === value.unit && measurement.population === value.population &&

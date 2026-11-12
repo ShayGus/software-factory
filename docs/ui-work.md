@@ -56,8 +56,10 @@ feature is intentional; genuinely unlinked legacy work remains Unknown.
 
 ## Observational boundary
 
-The default Work view reads the fleet snapshot saved in the project's integration
-observation by `importLegacyTasks` or `reconcileProject`. It validates that snapshot
+The default Work view reads the latest snapshot-bearing integration observation
+in the project's revision history, saved by `importLegacyTasks` or `reconcileProject`.
+Recovery artifact/reference observations do not hide that fleet evidence or
+change its capture timestamp. It validates that snapshot
 with the existing runtime adapter's `FleetSnapshotSchema` and projects it through
 `WorkSnapshotSchema`. HTTP and `scripts/ui.mjs` use this same path. Re-importing
 refreshes the observation even when every task already has a canonical mapping.
@@ -65,9 +67,19 @@ refreshes the observation even when every task already has a canonical mapping.
 The projection retains the fleet's generated timestamp, source home/provenance,
 unstructured backlog omissions and incomplete-inventory reason. A stale or unknown
 crew observation remains unknown, with its timestamp/freshness disclosed as an
-omission. An installed `done` state with a “ready for review” detail and PR URL
-supplies readiness. The last status-event age supplies its ready timestamp when
-available; absent timing remains unknown. The next action points to review using
+omission. An installed `done` state with a “ready for review” detail supplies
+readiness only when the current `run-step` detail attributes a PR URL to that run.
+A crew-state-only URL remains usable when metadata has none. Different run and
+metadata URLs produce an explicit PR identity conflict and withhold readiness;
+a metadata URL alone leaves current PR identity unknown.
+
+Readiness time requires evidence of the event that made that PR ready. The installed
+`paths.status_log.last_event` is historical wake data, which may precede readiness
+or describe unrelated later work; it does not establish that transition. This
+projection therefore leaves `readySince` null and shows Unknown age, preserving
+the separately observed snapshot capture time. A structured provider may supply
+an explicitly established readiness timestamp through `WorkSnapshotSchema`.
+The next action points to review using
 existing task/assignment delivery instructions, which remain unchanged. Runtime
 execution and waiting intervals are unknown because this wire format does not
 provide them. A PR URL alone does not establish readiness.

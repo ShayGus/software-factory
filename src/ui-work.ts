@@ -33,9 +33,21 @@ export type WorkSnapshot = z.infer<typeof WorkSnapshotSchema>;
 /** Project integration observations are captured by the runtime adapter/importer.
  * Reading Work projects that evidence without invoking FirstMate or refreshing its time. */
 function importedWorkSnapshot(view: ProjectView): WorkSnapshot | undefined {
-  const observation = view.project.integration?.observation;
-  if (observation === undefined) return undefined;
-  const fleet = FleetSnapshotSchema.parse(JSON.parse(observation).snapshot);
+  // Recovery observations do not carry fleet data. Select the most recent
+  // project revision that does, retaining its capture time rather than the
+  // recovery write's timestamp. An invalid snapshot is not silently skipped.
+  let snapshot: unknown;
+  for (const project of view.history.filter(record => record.kind === 'project' && record.id === view.project.id)
+    .sort((a, b) => b.revision - a.revision)) {
+    if (project.kind !== 'project' || project.integration?.observation === undefined) continue;
+    let observation: unknown;
+    try { observation = JSON.parse(project.integration.observation); } catch { continue; }
+    if (observation && typeof observation === 'object' && 'snapshot' in observation) {
+      snapshot = observation.snapshot; break;
+    }
+  }
+  if (snapshot === undefined) return undefined;
+  const fleet = FleetSnapshotSchema.parse(snapshot);
   const omissions = fleet.backlog.records.filter(task => task.structured === false)
     .map(task => typeof task.raw === 'string' && task.raw.trim() ? task.raw : JSON.stringify(task));
   if (!fleet.backlog.present) omissions.push('FirstMate backlog unavailable');
@@ -51,16 +63,24 @@ function importedWorkSnapshot(view: ProjectView): WorkSnapshot | undefined {
       const current = task.current_state;
       const known = current.freshness === 'fresh' && current.observed_at === fleet.generated && current.state !== 'unknown';
       if (!known) omissions.push(`Task ${task.id}: worker state is stale or unknown (observed ${current.observed_at}; ${current.freshness})`);
-      const pr = z.object({ url: TextSchema }).safeParse(task.pr);
-      const status = z.object({ status_log: z.object({ last_event: z.object({ age_seconds: z.number().finite().nonnegative() }) }) }).safeParse(task.paths);
-      // A PR link alone is not evidence of readiness. Retain the installed crew
-      // state's ready-for-review observation, with unknown timing when absent.
-      const ready = known && current.state === 'done' && typeof current.detail === 'string' && /\bready for review\b/iu.test(current.detail) && pr.success;
+      const detail = typeof current.detail === 'string' ? current.detail : '';
+      const ready = known && current.state === 'done' && /\bready for review\b/iu.test(detail);
+      const metadata = z.object({ url: TextSchema }).safeParse(task.pr);
+      // Run-step details name the run's PR (including inventory-selected
+      // `run: … · pr=…`). Task metadata alone may belong to an older run.
+      const runPrs = current.source === 'run-step' && !/\bearlier run:/iu.test(detail) ?
+        [...new Set(detail.match(/https?:\/\/[^\s·<>]+\/pull\/\d+\b/gu) ?? [])] : [];
+      const conflict = runPrs.length > 1 || (runPrs.length === 1 && metadata.success && metadata.data.url !== runPrs[0]);
+      if (ready && conflict) omissions.push(`Conflict — PR identity for task ${task.id}: current run ${runPrs.join(', ')}; metadata ${metadata.success ? metadata.data.url : 'Unknown'}`);
+      else if (ready && !runPrs.length) omissions.push(`Task ${task.id}: PR identity is unknown for the current run`);
+      const reference = ready && !conflict && runPrs.length === 1 ? runPrs[0] : undefined;
       return { firstMateTaskId: task.id, workerState: known ? current.state : null,
         executionMs: null, waitingMs: null,
-        reviewWait: ready ? current.detail : null,
-        ready: ready ? [{ kind: 'pr', reference: pr.data.url,
-          readySince: status.success ? new Date(Date.parse(current.observed_at) - status.data.status_log.last_event.age_seconds * 1000).toISOString() : null,
+        reviewWait: ready ? detail : null,
+        ready: reference ? [{ kind: 'pr', reference,
+          // Installed last_event is historical wake data, not an attributed
+          // transition that made this run's PR ready. It cannot supply this age.
+          readySince: null,
           nextAction: 'Review the observed PR using the existing task and assignment delivery instructions' }] : null };
     }),
   });

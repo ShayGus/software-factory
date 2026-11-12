@@ -116,14 +116,14 @@ test('CHECK-18 — ready PR retains age, next action and blockers as queues grow
   // Additive fields are the installed snapshot's exact pr/current_state/path shapes.
   const snapshotRows = rows.map(row => row.id === 'pilot-build' ? { ...row,
     pr: { url: 'https://example.invalid/software-factory/pull/18', source: 'meta', head: null },
-    current_state: { ...row.current_state, source: 'run-step', detail: 'checks green: PR ready for review' },
+    current_state: { ...row.current_state, source: 'run-step', detail: 'checks green: PR ready for review · run: current-run · pr=https://example.invalid/software-factory/pull/18' },
     paths: { status_log: { last_event: { raw: 'done: synthetic ready result', age_seconds: 120 } } } } : row);
   writeFileSync(flow.runtime.statePath, JSON.stringify(snapshotRows));
   const observed = readFleetSnapshot(flow.runtimeAdapter);
   assert.equal(observed.tasks[0]?.current_state.state, 'done');
   assert.equal(observed.tasks.length, 3);
   assert.deepEqual(observed.tasks[0]?.pr, snapshotRows[0] && 'pr' in snapshotRows[0] ? snapshotRows[0].pr : undefined);
-  assert.equal(observed.tasks[0]?.current_state.detail, 'checks green: PR ready for review');
+  assert.equal(observed.tasks[0]?.current_state.detail, 'checks green: PR ready for review · run: current-run · pr=https://example.invalid/software-factory/pull/18');
   const plan = flow.store.get(projectId, 'plan-1'); assert.ok(plan?.kind === 'implementation_plan_revision');
   const original = flow.store.get(projectId, 'request-1'); assert.ok(original?.kind === 'request');
   assert.equal(original.originalText, cases['CHECK-18']!.originalRequest);
@@ -138,13 +138,13 @@ test('CHECK-18 — ready PR retains age, next action and blockers as queues grow
   const work = await http('GET', '/projects/project-1/work'); assert.equal(work.status, 200, work.text);
   assert.match(work.text, /Feature completeness: Incomplete/);
   assert.ok(model.ready.some(item => item.reference === readyRef), 'Imported readiness reaches the default Work view');
-  assert.equal(model.ready[0]?.age, '2 min');
+  assert.equal(model.ready[0]?.age, 'Unknown');
   assert.ok(work.text.includes(readyRef));
   assert.match(work.text, /Next action: Review the observed PR using the existing task and assignment delivery instructions/);
   assert.deepEqual(flow.store.exportProject(projectId), before, 'Reads reuse settled intent without generating new instructions or decisions');
   assert.equal(readFileSync(join(flow.directory, 'runtime-reads'), 'utf8'), runtimeReads, 'HTTP reads do not refresh the fleet or reset its age');
   // Re-import updates observations even when every native ID already has a mapping.
-  const refreshed = snapshotRows.map(row => row.id === 'pilot-build' ? { ...row, pr: null } : row);
+  const refreshed = snapshotRows.map(row => row.id === 'pilot-build' ? { ...row, current_state: { ...row.current_state, detail: 'checks green: delivery completed' }, pr: null } : row);
   writeFileSync(flow.runtime.statePath, JSON.stringify(refreshed));
   importLegacyTasks(flow.store, projectId, flow.runtimeAdapter);
   assert.equal(workView(projectView(flow.store, { projectId })).ready.length, 0);

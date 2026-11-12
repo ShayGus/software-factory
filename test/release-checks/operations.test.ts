@@ -170,6 +170,19 @@ test('CHECK-14 — wrong fixture cannot support a checked count', t => {
     const unsupported = { ...supported, evidence: [{ ...supported.evidence[0]!, measurement: { ...measurement, ...mismatch } }] };
     assert.equal(validateRecords([...flow.store.history(projectId), unsupported]).ok, false, JSON.stringify(mismatch));
   }
+  const method = { uri: claim.computationRef.uri, record: { id: 'request-1', revision: 1 },
+    excerpt: 'SELECT DISTINCT system_id FROM production_systems' };
+  const queryClaim = { ...supported, computationRef: method, evidence: [{ ...supported.evidence[0]!,
+    measurement: { ...measurement, method } }] };
+  assert.equal(validateRecords([...flow.store.history(projectId), queryClaim]).ok, true);
+  for (const otherMethod of [
+    { ...method, excerpt: 'SELECT system_id FROM demonstration_systems' },
+    { uri: method.uri, record: method.record },
+  ]) {
+    const wrongQuery = { ...queryClaim, evidence: [{ ...queryClaim.evidence[0]!, measurement: { ...measurement, method: otherMethod } }] };
+    assert.equal(validateRecords([...flow.store.history(projectId), wrongQuery]).ok, false,
+      'A different or missing query excerpt at the same URI and revision cannot check the count');
+  }
   const reported = { ...claim, state: 'reported' };
   assert.equal(validateRecords([...flow.store.history(projectId), reported]).ok, true);
   assert.equal(reported.claim, claim.claim, 'Unsupported reports retain the exact claim; no replacement count is invented');
