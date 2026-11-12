@@ -200,12 +200,20 @@ export class TaskWrapper {
   }
 }
 
-function inspectDependencies(wrapper: TaskWrapper, taskId: string, ids: string[]) {
+function inspectDependencies(wrapper: TaskWrapper, taskId: string, ids: string[],
+  onError?: (id: string, error: unknown) => void) {
   const dependencies = new Map<string, FirstMateTask | undefined>();
   const inspect = (id: string, path: Set<string>) => {
-    if (path.has(id) || id === taskId) throw new DefinitiveTaskRejection('task_dependency_cycle');
+    if (path.has(id) || id === taskId) {
+      const error = new DefinitiveTaskRejection('task_dependency_cycle');
+      if (!onError) throw error;
+      onError(id, error); return;
+    }
     if (dependencies.has(id)) return;
-    const task = wrapper.read(id); dependencies.set(id, task);
+    let task: FirstMateTask | undefined;
+    try { task = wrapper.read(id); }
+    catch (error) { if (!onError) throw error; onError(id, error); }
+    dependencies.set(id, task);
     const next = new Set([...path, id]);
     for (const dep of task ? taskIds(task) : []) inspect(dep, next);
   };
@@ -285,17 +293,114 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
   const holdReason = mapping.management!.holdReason;
   const ownHold = (task: FirstMateTask) => task.hold?.reason === holdReason && task.hold.until === null;
   const creationMarker = `Software Factory mapping: ${mapping.id}`;
+  const retainProtection = (target: TaskMapping, guardId?: string): TaskMapping => {
+    if (target.management && (!guardId || target.management.managedDependencies.includes(guardId))) return target;
+    const owned = { ...target, management: target.management ?? { operationId: operation.id,
+      requirements: [], managedDependencies: [], readiness: [], paused: false,
+      holdReason: `Software Factory ${stableId('hold', projectId, target.id)}` } };
+    operation = recordOutcome(store, operation, operation.state, `Protection intended for ${target.firstMateTaskId}`,
+      owned, [...owned.management.managedDependencies, ...(guardId ? [guardId] : [])]);
+    const saved = store.get(projectId, target.id) as TaskMapping;
+    if (target.id === mapping.id) mapping = saved;
+    return saved;
+  };
+  const requireGuard = () => {
+    if (!options.guardTaskId) throw new DefinitiveTaskRejection('permanent_guard_task_required_without_atomic_hold');
+    const guard = wrapper.read(options.guardTaskId);
+    if (!guard || guard.state === 'done' || !guard.held || !guard.hold || guard.hold.until !== null) {
+      throw new DefinitiveTaskRejection('guard_must_be_permanently_held_and_not_done');
+    }
+    return guard.id;
+  };
+  const protect = (target: TaskMapping, task: FirstMateTask) => {
+    const owned = retainProtection(target);
+    const reason = owned.management!.holdReason;
+    const matches = (value: FirstMateTask) => value.hold?.reason === reason && value.hold.until === null;
+    if (!task.hold) return wrapper.write(['hold', task.id, '--reason', reason, '--kind', 'external'], matches);
+    if (!matches(task)) {
+      const guardId = requireGuard();
+      if (!taskIds(task).includes(guardId)) {
+        retainProtection(owned, guardId);
+        return wrapper.write(['block', task.id, '--by', guardId],
+          (value) => taskIds(value).includes(guardId), [guardId]);
+      }
+    }
+    return task;
+  };
+  const observationErrors: { taskId: string; error: string }[] = [];
+  const observationError = (taskId: string, error: unknown) => observationErrors.push({ taskId,
+    error: error instanceof Error ? error.message : String(error) });
   let observed: FirstMateTask | undefined;
   try {
     // Re-read by the original stable ID before EVERY retry, including pending
     // intents recovered after a crash before the outcome could be saved.
     observed = wrapper.read(mapping.firstMateTaskId);
     let records = store.records(projectId);
+    if (mapping.disposition.state === 'cancelled') {
+      // Install known protection and stop active work before optional observations elsewhere.
+      if (observed) try { observed = protect(mapping, observed); }
+      catch (error) { observationError(mapping.firstMateTaskId, error); }
+      const protectAffected = () => {
+        for (const consumer of currentTaskMappings(records)) {
+          if ((!consumer.management && consumer.legacy) || consumer.id === mapping.id ||
+            !cancelledTaskPrerequisites(records, consumer).includes(mapping.firstMateTaskId)) continue;
+          try {
+            const task = wrapper.read(consumer.firstMateTaskId);
+            if (task) protect(consumer, task);
+          } catch (error) { observationError(consumer.firstMateTaskId, error); }
+        }
+        records = store.records(projectId);
+      };
+      protectAffected();
+      try {
+        if (observed?.state === 'in_flight') {
+          if (!options.controlExecutable) throw new Error('active_cancellation_requires_configured_fm_control');
+          const snapshot = readFleetSnapshot({ fmHome: options.fmHome,
+            ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
+            ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+            ...(options.maxObservationAgeMs ? { maxObservationAgeMs: options.maxObservationAgeMs } : {}) });
+          const runtime = runtimeTask(snapshot, observed.id, false);
+          if (operation.externalAttempt) {
+            if (!observedAgentStopped(snapshot, operation.externalAttempt)) {
+              throw new Error('cancellation_outcome_unknown_no_retry');
+            }
+          } else {
+            if (!runtime?.spawn_gen) throw new Error('cancellation_requires_observed_worker_generation');
+            operation = recordOperationObservation(store, operation, 'unknown', JSON.stringify({ action: 'exit', snapshot }), {
+              externalAttempt: { action: 'exit', firstMateTaskId: observed.id,
+                baselineGeneration: runtime.spawn_gen, startedAt: new Date().toISOString() } });
+            beforeWrite(['exit', observed.id]);
+            wrapper.run([observed.id, 'exit'], options.controlExecutable);
+          }
+        }
+      } catch (error) { observationError(mapping.firstMateTaskId, error); }
+      for (const consumer of currentTaskMappings(records)) {
+        if (!consumer.management || consumer.id === mapping.id) continue;
+        try {
+          // A rejected create has no native consumer and cannot dispatch.
+          const task = wrapper.read(consumer.firstMateTaskId);
+          if (!task) continue;
+          const dependencies = inspectDependencies(wrapper, consumer.firstMateTaskId,
+            [...new Set([...taskDependencyIds(records, consumer), ...taskIds(task)])], observationError);
+          dependencies.set(consumer.firstMateTaskId, task);
+          const updated = withNativeDependencies(consumer, dependencies);
+          if (updated !== consumer) {
+            operation = recordOutcome(store, operation, operation.state, 'Observed consumer native dependency graph', mapping,
+              undefined, undefined, [updated]);
+            records = store.records(projectId);
+          }
+        } catch (error) { observationError(consumer.firstMateTaskId, error); }
+      }
+      protectAffected();
+      if (observationErrors.length) return recordOutcome(store, operation, 'unknown',
+        JSON.stringify({ task: observed, observationErrors, events: wrapper.events }), mapping, mapping.management!.managedDependencies);
+    }
     const desiredIds = taskDependencyIds(records, mapping);
     if (options.guardTaskId && (desiredIds.includes(options.guardTaskId) || mapping.firstMateTaskId === options.guardTaskId)) {
       throw new DefinitiveTaskRejection('guard_task_cannot_be_managed_or_used_as_product_prerequisite');
     }
-    const dependencies = inspectDependencies(wrapper, mapping.firstMateTaskId, desiredIds);
+    const dependencies = inspectDependencies(wrapper, mapping.firstMateTaskId, desiredIds,
+      mapping.disposition.state === 'cancelled' ? observationError : undefined);
     const observedMapping = withNativeDependencies(mapping, dependencies);
     if (observedMapping !== mapping) {
       operation = recordOutcome(store, operation, operation.state, 'Observed native dependency graph', observedMapping,
@@ -306,56 +411,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
     const availableIds = desiredIds.filter((id) => dependencies.get(id));
     const reasons = [...taskReadinessReasons(records, mapping), ...desiredIds.filter((id) => !dependencies.get(id))
       .map((id) => `Missing prerequisite ${id}`)];
-    const retainProtection = (target: TaskMapping, guardId?: string): TaskMapping => {
-      if (target.management && (!guardId || target.management.managedDependencies.includes(guardId))) return target;
-      const owned = { ...target, management: target.management ?? { operationId: operation.id,
-        requirements: [], managedDependencies: [], readiness: [], paused: false,
-        holdReason: `Software Factory ${stableId('hold', projectId, target.id)}` } };
-      operation = recordOutcome(store, operation, operation.state, `Protection intended for ${target.firstMateTaskId}`,
-        owned, [...owned.management.managedDependencies, ...(guardId ? [guardId] : [])]);
-      const saved = store.get(projectId, target.id) as TaskMapping;
-      if (target.id === mapping.id) mapping = saved;
-      return saved;
-    };
-    const requireGuard = () => {
-      if (!options.guardTaskId) throw new DefinitiveTaskRejection('permanent_guard_task_required_without_atomic_hold');
-      const guard = wrapper.read(options.guardTaskId);
-      if (!guard || guard.state === 'done' || !guard.held || !guard.hold || guard.hold.until !== null) {
-        throw new DefinitiveTaskRejection('guard_must_be_permanently_held_and_not_done');
-      }
-      return guard.id;
-    };
-    if (mapping.disposition.state === 'cancelled') {
-      // Native completion/cleanup can clear ordinary dependency blocking. Hold
-      // every affected managed consumer before confirming cancellation, including
-      // through completed intermediate tasks. Retry converges from stable IDs.
-      for (let consumer of currentTaskMappings(records)) {
-        if ((!consumer.management && consumer.legacy) || consumer.id === mapping.id) continue;
-        if (consumer.management) {
-          const updated = withNativeDependencies(consumer, inspectDependencies(wrapper, consumer.firstMateTaskId, taskDependencyIds(records, consumer)));
-          if (updated !== consumer) {
-            operation = recordOutcome(store, operation, operation.state, 'Observed consumer native dependency graph', mapping,
-              undefined, undefined, [updated]);
-            consumer = store.get(projectId, consumer.id) as TaskMapping;
-            records = store.records(projectId);
-          }
-        }
-        if (!cancelledTaskPrerequisites(records, consumer).includes(mapping.firstMateTaskId)) continue;
-        let task = wrapper.read(consumer.firstMateTaskId);
-        if (!task) continue; // An absent task cannot dispatch; later creation is gated by the same cancellation fact.
-        const protectedConsumer = retainProtection(consumer);
-        const reason = protectedConsumer.management!.holdReason;
-        const protectiveHold = (value: FirstMateTask) => value.hold?.reason === reason && value.hold.until === null;
-        if (!task.hold) task = wrapper.write(['hold', task.id, '--reason', reason, '--kind', 'external'], protectiveHold);
-        else if (!protectiveHold(task)) {
-          const guardId = requireGuard();
-          if (!taskIds(task).includes(guardId)) {
-            retainProtection(protectedConsumer, guardId);
-            wrapper.write(['block', task.id, '--by', guardId], (value) => taskIds(value).includes(guardId), [guardId]);
-          }
-        }
-      }
-    }
+
     if (!observed) {
       if (payload.action !== 'create' || payload.task.kind !== 'new') throw new DefinitiveTaskRejection('mapped_task_not_found');
       const newTask = payload.task;
@@ -413,26 +469,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
     for (const id of ownedIds) if (id !== options.guardTaskId && !desiredIds.includes(id) && taskIds(observed).includes(id)) {
       observed = wrapper.write(['unblock', observed.id, '--by', id], (task) => !taskIds(task).includes(id));
     }
-    if (mapping.disposition.state === 'cancelled' && observed.state === 'in_flight') {
-      if (!options.controlExecutable) throw new Error('active_cancellation_requires_configured_fm_control');
-      const snapshot = readFleetSnapshot({ fmHome: options.fmHome,
-        ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
-        ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
-        ...(options.maxObservationAgeMs ? { maxObservationAgeMs: options.maxObservationAgeMs } : {}) });
-      const runtime = runtimeTask(snapshot, observed.id, false);
-      if (operation.externalAttempt) {
-        if (!observedAgentStopped(snapshot, operation.externalAttempt)) {
-          throw new Error('cancellation_outcome_unknown_no_retry');
-        }
-      } else {
-        if (!runtime?.spawn_gen) throw new Error('cancellation_requires_observed_worker_generation');
-        operation = recordOperationObservation(store, operation, 'unknown', JSON.stringify({ action: 'exit', snapshot }), {
-          externalAttempt: { action: 'exit', firstMateTaskId: observed.id,
-            baselineGeneration: runtime.spawn_gen, startedAt: new Date().toISOString() } });
-        beforeWrite(['exit', observed.id]);
-        wrapper.run([observed.id, 'exit'], options.controlExecutable);
-      }
-    }
+
     if (!reasons.length) {
       // No unresolved condition may have appeared while the subprocesses ran.
       const fresh = store.get(projectId, mapping.id);
@@ -449,12 +486,13 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
     if (!reasons.length && ownHold(observed)) observed = wrapper.write(['unhold', observed.id], (task) => task.hold === null);
     const installed = [...new Set([...desiredIds, ...mapping.management!.managedDependencies])]
       .filter((id) => taskIds(observed!).includes(id));
-    return recordOutcome(store, operation, 'succeeded', JSON.stringify({ task: observed, unresolved: reasons, events: wrapper.events }), mapping, installed);
+    return recordOutcome(store, operation, observationErrors.length ? 'unknown' : 'succeeded',
+      JSON.stringify({ task: observed, unresolved: reasons, observationErrors, events: wrapper.events }), mapping, installed);
   } catch (error) {
     const rejection = error instanceof DefinitiveTaskRejection && !operation.taskMutationAttempted ? error.message : undefined;
     const state = rejection || (error instanceof TaskProcessError && ['ENOENT', 'EACCES'].includes(error.code ?? '')) ? 'failed' : 'unknown';
     return recordOutcome(store, operation, state, JSON.stringify({ error: error instanceof Error ? error.message : String(error),
-      task: observed, events: wrapper.events }), mapping, mapping.management!.managedDependencies, rejection);
+      task: observed, observationErrors, events: wrapper.events }), mapping, mapping.management!.managedDependencies, rejection);
   }
 }
 

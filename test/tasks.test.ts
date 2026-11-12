@@ -9,7 +9,7 @@ import test, { type TestContext } from 'node:test';
 import {
   ProjectStore, RecordsSchema, MapManageExecutionTaskCommandSchema, queueManagedTask, manageExecutionTask,
   reconcileManagedTask, taskReadinessReasons, ref, validateAssignmentForDispatch, parseFirstMateTaskDetail,
-  FirstMateTaskMutationSchema, type FactoryRecord, type TaskMapping, type TaskAdapterOptions,
+  FirstMateTaskMutationSchema, importLegacyTasks, type FactoryRecord, type TaskMapping, type TaskAdapterOptions,
 } from '../src/index.js';
 import { fakeTask, fakeTaskWrapper, type FakeState } from './task-wrapper-helper.js';
 
@@ -696,4 +696,88 @@ test('attempted dependency ownership survives a lost receipt and changed produce
   reviseRecord(flow, 'plan-1', (record) => { if (record.kind === 'implementation_plan_revision') record.dependencies = []; });
   flow.succeeded(flow.existing({ detailedPlanTask: { id: 'consumer-task', revision: 1 }, requirements: [] }));
   assert.deepEqual(flow.fake.read().tasks['managed-task']!.deps, []);
+});
+
+
+for (const problem of ['absent-cycle', 'existing-cycle', 'read-failure'] as const) test(`review 1459 finding 1: cancellation protects and stops before unrelated ${problem}`, (t) => {
+  const flow = setup(t, true);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.state = 'done';
+    state.tasks['broken-native'] = fakeTask('broken-native', { deps: [{ type: 'blocked-by', id: 'broken-task' }] });
+  });
+  const rejected = flow.manage(flow.command({ task: { kind: 'new', firstMateTaskId: 'broken-task', title: 'Unrelated rejected work', repo: 'sample' },
+    dependencies: ['broken-native'] }, 'broken-mapping'));
+  assert.equal(rejected.operation.state, 'failed');
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Affected consumer', repo: 'sample' },
+    dependencies: ['managed-task'] }, 'consumer-mapping'));
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.state = 'in_flight';
+    if (problem !== 'absent-cycle') state.tasks['broken-task'] = fakeTask('broken-task', { deps: [{ type: 'blocked-by', id: 'broken-native' }] });
+  });
+  if (problem === 'read-failure') {
+    const wrapper = readFileSync(flow.fake.executable, 'utf8');
+    writeFileSync(flow.fake.executable, wrapper.replace('const fs =',
+      `if (process.argv[2] === 'show' && process.argv[3] === 'broken-native') { process.stdout.write('incomplete observation'); process.exit(0); }\nconst fs =`));
+  }
+  const control = join(flow.directory, 'cancel-control.cjs');
+  const stopped = join(flow.directory, 'stopped.json');
+  writeFileSync(control, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(stopped)}, JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 });
+  flow.options.controlExecutable = control;
+  const before = flow.fake.read().calls.length;
+  const result = flow.manage(flow.existing({ action: 'cancel' }));
+  const state = flow.fake.read();
+  assert.equal(state.tasks['managed-task']!.held, true, 'Cancellation protects its target despite unrelated graphs');
+  assert.equal(state.tasks.consumer!.held, true, 'Known affected consumers are protected before unrelated observations');
+  assert.deepEqual(JSON.parse(readFileSync(stopped, 'utf8')), ['managed-task', 'exit']);
+  if (problem === 'absent-cycle') {
+    assert.equal(result.operation.state, 'succeeded', result.operation.reconciliation?.note);
+    assert.equal(state.calls.slice(before).some((call) => call.args[0] === 'show' && call.args[1] === 'broken-native'), false);
+  } else {
+    assert.equal(result.operation.state, 'unknown', 'Unresolved native observations withhold synchronization success');
+    assert.match(result.operation.reconciliation?.note ?? '', /observationErrors/);
+    const calls = state.calls.slice(before);
+    const brokenRead = calls.findIndex((call) => call.args[0] === 'show' && call.args[1] === 'broken-native');
+    const consumerHold = calls.findIndex((call) => call.args[0] === 'hold' && call.args[1] === 'consumer');
+    if (problem === 'existing-cycle') assert.ok(consumerHold >= 0 && brokenRead > consumerHold);
+  }
+});
+
+test('review 1459 finding 2: downstream traversal uses each mapped intermediary retained native evidence', (t) => {
+  const flow = setup(t, true);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.state = 'done';
+    state.tasks.native = fakeTask('native', { state: 'done', deps: [{ type: 'blocked-by', id: 'managed-task' }] });
+  });
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'middle', title: 'Middle', repo: 'sample' },
+    dependencies: ['native'] }, 'middle-mapping'));
+  flow.fake.edit((state) => { state.tasks.middle!.state = 'done'; delete state.tasks.native; });
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Downstream', repo: 'sample' },
+    dependencies: ['middle'] }, 'consumer-mapping'));
+  flow.succeeded(flow.existing({ action: 'cancel' }));
+  assert.equal(flow.fake.read().tasks.consumer!.held, true);
+  const consumer = flow.store.get(projectId, 'consumer-mapping'); assert.ok(consumer?.kind === 'task_mapping');
+  assert.match(taskReadinessReasons(flow.store.records(projectId), consumer).join('\n'), /Cancelled prerequisite managed-task/);
+  flow.succeeded(flow.command({ task: { kind: 'existing', firstMateTaskId: 'consumer' }, action: 'map', dependencies: ['middle'] }, 'consumer-mapping'));
+  assert.equal(flow.fake.read().tasks.consumer!.held, true, 'Completed middle work cannot release a downstream consumer');
+});
+
+test('review 1459 finding 3: imported legacy intermediaries preserve their observed native edges', (t) => {
+  const flow = setup(t, true);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.state = 'done';
+    state.tasks['legacy-middle'] = fakeTask('legacy-middle', { state: 'done', deps: [{ type: 'blocked-by', id: 'managed-task' }] });
+  });
+  const runtime = fakeRuntime(flow.directory, ['managed-task', 'legacy-middle']);
+  const imported = importLegacyTasks(flow.store, projectId, { fmHome: flow.directory, snapshotExecutable: runtime.executable });
+  assert.equal(imported.mappings.length, 1); assert.equal(imported.mappings[0]!.legacy, true);
+  assert.deepEqual(imported.mappings[0]!.dependencies, []);
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Downstream', repo: 'sample' },
+    dependencies: ['legacy-middle'] }, 'consumer-mapping'));
+  flow.succeeded(flow.existing({ action: 'cancel' }));
+  assert.equal(flow.fake.read().tasks.consumer!.held, true);
+  const consumer = flow.store.get(projectId, 'consumer-mapping'); assert.ok(consumer?.kind === 'task_mapping');
+  assert.match(taskReadinessReasons(flow.store.records(projectId), consumer).join('\n'), /Cancelled prerequisite managed-task/);
 });

@@ -21,19 +21,31 @@ export function taskDependencyIds(records: FactoryRecord[], mapping: TaskMapping
 
 export function cancelledTaskPrerequisites(records: FactoryRecord[], mapping: TaskMapping): string[] {
   const mappings = new Map(currentTaskMappings(records).map((entry) => [entry.firstMateTaskId, entry]));
-  const native = new Map<string, Set<string>>();
-  for (const edge of mapping.management?.nativeDependencies ?? []) {
-    native.set(edge.taskId, new Set([...(native.get(edge.taskId) ?? []), ...edge.dependencies]));
-  }
+  const graph = new Map<string, Set<string>>();
   const cancelled = new Set<string>(); const visited = new Set<string>();
-  const visit = (id: string) => {
-    if (visited.has(id)) return;
-    visited.add(id);
-    const prerequisite = mappings.get(id);
-    if (prerequisite?.disposition.state === 'cancelled') cancelled.add(id);
-    for (const next of prerequisite ? taskDependencyIds(records, prerequisite) : native.get(id) ?? []) visit(next);
+  const pending = [mapping.firstMateTaskId];
+  const addEdges = (id: string, dependencies: string[]) => {
+    const edges = graph.get(id) ?? new Set<string>();
+    for (const dependency of dependencies) if (!edges.has(dependency)) {
+      edges.add(dependency);
+      // Evidence learned from a later mapping can extend a native node already visited.
+      if (visited.has(id)) pending.push(dependency);
+    }
+    graph.set(id, edges);
   };
-  for (const id of taskDependencyIds(records, mapping)) visit(id);
+  for (let index = 0; index < pending.length; index++) {
+    const id = pending[index]!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const prerequisite = id === mapping.firstMateTaskId ? mapping : mappings.get(id);
+    if (id !== mapping.firstMateTaskId && prerequisite?.disposition.state === 'cancelled') cancelled.add(id);
+    if (prerequisite) {
+      addEdges(id, taskDependencyIds(records, prerequisite));
+      for (const edge of prerequisite.management?.nativeDependencies ?? []) addEdges(edge.taskId, edge.dependencies);
+    }
+    // Observed native edges still apply when a legacy import has no canonical edges.
+    for (const next of graph.get(id) ?? []) pending.push(next);
+  }
   return [...cancelled];
 }
 
