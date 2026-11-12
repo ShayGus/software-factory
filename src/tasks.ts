@@ -401,6 +401,8 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
     }
     const dependencies = inspectDependencies(wrapper, mapping.firstMateTaskId, desiredIds,
       mapping.disposition.state === 'cancelled' ? observationError : undefined);
+    if (observationErrors.length) return recordOutcome(store, operation, 'unknown',
+      JSON.stringify({ task: observed, observationErrors, events: wrapper.events }), mapping, mapping.management!.managedDependencies);
     const observedMapping = withNativeDependencies(mapping, dependencies);
     if (observedMapping !== mapping) {
       operation = recordOutcome(store, operation, operation.state, 'Observed native dependency graph', observedMapping,

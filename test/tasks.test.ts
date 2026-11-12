@@ -781,3 +781,32 @@ test('review 1459 finding 3: imported legacy intermediaries preserve their obser
   const consumer = flow.store.get(projectId, 'consumer-mapping'); assert.ok(consumer?.kind === 'task_mapping');
   assert.match(taskReadinessReasons(flow.store.records(projectId), consumer).join('\n'), /Cancelled prerequisite managed-task/);
 });
+
+test('review 1489 finding 1: cancellation refuses to reinstall an edge that completes a native cycle', (t) => {
+  const flow = setup(t, true);
+  flow.fake.edit((state) => { state.tasks.prerequisite = fakeTask('prerequisite', { state: 'done' }); });
+  flow.succeeded(flow.command({ dependencies: ['prerequisite'] }));
+  flow.fake.edit((state) => { state.tasks['managed-task']!.state = 'done'; });
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Affected consumer', repo: 'sample' },
+    dependencies: ['managed-task'] }, 'consumer-mapping'));
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.state = 'in_flight';
+    state.tasks['managed-task']!.deps = [];
+    state.tasks.prerequisite!.deps = [{ type: 'blocked-by', id: 'managed-task' }];
+  });
+  const stopped = join(flow.directory, 'cycle-stop.json');
+  const control = join(flow.directory, 'cycle-control.cjs');
+  writeFileSync(control, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(stopped)}, JSON.stringify(process.argv.slice(2)));\n`, { mode: 0o755 });
+  flow.options.controlExecutable = control;
+  const before = flow.fake.read().calls.length;
+  const result = flow.manage(flow.existing({ action: 'cancel', dependencies: ['prerequisite'] }));
+  const state = flow.fake.read();
+  assert.equal(state.tasks['managed-task']!.deps.some((edge) => edge.id === 'prerequisite'), false,
+    'The detected reverse edge must prevent reinstalling the desired blocker');
+  assert.equal(state.calls.slice(before).some((call) => call.args[0] === 'block' && call.args[1] === 'managed-task' && call.args[3] === 'prerequisite'), false);
+  assert.equal(state.tasks['managed-task']!.held, true);
+  assert.equal(state.tasks.consumer!.held, true);
+  assert.deepEqual(JSON.parse(readFileSync(stopped, 'utf8')), ['managed-task', 'exit']);
+  assert.equal(result.operation.state, 'unknown');
+  assert.match(result.operation.reconciliation?.note ?? '', /task_dependency_cycle/);
+});
