@@ -437,3 +437,93 @@ test('review 1228 finding 8: duplicate sections produce one immediate adoption d
   const result = captureLearning(store, observation('duplicate-section', { inputKind: 'standing_instruction', legacySections: [section, section] }));
   assert.equal(result.sectionDiffs.length, 1);
 });
+
+
+test('review 1237 finding 1: references quoting retired sections are refused before worker context is assembled', (t) => {
+  const { store, path, text, assignment } = projectionFixture(t);
+  const records = store.history('project-1').map((record) => record.kind === 'design_revision' ?
+    { ...record, sourceRefs: [...record.sourceRefs, { uri: path, excerpt: 'Retired content.' }] } : record);
+  assert.throws(() => selectAssignmentContext(records, assignment, (source) => ({ uri: source.uri,
+    text: source.uri === path ? text : 'Other source' })), /retired_section_excerpt/u);
+});
+
+for (const removeChild of [false, true]) test(`review 1237 finding 2: current covering parent replaces obsolete child validation (${removeChild ? 'removed' : 'changed'}) while independent adoptions stay checked`, (t) => {
+  const { store, dir } = setup(t); const path = join(dir, 'covering-parent.md');
+  const old = '## Rules\nOriginal parent.\n### Detail\nOriginal child.\n## Independent\nIndependent source.\n'; writeFileSync(path, old);
+  captureLearning(store, observation('old-covering-adoption', { inputKind: 'standing_instruction',
+    legacySections: [readLegacySection(path, '## Rules'), readLegacySection(path, '### Detail'), readLegacySection(path, '## Independent')] }));
+  const previous = managed(store)[0]!;
+  const current = removeChild ? old.replace('### Detail\nOriginal child.\n', '') : old.replace('Original child.', 'Updated child.'); writeFileSync(path, current);
+  captureLearning(store, observation('new-covering-adoption', { inputKind: 'standing_instruction', finding: 'Use the updated covering guidance.',
+    legacySections: [readLegacySection(path, '## Rules')], supersedes: [{ id: previous.id, revision: previous.revision }] }));
+  const visible = projectLegacyContext(store.history('project-1'), path, current);
+  assert.ok(!visible.includes('Updated child.'));
+  assert.ok(visible.includes('new-covering-adoption:guidance@1'), 'The marker names the current adopted guidance');
+  assert.throws(() => projectLegacyContext(store.history('project-1'), path, current.replace('Independent source.', 'Changed independent source.')), /legacy_section_changed/u);
+});
+
+test('review 1237 finding 3: pending operational and conflict observations preserve snapshots that were never adopted', (t) => {
+  const { store, dir } = setup(t); const path = join(dir, 'pending-section.md');
+  writeFileSync(path, '## Operational\nImportant reset-time continuity detail.\n');
+  const section = readLegacySection(path, '## Operational');
+  const otherPath = join(dir, 'later-adopted.md'); writeFileSync(otherPath, '## Adopted\nRetired after conflict capture.\n');
+  const laterAdopted = readLegacySection(otherPath, '## Adopted');
+  captureLearning(store, observation('unadopted-operational', { inputKind: 'operational', legacySections: [section, laterAdopted] }));
+  assert.deepEqual(learningContext(store.history('project-1')).corrections.find((record) => record.id === 'unadopted-operational')?.legacySections, [section, laterAdopted]);
+  consolidateLearning(store, invocation(), config(dir, { outcome: 'conflict' }));
+  assert.deepEqual(learningContext(store.history('project-1')).conflicts.find((record) => record.id === 'unadopted-operational')?.legacySections, [section, laterAdopted]);
+  const assignment = store.get('project-1', 'assignment-1'); assert.ok(assignment?.kind === 'assignment');
+  const context = selectAssignmentContext(store.history('project-1'), assignment, (source) => ({ uri: source.uri, text: 'Other source' }));
+  assert.ok(JSON.stringify(context.selectedContext).includes('Important reset-time continuity detail.'));
+  assert.ok(JSON.stringify(context.records).includes('Important reset-time continuity detail.'));
+  captureLearning(store, observation('only-second-adopted', { inputKind: 'standing_instruction', legacySections: [laterAdopted] }));
+  assert.deepEqual(learningContext(store.history('project-1')).conflicts.find((record) => record.id === 'unadopted-operational')?.legacySections, [section]);
+});
+
+test('review 1237 finding 4: selecting an unaffected observation finding returns that excerpt without serialized metadata', (t) => {
+  const { store, dir } = setup(t); const path = join(dir, 'observation-selection.md');
+  writeFileSync(path, '## Rules\nRetired section body.\n');
+  const finding = 'Durable operational finding appears here.';
+  captureLearning(store, observation('observation-excerpt', { inputKind: 'operational', finding, legacySections: [readLegacySection(path, '## Rules')] }));
+  consolidateLearning(store, invocation(), config(dir, { text: 'Current adopted instruction.' }));
+  const observed = store.get('project-1', 'observation-excerpt'); assert.ok(observed?.kind === 'observation');
+  const source = { uri: `factory:record/${observed.id}@${observed.revision}`, record: { id: observed.id, revision: observed.revision }, excerpt: finding };
+  const records = store.history('project-1').map((record) => record.kind === 'design_revision' ? { ...record, sourceRefs: [...record.sourceRefs, source] } : record);
+  const assignment = store.get('project-1', 'assignment-1'); assert.ok(assignment?.kind === 'assignment');
+  const selected = selectAssignmentContext(records, assignment, (source) => ({ uri: source.uri, text: 'Other source' }), 14);
+  assert.equal(selected.selectedContext.find((context) => context.source.excerpt === finding)?.extract, finding.slice(0, 14));
+});
+
+test('review 1237 finding 5: every supported feature-bearing scope record resolves to its feature', () => {
+  const records = structuredClone(fixtures);
+  const feature = records.find((record) => record.kind === 'feature_revision'); assert.ok(feature?.kind === 'feature_revision');
+  const plan = records.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+  const metadata = { projectId: 'project-1', schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at };
+  records.push(...RecordsSchema.parse([
+    { ...metadata, kind: 'understanding_revision', id: 'scope-understanding', feature: { id: feature.id, revision: feature.revision },
+      sourceRequests: feature.sourceRequests, criteria: feature.criteria, goal: 'Feature goal', userBehavior: 'Requested behavior', terms: {}, priorities: [],
+      examples: [], exclusions: [], existingWork: [{ source: { uri: 'fixture:existing' }, finding: 'Existing project work' }], openUnknowns: [], scope: [], changeReason: 'Initial understanding' },
+    { ...metadata, kind: 'stage_revision', id: 'scope-stage', feature: { id: feature.id, revision: feature.revision }, stage: 'plan',
+      sourceRequests: feature.sourceRequests, criteria: feature.criteria, artifact: { id: plan.id, revision: plan.revision }, changeReason: 'Plan stage' },
+    { ...metadata, kind: 'plan_readiness_revision', id: 'scope-readiness', feature: { id: feature.id, revision: feature.revision },
+      plan: { id: plan.id, revision: plan.revision }, detailStage: { id: 'scope-stage', revision: 1 }, findings: [], ready: true },
+  ]));
+  const guidance = records.find((record) => record.kind === 'guidance_revision'); assert.ok(guidance?.kind === 'guidance_revision');
+  for (const record of records.filter((record) => 'feature' in record && record.feature?.id === feature.id)) {
+    guidance.scope = [{ uri: `factory:scope/${record.id}`, record: { id: record.id, revision: record.revision } }];
+    assert.ok(learningContext(records, feature.id).guidance.some((candidate) => candidate.id === guidance.id), record.kind);
+    assert.ok(!learningContext(records, 'unrelated-feature').guidance.some((candidate) => candidate.id === guidance.id), record.kind);
+    assert.ok(!learningContext(records).guidance.some((candidate) => candidate.id === guidance.id), record.kind);
+  }
+});
+
+test('review 1237 finding 3: adopting a child does not discard a pending snapshot of its unadopted parent', (t) => {
+  const { store, dir } = setup(t); const path = join(dir, 'pending-parent.md');
+  writeFileSync(path, '## Operational\nPending parent continuity.\n### Child\nChild source.\n');
+  const parent = readLegacySection(path, '## Operational');
+  const child = readLegacySection(path, '### Child');
+  captureLearning(store, observation('pending-parent', { inputKind: 'operational', legacySections: [parent] }));
+  captureLearning(store, observation('adopt-child', { inputKind: 'standing_instruction', legacySections: [child] }));
+  const context = learningContext(store.history('project-1'));
+  assert.deepEqual(context.corrections.find((record) => record.id === 'pending-parent')?.legacySections, [parent]);
+});

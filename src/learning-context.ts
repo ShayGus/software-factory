@@ -24,7 +24,7 @@ function legacyScopeApplies(records: FactoryRecord[], guidance: GuidanceRevision
   // resolved record scopes until the rule has explicit learning classification.
   const scopes = guidance.scope.map((source) => source.record && records.find((record) =>
     record.id === source.record!.id && record.revision === source.record!.revision && record.projectId === guidance.projectId));
-  if (scopes.some((scope) => !scope || !['project', 'feature_revision', 'criterion', 'design_revision', 'detailed_plan_task', 'assignment'].includes(scope.kind))) return false;
+  if (scopes.some((scope) => !scope || !(scope.kind === 'project' || scope.kind === 'feature_revision' || scope.kind === 'criterion' || 'feature' in scope))) return false;
   return scopes.some((scope) => scope && (scope.kind === 'project' ||
     scope.kind === 'feature_revision' && scope.id === featureId ||
     scope.kind === 'criterion' && scope.featureId === featureId ||
@@ -64,70 +64,68 @@ function currentLegacySections(records: FactoryRecord[], uri: string) {
   const latest = new Map<string, { section: Section; guidance: GuidanceRevision }>();
   for (const guidance of records) if (guidance.kind === 'guidance_revision') for (const section of legacySectionsForGuidance(records, guidance)) {
     if (section.uri !== uri) continue;
-    const previous = latest.get(section.heading);
-    if (!previous || follows(records, guidance, previous.guidance)) latest.set(section.heading, { section, guidance });
+    const heading = section.heading.trim();
+    const previous = latest.get(heading);
+    if (!previous || follows(records, guidance, previous.guidance)) latest.set(heading, { section, guidance });
     else if (!follows(records, previous.guidance, guidance)) {
       const order = Date.parse(guidance.updatedAt) - Date.parse(previous.guidance.updatedAt);
-      if (order > 0) latest.set(section.heading, { section, guidance });
+      if (order > 0) latest.set(heading, { section, guidance });
       else if (order === 0 && section.digest !== previous.section.digest) throw new Error(`legacy_adoption_order_ambiguous: ${uri} ${section.heading}`);
     }
   }
-  return [...latest.values()].map(({ section }) => section);
+  return [...latest.values()];
 }
-type Edit = { start: number; end: number; replacement: string };
-function applyProjection(original: string, edits: Edit[]) {
-  let text = '', previousEnd = 0;
-  for (const edit of edits) {
-    text += original.slice(previousEnd, edit.start) + edit.replacement;
-    previousEnd = edit.end;
+function sectionRange(text: string, heading: string) {
+  try { return markdownSectionRange(text, heading); } catch { return undefined; }
+}
+function adoptedSnapshots(records: FactoryRecord[]) {
+  return uniqueLegacySections(records.flatMap((record) => record.kind === 'guidance_revision' ? legacySectionsForGuidance(records, record) : []));
+}
+/** Select covering adoptions before checking bytes. A superseded child cannot
+ * invalidate a current parent that now owns the complete section. */
+export function legacyContextSections(records: FactoryRecord[], uri: string, original: string) {
+  const history = adoptedSnapshots(records).filter((section) => section.uri === uri);
+  const adoptions = currentLegacySections(records, uri).map((adoption) => ({ ...adoption,
+    range: sectionRange(original, adoption.section.heading) }));
+  const covering = adoptions.filter((child) => !adoptions.some((parent) => {
+    if (parent === child || !parent.range) return false;
+    if (child.range) return parent.range.start < child.range.start && parent.range.end >= child.range.end;
+    // A replacement parent may remove a former child's heading altogether.
+    return history.some((section) => section.heading.trim() === parent.section.heading.trim() &&
+      sectionRange(section.before, child.section.heading)?.start !== undefined);
+  }));
+  const active = activeGuidance(records);
+  const sections = covering.map(({ section, guidance, range }) => {
+    if (!range || range.before !== section.before || learningDigest(range.before) !== section.digest) throw new Error(`legacy_section_changed: ${uri} ${section.heading}`);
+    const successors = active.filter((current) => follows(records, current, guidance));
+    const names = (successors.length ? successors : [guidance]).map((current) => `${current.id}@${current.revision}`).sort();
+    return { start: range.start, end: range.end, marker: `[Adopted guidance: ${names.join(', ')}]\n` };
+  }).sort((a, b) => a.start - b.start);
+  let text = '', end = 0;
+  for (const section of sections) {
+    text += original.slice(end, section.start) + section.marker;
+    end = section.end;
   }
-  text += original.slice(previousEnd);
-  return { text, mapOffset(offset: number, edge: 'start' | 'end') {
-    let delta = 0;
-    for (const edit of edits) {
-      if (offset < edit.start) break;
-      if (offset <= edit.end) return edit.start + delta +
-        (offset === edit.end || offset !== edit.start && edge === 'end' ? edit.replacement.length : 0);
-      delta += edit.replacement.length - (edit.end - edit.start);
-    }
-    return offset + delta;
-  } };
+  return { text: text + original.slice(end), sections };
 }
-/** Validate current adoptions against the unmodified snapshot, then replace
- * disjoint ranges once. Historical section evidence remains in the store. */
-function legacyProjection(records: FactoryRecord[], uri: string, original: string) {
-  const ranges = currentLegacySections(records, uri).map((section) => {
-    const range = markdownSectionRange(original, section.heading);
-    if (range.before !== section.before || learningDigest(range.before) !== section.digest) throw new Error(`legacy_section_changed: ${uri} ${section.heading}`);
-    return { start: range.start, end: range.end,
-      replacement: `${section.heading}\n[Adopted guidance is supplied separately in the current scoped guidance.]\n` };
-  }).sort((a, b) => a.start - b.start || b.end - a.end);
-  const disjoint: Edit[] = [];
-  for (const range of ranges) {
-    const previous = disjoint.at(-1);
-    if (previous && range.start < previous.end) previous.end = Math.max(previous.end, range.end);
-    else disjoint.push(range);
-  }
-  return applyProjection(original, disjoint);
-}
+export const sourceRangeIsRetired = (sections: { start: number; end: number }[], start: number, end: number) =>
+  sections.some((section) => start < section.end && end > section.start);
 export function projectLegacyContext(records: FactoryRecord[], uri: string, text: string): string {
-  return legacyProjection(records, uri, text).text;
+  return legacyContextSections(records, uri, text).text;
 }
-/** Worker records retain exact provenance and evidence pointers, while the
- * original legacy section bodies are available only through record history. */
-export function workerContextRecord(record: Observation): Observation;
-export function workerContextRecord(record: FactoryRecord): FactoryRecord;
-export function workerContextRecord(record: FactoryRecord): FactoryRecord {
+/** Select complete snapshots, never edit their bodies or serialized JSON.
+ * Pending evidence stays available until an adoption retires those bytes. */
+export function workerContextRecord(records: FactoryRecord[], record: Observation): Observation;
+export function workerContextRecord(records: FactoryRecord[], record: FactoryRecord): FactoryRecord;
+export function workerContextRecord(records: FactoryRecord[], record: FactoryRecord): FactoryRecord {
   if (record.kind !== 'observation' || !record.legacySections?.length) return record;
-  const { legacySections: _sections, ...projection } = record;
-  return projection;
+  const adopted = adoptedSnapshots(records);
+  const legacySections = record.legacySections.filter((snapshot) => !adopted.some((section) => section.uri === snapshot.uri &&
+    sectionRange(section.before, snapshot.heading)?.before === snapshot.before));
+  return legacySections.length === record.legacySections.length ? record : { ...record, legacySections };
 }
-export function projectContextSource(records: FactoryRecord[], uri: string, original: string, record?: FactoryRecord) {
-  if (record) {
-    const projected = record.kind === 'request' ? record.originalText : JSON.stringify(workerContextRecord(record), null, 2);
-    if (projected !== original) return applyProjection(original, [{ start: 0, end: original.length, replacement: projected }]);
-  }
-  return legacyProjection(records, uri, original);
+export function workerContextText(records: FactoryRecord[], record: FactoryRecord) {
+  return record.kind === 'request' ? record.originalText : JSON.stringify(workerContextRecord(records, record), null, 2);
 }
 export const projectedContextArtifact = (uri: string, text: string) => ({
   uri: `factory:projected-context/${encodeURIComponent(uri)}`, digest: learningDigest(text),
@@ -138,8 +136,8 @@ export function learningContext(records: FactoryRecord[], featureId?: string) {
     guidance: guidanceForContext(records, featureId),
     corrections: latest.filter((record): record is Observation => record.kind === 'observation' &&
       (record.learning?.inputKind === 'local_correction' || record.learning?.inputKind === 'operational' && record.consolidationState !== 'no_general_rule') &&
-      (record.learning.scope.kind === 'project' || record.learning.scope.featureId === featureId)).map((record) => workerContextRecord(record)),
+      (record.learning.scope.kind === 'project' || record.learning.scope.featureId === featureId)).map((record) => workerContextRecord(records, record)),
     conflicts: latest.filter((record): record is Observation => record.kind === 'observation' && record.consolidationState === 'conflict' &&
-      (!record.learning || record.learning.scope.kind === 'project' || record.learning.scope.featureId === featureId)).map((record) => workerContextRecord(record)),
+      (!record.learning || record.learning.scope.kind === 'project' || record.learning.scope.featureId === featureId)).map((record) => workerContextRecord(records, record)),
   };
 }

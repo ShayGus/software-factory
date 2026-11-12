@@ -1,4 +1,4 @@
-import { learningContext, projectContextSource, projectedContextArtifact, workerContextRecord, activeGuidance } from './learning-context.js';
+import { learningContext, legacyContextSections, sourceRangeIsRetired, projectedContextArtifact, workerContextRecord, workerContextText, activeGuidance } from './learning-context.js';
 import { createHash } from 'node:crypto';
 import type { Artifact, Ref } from './primitives.js';
 import type { Assignment, CriterionResult, FactoryRecord, ImplementationPlanRevision } from './records.js';
@@ -125,15 +125,15 @@ export function requiredAssignmentContext(records: FactoryRecord[], assignment: 
     if (record.kind === 'detailed_plan_task') sources.push(...record.designRefs ?? [], ...record.reuseTargets ?? []);
   }
   sources.push(...artifacts.map((artifact) => ({ uri: artifact.uri })));
-  return { requests, records: selectedRecords.map(workerContextRecord), sources: unique(sources, sameSource), prerequisites, artifacts, dependencies };
+  return { requests, records: selectedRecords.map((record) => workerContextRecord(records, record)), sources: unique(sources, sameSource), prerequisites, artifacts, dependencies };
 }
 
 export type LoadedSource = { text: string; uri: string; start?: number; end?: number; identity?: Artifact };
 export type SourceLoader = (source: Source, artifact?: Artifact) => LoadedSource | undefined;
 
-/** Ranges address the original UTF-16 snapshot. Verify original identity before
- * projecting adopted guidance and remap ranges into the projected text. Source
- * and projected identities remain distinct; original evidence stays in history. */
+/** Full sources omit adopted whole sections. Explicit ranges address the original
+ * snapshot and must not overlap retired sections. Record excerpts are selected
+ * directly from the structured worker record, without rewriting JSON or offsets. */
 export function selectAssignmentContext(records: FactoryRecord[], assignment: Parameters<typeof requiredAssignmentContext>[1],
   load: SourceLoader, maxSourceChars = 16_000) {
   if (!Number.isSafeInteger(maxSourceChars) || maxSourceChars < 1) throw new Error('invalid_context_limit');
@@ -161,14 +161,21 @@ export function selectAssignmentContext(records: FactoryRecord[], assignment: Pa
     if (originalStart < 0 || originalEnd > original.length || originalEnd <= originalStart ||
       splitsPair(original, originalStart) || splitsPair(original, originalEnd) ||
       artifact?.digest && artifact.digest !== digestText(original)) { missing.push(missingContext(requirement)); continue; }
-    const projected = projectContextSource(records, source.uri, original, record);
-    const text = projected.text;
-    const start = projected.mapOffset(originalStart, 'start');
-    const requestedEnd = projected.mapOffset(originalEnd, 'end');
-    let end = Math.min(requestedEnd, start + maxSourceChars);
-    if (splitsPair(text, end)) end--;
-    if (end <= start || !text.slice(start, end).trim()) { missing.push(missingContext(requirement)); continue; }
-    selectedContext.push({ source, extract: text.slice(start, end), truncated: start !== 0 || end !== text.length,
+    const visible = record ? { text: workerContextText(records, record), sections: [] } : legacyContextSections(records, source.uri, original);
+    const text = visible.text;
+    const ranged = loaded.start !== undefined || loaded.end !== undefined || source.excerpt !== undefined;
+    if (ranged && (sourceRangeIsRetired(visible.sections, originalStart, originalEnd) ||
+      source.excerpt !== undefined && !text.includes(source.excerpt))) {
+      throw new Error(`retired_section_excerpt: ${source.uri}; reconcile the excerpt with the adopted guidance`);
+    }
+    // External snapshots keep original range coordinates; no offsets are mapped
+    // through omitted sections. Record refs can select only textual excerpts.
+    const selectedText = record && source.excerpt !== undefined ? source.excerpt : ranged ? original.slice(originalStart, originalEnd) : text;
+    let end = Math.min(selectedText.length, maxSourceChars);
+    if (splitsPair(selectedText, end)) end--;
+    const extract = selectedText.slice(0, end);
+    if (!extract.trim()) { missing.push(missingContext(requirement)); continue; }
+    selectedContext.push({ source, extract, truncated: extract !== text,
       artifact: { uri, digest: digestText(original), ...(artifact?.revision ? { revision: artifact.revision } : {}) },
       ...(text !== original ? { projectedArtifact: projectedContextArtifact(uri, text) } : {}) });
   }

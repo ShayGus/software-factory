@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -488,5 +488,28 @@ test(`adopted legacy sections survive real brief preparation and fidelity checks
     const check = flow.check(); assert.equal(check.ok, true, JSON.stringify(check));
     assert.equal(readFileSync(memoryPath, 'utf8'), memory);
     assert.equal(readFileSync(sourceFile.path, 'utf8'), memory);
+  } finally { flow.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('review 1237 finding 1: brief preparation refuses a retired excerpt without writing worker artifacts', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-retired-excerpt-')); const memoryPath = join(directory, 'memory.md');
+  const memory = '## Rules\nRetired excerpt that must not enter metadata.\n'; writeFileSync(memoryPath, memory);
+  const flow = setup({ editRecords: (records) => {
+    const design = records.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+    design.sourceRefs.push({ uri: memoryPath, excerpt: 'Retired excerpt that must not enter metadata.' });
+  } });
+  try {
+    const source = flow.sourceFiles.find((source) => source.source.uri === memoryPath); assert.ok(source); writeFileSync(source.path, memory);
+    const at = '2026-11-12T08:30:00.000Z';
+    captureLearning(flow.store, { projectId, id: 'retired-excerpt-observation', idempotencyKey: 'retired-excerpt-capture', issuedAt: at,
+      identity: { scope: { kind: 'project' }, topic: 'retired-excerpt' }, inputKind: 'standing_instruction', captureReason: 'direct',
+      finding: 'Use the adopted instruction.', legacySections: [readLegacySection(memoryPath, '## Rules')],
+      evidence: [{ artifact: { uri: memoryPath, digest: digestText(memory) }, description: 'Section source', observedAt: at }] });
+    flow.input.issuedAt = at;
+    assert.throws(flow.prepare, /retired_section_excerpt/u);
+    assert.equal(readFileSync(flow.briefPath, 'utf8'), flow.original);
+    assert.equal(existsSync(join(flow.directory, 'brief.sf.json')), false);
+    assert.equal(flow.store.get(projectId, flow.input.assignmentId), undefined);
   } finally { flow.close(); rmSync(directory, { recursive: true, force: true }); }
 });

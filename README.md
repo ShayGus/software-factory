@@ -1230,10 +1230,14 @@ Each adopted section links to its original observation, and the learning run rec
 An immediate standing-instruction adoption returns the same section diff in its capture result.
 Duplicate sections produce one diff.
 No operation writes or overwrites a legacy memory file.
-Context assembly resolves the current adoption per source and heading, validates original bytes, and projects overlapping section ranges once.
-It supplies current applicable guidance instead of retired section text, including in observation extracts, sidecar records, and the learning-context API.
+Context assembly resolves the current covering adoption before validating section bytes.
+An adopted whole section is omitted and replaced with one marker line naming its adopted guidance.
+Observation context retains complete section snapshots that have not been adopted and omits only snapshots retired by adoption.
+This structured selection is shared by observation extracts, sidecar records, fidelity checks, and the learning-context API.
 Original artifact identities are verified before projection and retained as `selectedContext[].artifact`; changed views have a separate `projectedArtifact` identity.
-Snapshot ranges address original UTF-16 offsets and are remapped into projected text before extraction.
+Snapshot ranges keep their original UTF-16 offsets.
+An excerpt or explicit range overlapping an adopted section is refused with `retired_section_excerpt` until its reference is reconciled.
+Record excerpts select their unchanged text directly from the worker record; serialized JSON and character offsets are not rewritten.
 The replacement record carries source pointers rather than the superseded text; full source text and diffs stay in observation/run history.
 A changed adopted section fails context assembly until its source is reconciled.
 

@@ -1,4 +1,4 @@
-import { projectContextSource, projectedContextArtifact } from './learning-context.js';
+import { legacyContextSections, sourceRangeIsRetired, workerContextText, projectedContextArtifact } from './learning-context.js';
 import { randomUUID } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -56,7 +56,15 @@ function fileFindings(records: FactoryRecord[], assignment: Assignment): Instruc
     const record = context.source.record && planningRecord(records, context.source.record);
     const originalText = record ? record.kind === 'request' ? record.originalText : JSON.stringify(record, null, 2) :
       context.artifact && localText(context.artifact.uri);
-    const text = originalText && projectContextSource(records, context.source.uri, originalText, record).text;
+    const visible = originalText && (record ? { text: workerContextText(records, record), sections: [] } : legacyContextSections(records, context.source.uri, originalText));
+    const text = visible && visible.text;
+    if (visible && context.source.excerpt !== undefined) {
+      const start = originalText!.indexOf(context.source.excerpt);
+      if (!visible.text.includes(context.source.excerpt) || sourceRangeIsRetired(visible.sections, start, start + context.source.excerpt.length)) {
+        findings.push({ code: 'retired_section_excerpt', path: 'selectedContext', message: `Reconcile the excerpt with adopted guidance: ${context.source.uri}` });
+        continue;
+      }
+    }
     const projectedIdentity = text && originalText !== text ? projectedContextArtifact(context.artifact?.uri ?? '', text) : undefined;
     if (!text || !originalText || !context.artifact || context.artifact.digest !== digestText(originalText) ||
       (projectedIdentity ? !context.projectedArtifact || !sameArtifactIdentity(context.projectedArtifact, projectedIdentity) : context.projectedArtifact !== undefined) || !context.extract ||
