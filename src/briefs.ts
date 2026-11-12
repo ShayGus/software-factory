@@ -85,8 +85,8 @@ function fileFindings(records: FactoryRecord[], assignment: Assignment): Instruc
 function materializePreparation(store: ProjectStore, records: FactoryRecord[], saved: Assignment) {
   if (!saved.brief) throw new StoreError('validation', 'assignment_preparation_not_saved');
   if (store.get(saved.projectId, saved.id)?.revision !== saved.revision) throw new StoreError('conflict', 'superseded_assignment_cannot_materialize_brief');
-  atomicWrite(saved.brief.sidecarPath, sidecar(records, saved));
-  atomicWrite(saved.brief.path, renderWorkerBrief(records, saved, saved.brief.scaffold));
+  atomicWrite(saved.brief.sidecarPath, saved.brief.materialized?.sidecar ?? sidecar(records, saved));
+  atomicWrite(saved.brief.path, saved.brief.materialized?.brief ?? renderWorkerBrief(records, saved, saved.brief.scaffold));
   const findings = saved.brief.preparationFindings ?? saved.instructionFidelity.findings.map((item) => ({
     code: item.description.split(':')[0]!, path: 'brief', message: item.description }));
   return { assignment: ref(saved), briefPath: saved.brief.path, sidecarPath: saved.brief.sidecarPath,
@@ -203,6 +203,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
   assignment.brief!.unresolvedCorrections = unresolvedTaskCorrections(records, assignment);
   const coverage = sidecar(records, assignment);
   assignment.brief!.sidecarDigest = digestText(coverage);
+  assignment.brief!.materialized = { brief: text, sidecar: coverage };
   const command = PrepareAssignmentCommandSchema.parse({ schemaVersion: 1, id: randomUUID(), projectId: data.projectId,
     issuedAt: data.issuedAt, idempotencyKey: data.idempotencyKey, command: 'prepare_assignment', targetId: assignment.id,
     expectedRevision: data.expectedRevision, payload: { detailedPlanTask: ref(task), feature: assignment.feature,

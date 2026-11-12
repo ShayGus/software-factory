@@ -273,7 +273,7 @@ export class ProjectStore {
   }
 
   /** Restore one closed project into a completely empty database, without executing operations. */
-  importProject(input: unknown, recovery?: { requireReconciliation: true; restoredArtifacts: { path: string; digest: string | null }[]; unresolvedReferences?: string[]; artifactBase?: string }): void {
+  importProject(input: unknown, recovery?: { requireReconciliation: true; restoredArtifacts: { path: string; digest: string | null }[]; unresolvedReferences?: string[]; artifactBase?: string; backupDigest?: string }): void {
     const data = parse(ProjectExportSchema, input);
     this.#transaction(() => {
       if (this.#db.prepare('SELECT 1 FROM record_history LIMIT 1').get() ||
@@ -311,7 +311,9 @@ export class ProjectStore {
         const next = { ...project, revision: project.revision + 1, updatedAt: at,
           integration: { ...project.integration, state: 'reconciling' as const,
             ...(recovery.artifactBase ? { artifactBase: recovery.artifactBase } : {}), restoredUnresolvedReferences: recovery.unresolvedReferences ?? [],
-            resumeAfterRestore: project.integration?.state === 'disabled' ? 'disabled' as const : 'enabled' as const, restoredArtifacts: recovery.restoredArtifacts,
+            ...(recovery.backupDigest ? { restoreBackupDigest: recovery.backupDigest } : {}),
+            resumeAfterRestore: project.integration?.state === 'reconciling' ? project.integration.resumeAfterRestore ?? 'enabled' as const :
+              project.integration?.state === 'disabled' ? 'disabled' as const : 'enabled' as const, restoredArtifacts: recovery.restoredArtifacts,
             outstandingConditions: project.integration?.outstandingConditions ?? [] } };
         parse(RecordsSchema, [decision, next]);
         this.#insertRecord(decision); this.#insertRecord(next);

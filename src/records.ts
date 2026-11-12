@@ -27,6 +27,7 @@ export const ProjectSchema = record('project', {
   firstMateHomeRef: TextSchema,
   integration: z.strictObject({
     state: z.enum(['enabled', 'disabled', 'reconciling']),
+    restoreBackupDigest: TextSchema.optional(),
     resumeAfterRestore: z.enum(['enabled', 'disabled']).optional(),
     disableMode: z.enum(['pause', 'hand_back']).optional(),
     outstandingConditions: z.array(TextSchema),
@@ -201,6 +202,7 @@ export const AssignmentSchema = record('assignment', {
   brief: z.strictObject({
     path: TextSchema, sidecarPath: TextSchema, scaffold: TextSchema,
     sidecarDigest: TextSchema,
+    materialized: z.strictObject({ brief: TextSchema, sidecar: TextSchema }).optional(),
     preparationFindings: z.array(z.strictObject({ code: TextSchema, path: TextSchema, message: TextSchema })).optional(),
     unresolvedCorrections: z.array(UnresolvedCorrectionSchema).optional(),
   }).optional(),

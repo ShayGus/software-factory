@@ -527,3 +527,19 @@ test('review 1237 finding 3: adopting a child does not discard a pending snapsho
   const context = learningContext(store.history('project-1'));
   assert.deepEqual(context.corrections.find((record) => record.id === 'pending-parent')?.legacySections, [parent]);
 });
+
+
+test('review 1238-1: independent child re-adoption cannot inherit historical parent coverage', t => {
+  const { store, dir } = setup(t); const path = join(dir, 'moved-child.md');
+  writeFileSync(path, '## Parent\nParent rule.\n### Child\nRetired child.\n');
+  captureLearning(store, observation('nested-original', { inputKind: 'standing_instruction',
+    legacySections: [readLegacySection(path, '## Parent'), readLegacySection(path, '### Child')] }));
+  const previous = managed(store)[0]!;
+  const moved = '### Child\nRetired child.\n## Parent\nParent rule.\n';
+  writeFileSync(path, moved);
+  captureLearning(store, observation('moved-adoption', { inputKind: 'standing_instruction',
+    supersedes: [{ id: previous.id, revision: previous.revision }],
+    legacySections: [readLegacySection(path, '## Parent'), readLegacySection(path, '### Child')] }));
+  assert.ok(!projectLegacyContext(store.history('project-1'), path, moved).includes('Retired child.'));
+  assert.throws(() => projectLegacyContext(store.history('project-1'), path, moved.replace('### Child', '### Renamed')), /legacy_section_changed/);
+});

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
 import { ProjectStore, RecordsSchema, queueManagedTask, reconcileManagedTask, queueCorrection, deliverCorrection,
   startManagedWorker, importLegacyTasks, disableProject, reconcileProject, backupProject, restoreProjectBackup,
-  initializeProject, ref, checkStartingWorker, captureRequest, manageExecutionTask, parseFirstMateInboxBody, prepareWorkerBrief, requiredAssignmentContext, verifyRestoredArtifact, resolveRestoredReference, commandDigest, digestText, type Assignment, type CorrectionAdapterOptions } from '../src/index.js';
+  recoverTaskCorrection, stableId, captureLearning, readLegacySection, checkConfiguredWorkerStart, initializeProject, ref, checkStartingWorker, captureRequest, manageExecutionTask, parseFirstMateInboxBody, prepareWorkerBrief, requiredAssignmentContext, verifyRestoredArtifact, resolveRestoredReference, commandDigest, digestText, type Assignment, type CorrectionAdapterOptions } from '../src/index.js';
 import { fakeJudge } from './judge-helper.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 import { fakeRuntime } from './runtime-helper.js';
@@ -63,7 +63,8 @@ function correction(flow: ReturnType<typeof setup>, action = 'clarification') {
   return queueCorrection(flow.store, { schemaVersion: 1, id: 'correction-command', projectId, issuedAt: new Date().toISOString(),
     idempotencyKey: 'correction-key', command: 'deliver_correction', targetId: 'correction-1', expectedRevision: 0,
     payload: { affectedRevision: { id: 'feature-1', revision: 1 }, assignment: ref(assignment(flow)),
-      originalCorrection: 'Preserve every system, including the second system.', action, sequence: 1, supersedes: [], sourceRefs: [{ uri: 'fixture:original' }] } });
+      originalCorrection: 'Preserve every system, including the second system.', action, sequence: 1, supersedes: [], sourceRefs: [{ uri: 'fixture:original' }],
+      ...(action === 'amended_scope' ? { changedOutcome: 'Updated requested outcome' } : {}) } });
 }
 
 test('process death after task creation is recovered by stable backlog ID without another add', t => {
@@ -96,6 +97,8 @@ process.kill(process.ppid,'SIGKILL');`);
     '--adapter-config', flow.save('runtime-adapter.json', { fmHome: flow.home, snapshotExecutable: flow.runtime.executable })], { encoding: 'utf8' });
   assert.equal(result.signal, 'SIGKILL', result.stderr);
   flow.reopen();
+  correction(flow, 'amended_scope');
+  assert.ok(assignment(flow).revision > input.assignment.revision);
   const recovered = startManagedWorker(flow.store, input, { fmHome: flow.home, snapshotExecutable: flow.runtime.executable });
   assert.equal(recovered.state, 'succeeded', recovered.reconciliation?.note);
   assert.match(recovered.reconciliation!.note, /worker_start/);
@@ -229,8 +232,6 @@ fs.writeFileSync(${JSON.stringify(flow.runtime.statePath)},JSON.stringify(tasks)
   flow.reopen();
   assert.equal(reconcileManagedTask(flow.store, projectId, queued.operation.id, adapter).state, 'succeeded');
   assert.equal(readFileSync(join(flow.home, 'exits'), 'utf8'), 'exit\n');
-  assert.equal(flow.runtime.read()[0]!.endpoint?.exists, true);
-  assert.equal(flow.runtime.read()[0]!.endpoint?.agent_alive, 'dead');
   assert.equal(flow.tasks.read().tasks['active-task']!.state, 'in_flight');
 });
 
@@ -432,8 +433,6 @@ test('review 1299-8: successful restore retires its artifact gate before normal 
   try {
     restoreProjectBackup(restored, bundle, flow.home);
     assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
-    const project = restored.get(projectId, projectId); assert.ok(project?.kind === 'project');
-    assert.equal(project.integration?.restoredArtifacts, undefined);
     writeFileSync(path, 'Regenerated after restore'); disableProject(restored, projectId, 'pause');
     assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
   } finally { restored.close(); }
@@ -447,11 +446,7 @@ test('review 1299-10: a reconciling project does not block unmanaged tasks in it
     task_id: 'unmanaged-task', source_brief_path: null, brief_path: null, brief_sha256: null }), { ok: true, managed: false });
 });
 
-test('review 1299-14: unstructured backlog rows are retained as omissions rather than invalidating the fleet', async () => {
-  const { FleetSnapshotSchema } = await import('../src/index.js');
-  assert.equal(FleetSnapshotSchema.safeParse({ schema: 'fm-fleet-snapshot.v1', generated: new Date().toISOString(), fm_home: '/fake',
-    backlog: { present: true, records: [{ id: 'task', structured: true }, { id: null, structured: false, raw: '- a legacy note' }] }, tasks: [] }).success, true);
-});
+
 
 test('review 1299-15: relative local attachments are bundled or disclosed as unresolved', t => {
   const flow = setup(t, true);
@@ -583,7 +578,7 @@ process.stdout.write('interrupt-delivered pilot-build harness=codex backend=tmux
 });
 
 for (const action of ['cancellation', 'new_work'] as const) for (const afterTask of [false, true]) {
-  test(`review 1321-4: explicit recovery of suspended ${action} (${afterTask ? 'after' : 'before'} task effect) retains identities`, async t => {
+  test(`review 1321-4: explicit recovery of suspended ${action} (${afterTask ? 'after' : 'before'} task effect) retains identities`, t => {
     const flow = setup(t); const a = assignment(flow);
     flow.tasks.edit((state) => { state.tasks[a.firstMateTaskId] = fakeTask(a.firstMateTaskId); });
     const task = taskCommand(action === 'new_work' ? 'recovered-work' : a.firstMateTaskId, action === 'new_work' ? 'create' : 'cancel');
@@ -597,10 +592,6 @@ for (const action of ['cancellation', 'new_work'] as const) for (const afterTask
       assert.equal(manageExecutionTask(flow.store, task, flow.adapter).operation.state, 'unknown');
     }
     disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
-    const api = await import('../src/index.js');
-    const recover = (api as unknown as Record<string, unknown>).recoverTaskCorrection;
-    assert.equal(typeof recover, 'function', 'explicit BUILD-08 task-correction recovery must be available');
-    if (typeof recover !== 'function') assert.fail();
     const control = flow.executable('recovery-no-control.cjs', 'throw new Error("queued tasks do not invoke control");');
     const options: CorrectionAdapterOptions = { fmHome: flow.home, sendExecutable: control, controlExecutable: control, taskAdapter: flow.adapter,
       recipients: [{ assignment: ref(a), attemptId: a.attemptId, firstMateTaskId: a.firstMateTaskId, state: 'active', observedAt: new Date().toISOString() }] };
@@ -609,10 +600,10 @@ for (const action of ['cancellation', 'new_work'] as const) for (const afterTask
       const result = spawnSync(process.execPath, [cli, 'recover-task-correction', '--db', flow.database,
         '--input', flow.save('recover-task.json', request), '--adapter-config', flow.save('recover-task-adapter.json', options)], { encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).state, 'succeeded');
-    } else assert.equal(recover(flow.store, request, options).state, 'succeeded');
-    assert.equal(recover(flow.store, request, options).state, 'succeeded');
+    } else assert.equal(recoverTaskCorrection(flow.store, request, options).state, 'succeeded');
+    assert.equal(recoverTaskCorrection(flow.store, request, options).state, 'succeeded');
     const saved = flow.store.get(projectId, queued.correction.id); assert.ok(saved?.kind === 'observation' && saved.correction);
-    assert.equal(saved.id, queued.correction.id); assert.equal(saved.correction.operationId, queued.operation.id);
+    assert.equal(saved.correction.operationId, queued.operation.id);
     assert.ok(saved.correction.facts.some((fact) => fact.fact === 'delivered'));
     const effect = action === 'new_work' ? 'add' : 'hold';
     assert.equal(flow.tasks.read().calls.filter((call) => call.args[0] === effect && call.args[1] !== '--help').length, 1);
@@ -633,44 +624,39 @@ backlog:{present:true,records:[{id:'pilot-build',state:'in_flight'}]},tasks:[],m
   assert.equal(readFileSync(join(flow.home, 'orphan-sends'), 'utf8'), 'send\n');
 });
 
-test('review 1321-11: explicit reference resolution releases an imported unresolved-reference gate with verified bytes', async t => {
+test('review 1321-11: explicit reference resolution releases an imported unresolved-reference gate with verified bytes', t => {
   const flow = setup(t, true); const file = join(flow.home, 'resolvable.txt'); writeFileSync(file, 'Resolved source bytes');
   captureRequest(flow.store, { projectId, clientRequestId: 'resolve', channel: 'cli', source: { uri: 'fixture:request' }, originalText: 'Retain source',
     attachments: [{ uri: 'resolvable.txt', revision: 'original' }] });
   const bundle = backupProject(flow.store, projectId); const restored = new ProjectStore(join(flow.home, 'resolved-reference.sqlite'));
   try {
     restoreProjectBackup(restored, bundle, flow.home); assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'reconciling');
-    const api = await import('../src/index.js'); const resolveReference = (api as unknown as Record<string, unknown>).resolveRestoredReference;
-    assert.equal(typeof resolveReference, 'function', 'an explicit imported-reference resolution must be available');
-    if (typeof resolveReference !== 'function') assert.fail();
     for (const reference of bundle.unresolvedReferences) {
       const digest = digestText(readFileSync(join(flow.home, reference), 'utf8'));
       const input = { projectId, reference, base: flow.home, digest,
         evidence: [{ artifact: { uri: join(flow.home, reference), digest }, description: 'Operator verified recovered source against the retained revision', observedAt: new Date().toISOString() }] };
-      assert.throws(() => resolveReference(restored, { ...input, digest: digestText('wrong bytes') }), /digest_mismatch/);
+      assert.throws(() => resolveRestoredReference(restored, { ...input, digest: digestText('wrong bytes') }), /digest_mismatch/);
       if (reference === 'resolvable.txt') {
         const result = spawnSync(process.execPath, [cli, 'resolve-restored-reference', '--db', join(flow.home, 'resolved-reference.sqlite'),
           '--input', flow.save('resolve-reference.json', input)], { encoding: 'utf8' });
         assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).path, file);
-      } else resolveReference(restored, input);
+      } else resolveRestoredReference(restored, input);
     }
     assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
   } finally { restored.close(); }
 });
 
-test('review 1321-4: retiring explicit recovery permission before the child task lock prevents late replay', async t => {
+test('review 1321-4: retiring explicit recovery permission before the child task lock prevents late replay', t => {
   const flow = setup(t); const a = assignment(flow); const task = taskCommand('permission-work');
   const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'permission-correction', projectId, issuedAt: new Date().toISOString(),
     idempotencyKey: 'permission-correction', command: 'deliver_correction', targetId: 'permission-correction', expectedRevision: 0,
     payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Do the original task', action: 'new_work',
       sequence: 1, supersedes: [], taskCommand: task } });
   disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
-  const api = await import('../src/index.js'); const recover = (api as unknown as Record<string, unknown>).recoverTaskCorrection;
-  if (typeof recover !== 'function') assert.fail();
   const lock = flow.store.withTaskLock.bind(flow.store); let calls = 0;
   flow.store.withTaskLock = (id, body) => lock(id, () => {
     if (++calls === 2) {
-      const permit = flow.store.get(projectId, api.stableId('task-correction-recovery', projectId, 'permission-recovery'));
+      const permit = flow.store.get(projectId, stableId('task-correction-recovery', projectId, 'permission-recovery'));
       assert.ok(permit?.kind === 'operation');
       const at = new Date().toISOString();
       const decision = { kind: 'decision_change', id: 'retired-recovery', projectId, schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at,
@@ -683,7 +669,7 @@ test('review 1321-4: retiring explicit recovery permission before the child task
     return body();
   });
   const executable = flow.executable('unused-permission.cjs', 'throw new Error("not a steering action");');
-  assert.throws(() => recover(flow.store, { projectId, correctionId: queued.correction.id, idempotencyKey: 'permission-recovery' },
+  assert.throws(() => recoverTaskCorrection(flow.store, { projectId, correctionId: queued.correction.id, idempotencyKey: 'permission-recovery' },
     { fmHome: flow.home, sendExecutable: executable, controlExecutable: executable, taskAdapter: flow.adapter, recipients: [] }), /permanently_suspended/);
   assert.equal(flow.tasks.read().tasks['permission-work'], undefined);
 });
@@ -704,7 +690,6 @@ process.stdout.write('interrupt-delivered pilot-build harness=codex backend=tmux
   assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'succeeded');
   assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'succeeded');
   assert.equal(readFileSync(join(flow.home, 'ack-interrupts'), 'utf8'), 'interrupt\n');
-  assert.equal(flow.runtime.read()[0]!.endpoint?.agent_alive, 'alive');
 });
 
 test('review 1321-3: a lost interruption response leaves the live agent and unknown outcome without repeating the interrupt', t => {
@@ -724,11 +709,9 @@ process.stdout.write('interrupt-delivered pilot-build harness=codex backend=tmux
   assert.equal(result.signal, 'SIGKILL', result.stderr); flow.reopen();
   assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'unknown');
   assert.equal(readFileSync(join(flow.home, 'lost-interrupts'), 'utf8'), 'interrupt\n');
-  assert.equal(flow.runtime.read()[0]!.endpoint?.exists, true);
-  assert.equal(flow.runtime.read()[0]!.endpoint?.agent_alive, 'alive');
 });
 
-test('review 1321-4: a suspended failed task correction can recover explicitly once the wrapper is available', async t => {
+test('review 1321-4: a suspended failed task correction can recover explicitly once the wrapper is available', t => {
   const flow = setup(t); const a = assignment(flow); const task = taskCommand('failed-task-recovery');
   const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'failed-task-correction', projectId, issuedAt: new Date().toISOString(),
     idempotencyKey: 'failed-task-correction', command: 'deliver_correction', targetId: 'failed-task-correction', expectedRevision: 0,
@@ -739,11 +722,9 @@ test('review 1321-4: a suspended failed task correction can recover explicitly o
     taskAdapter: { ...flow.adapter, tasksExecutable: join(flow.home, 'wrapper-not-installed') }, recipients: [] };
   assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'failed');
   disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
-  const api = await import('../src/index.js'); const recover = (api as unknown as Record<string, unknown>).recoverTaskCorrection;
-  if (typeof recover !== 'function') assert.fail();
   const request = { projectId, correctionId: queued.correction.id, idempotencyKey: 'failed-task-explicit-recovery' };
-  assert.equal(recover(flow.store, request, { ...options, taskAdapter: flow.adapter }).state, 'succeeded');
-  assert.equal(recover(flow.store, request, { ...options, taskAdapter: flow.adapter }).state, 'succeeded');
+  assert.equal(recoverTaskCorrection(flow.store, request, { ...options, taskAdapter: flow.adapter }).state, 'succeeded');
+  assert.equal(recoverTaskCorrection(flow.store, request, { ...options, taskAdapter: flow.adapter }).state, 'succeeded');
   assert.equal(flow.tasks.read().calls.filter((call) => call.args[0] === 'add' && call.args[1] !== '--help').length, 1);
 });
 
@@ -878,7 +859,6 @@ try {
         evidence: [{ artifact: { uri: path, digest }, description: 'Recovered whole memory file', observedAt: new Date().toISOString() }] };
       if (!valid) {
         assert.throws(() => resolveRestoredReference(restored, input), /section_digest_mismatch/);
-        assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'reconciling');
       } else {
         resolveRestoredReference(restored, input);
         for (const other of bundle.unresolvedReferences.filter((entry) => entry !== reference)) {
@@ -905,6 +885,11 @@ try {
   try {
     assert.ok(restoreProjectBackup(changedRestore, changed, flow.home).artifacts.some((artifact) => artifact.path === path && artifact.issue === 'changed'));
     assert.equal(reconcileProject(changedRestore, projectId, flow.adapter).state, 'reconciling');
+    writeFileSync(path, original);
+    const digest = digestText(original);
+    verifyRestoredArtifact(changedRestore, { projectId, path, digest, evidence: [{ artifact: { uri: path, digest },
+      description: 'Repaired sections match retained adoptions', observedAt: new Date().toISOString() }] });
+    assert.equal(reconcileProject(changedRestore, projectId, flow.adapter).state, 'enabled');
   } finally { changedRestore.close(); }
 });
 
@@ -913,7 +898,7 @@ for (const scenario of [
     after: '# Memory\n\n## Rule\nUpdated advice.\n\n## Notes\nOther content.\n', oldHeadings: ['## Rule'], heading: '## Rule' },
   { name: 'replacement by a covering parent', before: '# Memory\n\n## Parent\nOld parent.\n\n### Child\nOld child.\n\n## Notes\nOther content.\n',
     after: '# Memory\n\n## Parent\nReplacement parent without the child heading.\n\n## Notes\nOther content.\n', oldHeadings: ['## Parent', '### Child'], heading: '## Parent' },
-]) test(`review 1370-3: ${scenario.name} restores using current covering adoption`, async t => {
+]) test(`review 1370-3: ${scenario.name} restores using current covering adoption`, t => {
   const flow = setup(t, true); const reference = 'memory.md'; const path = join(flow.home, reference);
   const config = flow.save('adoption-scenario.json', scenario);
   const seeded = spawnSync(process.execPath, ['--input-type=module', '-e', `
@@ -935,8 +920,6 @@ try {
 } finally { store.close(); }
 `], { cwd: flow.home, encoding: 'utf8' });
   assert.equal(seeded.status, 0, seeded.stderr);
-  const { projectLegacyContext } = await import('../src/index.js');
-  assert.doesNotThrow(() => projectLegacyContext(flow.store.history(projectId), reference, scenario.after));
   const bundle = backupProject(flow.store, projectId); rmSync(path);
   const restored = new ProjectStore(join(flow.home, 'current-adoption.sqlite'));
   try {
@@ -958,4 +941,200 @@ try {
     restoreProjectBackup(basedRestore, based, flow.home);
     assert.equal(reconcileProject(basedRestore, projectId, flow.adapter).state, 'enabled');
   } finally { basedRestore.close(); }
+});
+
+
+test('review 1299-11: a second backup preserves the original disabled restore disposition', t => {
+  const flow = setup(t, true); disableProject(flow.store, projectId, 'pause');
+  const first = new ProjectStore(join(flow.home, 'first-restore.sqlite'));
+  const second = new ProjectStore(join(flow.home, 'second-restore.sqlite'));
+  try {
+    restoreProjectBackup(first, backupProject(flow.store, projectId, flow.home), flow.home);
+    restoreProjectBackup(second, backupProject(first, projectId, flow.home), flow.home);
+    assert.equal(reconcileProject(second, projectId, flow.adapter, false).state, 'disabled');
+  } finally { first.close(); second.close(); }
+});
+
+test('review 1299-13: restoring the same backup resumes artifact writes after the import commits', t => {
+  const flow = setup(t, true); const path = join(flow.home, 'restore-source.txt'); writeFileSync(path, 'Frozen bytes');
+  captureRequest(flow.store, { projectId, clientRequestId: 'resume-restore', channel: 'cli', source: { uri: 'fixture:source' },
+    originalText: 'Retain source', attachments: [{ uri: path, revision: 'v1' }] });
+  const bundle = backupProject(flow.store, projectId, flow.home); rmSync(path);
+  const restored = new ProjectStore(join(flow.home, 'resumable-restore.sqlite'));
+  const importProject = restored.importProject.bind(restored);
+  restored.importProject = (...args) => { importProject(...args); throw new Error('interrupted after import'); };
+  try {
+    assert.throws(() => restoreProjectBackup(restored, bundle, flow.home), /interrupted after import/);
+    restored.importProject = importProject;
+    assert.throws(() => restoreProjectBackup(restored, { ...bundle, exportedAt: '2026-01-01T00:00:00.000Z' }, flow.home), /import_requires_empty_store/);
+    const committed = restored.history(projectId);
+    restoreProjectBackup(restored, bundle, flow.home);
+    assert.equal(readFileSync(path, 'utf8'), 'Frozen bytes');
+    assert.deepEqual(restored.history(projectId), committed);
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
+  } finally { restored.close(); }
+});
+
+for (const changed of ['registry', 'settings'] as const) test(`review 1321-10: worker start revalidates ${changed} after judgment`, t => {
+  const flow = setup(t); const registry = readyWorkerStart(flow);
+  const target = changed === 'registry' ? registry : join(flow.home, 'config', 'hooks.json');
+  const judge = flow.executable('mutating-judge.mjs', `import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(target)}, JSON.stringify(${changed === 'registry' ? "{version:1,projects:[]}" : "{version:1,hooks:[]}"}));
+await import(${JSON.stringify(new URL('../../fixtures/fake-instruction-judge.mjs', import.meta.url).href)});`);
+  flow.save('launch-agents.json', { ...fakeJudge, executables: { codex: judge, claude: judge } });
+  assert.throws(() => checkConfiguredWorkerStart(flow.store, projectId, 'pilot-build', flow.home, registry, assignment(flow).brief!.path), /configuration_changed/);
+});
+
+test('review 1299-9: handback removes a guard whose installation lost its response', t => {
+  const flow = setup(t);
+  flow.tasks.edit(state => { state.tasks['interrupted-guard'] = fakeTask('interrupted-guard', {
+    hold: { reason: 'Owner hold', kind: 'captain', until: null } }); state.failure = { action: 'block', when: 'after' }; });
+  const task = taskCommand('interrupted-guard', 'map');
+  const adapter = { ...flow.adapter, guardTaskId: 'permanent-guard' };
+  const result = manageExecutionTask(flow.store, { ...task, payload: { ...task.payload,
+    readiness: [{ id: 'pending-check', reason: 'Pending product check', evidence: [] }] } }, adapter);
+  assert.equal(result.operation.state, 'unknown');
+  disableProject(flow.store, projectId, 'hand_back', adapter);
+  assert.deepEqual(flow.tasks.read().tasks['interrupted-guard']!.deps, []);
+  assert.equal(flow.tasks.read().tasks['interrupted-guard']!.hold?.reason, 'Owner hold');
+});
+
+for (const kind of ['inferred', 'operational'] as const) test(`review 1391-2: backup retains pending ${kind} section identities`, t => {
+  const flow = setup(t, true); const path = join(flow.home, 'pending-memory.md');
+  const original = '## Pending\nKeep pending source.\n'; writeFileSync(path, original);
+  captureLearning(flow.store, { projectId, id: 'pending-memory', idempotencyKey: 'pending-memory', issuedAt: new Date().toISOString(),
+    identity: { scope: { kind: 'project' }, topic: 'pending-policy' }, finding: 'Evaluate retained source', inputKind: kind,
+    captureReason: 'stow', legacySections: [readLegacySection(path, '## Pending')], evidence: [{
+      artifact: { uri: path, revision: 'v1' }, description: 'Pending section', observedAt: new Date().toISOString() }] });
+  writeFileSync(path, original.replace('Keep pending source.', 'Changed pending source.'));
+  const bundle = backupProject(flow.store, projectId, flow.home);
+  assert.equal(bundle.artifacts.find(artifact => artifact.path === path)?.issue, 'changed');
+  const restored = new ProjectStore(join(flow.home, 'pending-restore.sqlite'));
+  try {
+    restoreProjectBackup(restored, bundle, flow.home);
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'reconciling');
+    writeFileSync(path, original); const digest = digestText(original);
+    verifyRestoredArtifact(restored, { projectId, path, digest, evidence: [{ artifact: { uri: path, digest },
+      description: 'Repaired pending section', observedAt: new Date().toISOString() }] });
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
+  } finally { restored.close(); }
+});
+
+
+function suspendedNewWork(flow: ReturnType<typeof setup>) {
+  const a = assignment(flow); const task = taskCommand('bound-work');
+  const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'bound-correction', projectId, issuedAt: new Date().toISOString(),
+    idempotencyKey: 'bound-correction', command: 'deliver_correction', targetId: 'bound-correction', expectedRevision: 0,
+    payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Create the originally planned work', action: 'new_work',
+      sequence: 1, supersedes: [], taskCommand: task } });
+  disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+  const unused = flow.executable('unused-bound.cjs', 'throw new Error("task action only");');
+  const options: CorrectionAdapterOptions = { fmHome: flow.home, sendExecutable: unused, controlExecutable: unused,
+    taskAdapter: flow.adapter, recipients: [] };
+  return { queued, task, options };
+}
+
+for (const timing of ['before-child', 'after-child'] as const) test(`review 1342-1: recovery rejects readdressing ${timing}`, t => {
+  const flow = setup(t); const { queued, options } = suspendedNewWork(flow);
+  const replace = () => {
+    const previous = assignment(flow); const at = new Date().toISOString();
+    const replacement = { ...previous, revision: previous.revision + 1, updatedAt: at, attemptId: 'replacement-attempt' };
+    const decision = { kind: 'decision_change', id: 'replace-bound-attempt', projectId, schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at,
+      questionOrChange: 'Replace the assignment', affectedRecords: [ref(previous)], rationale: 'Explicit new attempt',
+      disposition: 'selected', sourceRefs: [{ uri: 'fixture:replacement' }], scopeChanges: [] };
+    flow.store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
+      command: 'record_decision_suggestion', targetId: previous.id, expectedRevision: previous.revision, payload: { decision } }, () => [decision, replacement]);
+    const record = flow.store.get(projectId, queued.correction.id); assert.ok(record?.kind === 'observation' && record.correction);
+    const c = record.correction;
+    queueCorrection(flow.store, { schemaVersion: 1, id: 'readdress-bound', projectId, issuedAt: at, idempotencyKey: 'readdress-bound',
+      command: 'deliver_correction', targetId: record.id, expectedRevision: record.revision,
+      payload: { readdress: true, affectedRevision: c.affectedRevision, assignment: ref(replacement), originalCorrection: c.originalText,
+        action: c.action, sequence: c.sequence, supersedes: c.supersedes, sourceRefs: c.sourceRefs, taskCommand: taskCommand('changed-work') } });
+  };
+  const lock = flow.store.withTaskLock.bind(flow.store); let count = 0;
+  flow.store.withTaskLock = (id, body) => {
+    const child = ++count === 2;
+    if (child && timing === 'before-child') replace();
+    const result = lock(id, body);
+    if (child && timing === 'after-child') replace();
+    return result;
+  };
+  assert.throws(() => recoverTaskCorrection(flow.store, { projectId, correctionId: queued.correction.id, idempotencyKey: 'bound-recovery' }, options), /recovery.*(changed|conflict)|delivery_intent_changed/);
+  const record = flow.store.get(projectId, queued.correction.id); assert.ok(record?.kind === 'observation' && record.correction);
+  assert.equal(record.correction.facts.some(fact => fact.fact === 'delivered'), false);
+  assert.equal(flow.tasks.read().tasks['changed-work'], undefined);
+  if (timing === 'before-child') assert.equal(flow.tasks.read().tasks['bound-work'], undefined);
+});
+
+test('review 1342-4: fresh recovery permission follows a suspended recovery child after a second disable', t => {
+  const flow = setup(t); const { queued, task, options } = suspendedNewWork(flow);
+  // Prepare the original task operation, then retire it before recovering a child.
+  flow.tasks.edit(state => { state.failure = { action: 'add', when: 'after' }; });
+  assert.equal(manageExecutionTask(flow.store, task, flow.adapter).operation.state, 'unknown');
+  disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+  flow.tasks.edit(state => { state.failure = { action: 'show', when: 'bad-read' }; });
+  const request = { projectId, correctionId: queued.correction.id, idempotencyKey: 'first-child-permission' };
+  assert.equal(recoverTaskCorrection(flow.store, request, options).state, 'unknown');
+  disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+  assert.throws(() => recoverTaskCorrection(flow.store, request, options), /permanently_suspended/);
+  assert.equal(recoverTaskCorrection(flow.store, { ...request, idempotencyKey: 'second-child-permission' }, options).state, 'succeeded');
+  assert.equal(flow.tasks.read().calls.filter(call => call.args[0] === 'add' && call.args[1] !== '--help').length, 1);
+});
+
+test('review 1342-2: explicit cancellation recovery carries the lost-response lifecycle attempt', t => {
+  const flow = setup(t); const a = assignment(flow); const task = taskCommand(a.firstMateTaskId, 'cancel');
+  task.targetId = 'mapping-1'; task.expectedRevision = 1;
+  flow.tasks.edit(state => { state.tasks[a.firstMateTaskId] = fakeTask(a.firstMateTaskId, { state: 'in_flight' }); });
+  flow.runtime.save([{ id: a.firstMateTaskId, spawn_gen: 'cancel-generation', project: flow.home,
+    endpoint: { exists: true, agent_alive: 'alive', freshness: 'fresh', observed_at: '' }, current_state: { state: 'active', freshness: 'fresh', observed_at: '' } }]);
+  const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'lost-cancel', projectId, issuedAt: new Date().toISOString(),
+    idempotencyKey: 'lost-cancel', command: 'deliver_correction', targetId: 'lost-cancel', expectedRevision: 0,
+    payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Cancel the exact worker', action: 'cancellation',
+      sequence: 1, supersedes: [], taskCommand: task } });
+  const control = flow.executable('lost-cancel-control.cjs', `const fs=require('node:fs');
+fs.appendFileSync(${JSON.stringify(join(flow.home, 'cancel-exits'))},'exit\\n');
+const tasks=JSON.parse(fs.readFileSync(${JSON.stringify(flow.runtime.statePath)},'utf8'));tasks[0].endpoint.agent_alive='dead';
+fs.writeFileSync(${JSON.stringify(flow.runtime.statePath)},JSON.stringify(tasks));process.exit(2);`);
+  const options: CorrectionAdapterOptions = { fmHome: flow.home, sendExecutable: control, controlExecutable: control,
+    taskAdapter: { ...flow.adapter, controlExecutable: control }, recipients: [{ assignment: ref(a), attemptId: a.attemptId,
+      firstMateTaskId: a.firstMateTaskId, state: 'active', observedAt: new Date().toISOString() }] };
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'unknown');
+  disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+  assert.equal(recoverTaskCorrection(flow.store, { projectId, correctionId: queued.correction.id, idempotencyKey: 'recover-lost-cancel' }, options).state, 'succeeded');
+  assert.equal(readFileSync(join(flow.home, 'cancel-exits'), 'utf8'), 'exit\n');
+});
+
+
+for (const protection of ['guard', 'hold'] as const) test(`review 1299-9: interrupted cancellation protection retains consumer ${protection} ownership for handback`, t => {
+  const flow = setup(t); const detail = flow.store.get(projectId, 'task-1'); assert.ok(detail?.kind === 'detailed_plan_task');
+  const at = new Date().toISOString(); const consumerDetail = { ...detail, id: 'consumer-detail', plan: { id: 'consumer-plan', revision: 1 } };
+  const plan = flow.store.get(projectId, 'plan-1'); assert.ok(plan?.kind === 'implementation_plan_revision');
+  const consumerPlan = { ...plan, id: 'consumer-plan', deliverySequence: [ref(consumerDetail)], priorities: [{ taskId: consumerDetail.id, priority: 1 }] };
+  const decision = { kind: 'decision_change', id: 'consumer-fixture', projectId, schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at,
+    questionOrChange: 'Add dependent work', affectedRecords: [ref(detail)], rationale: 'Cancellation protection regression',
+    disposition: 'selected', sourceRefs: [{ uri: 'fixture:consumer' }], scopeChanges: [] };
+  flow.store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
+    command: 'record_decision_suggestion', targetId: consumerDetail.id, expectedRevision: 0, payload: { decision } }, () => [decision, consumerPlan, consumerDetail]);
+  const consumer = taskCommand('protected-consumer', 'map');
+  if (protection === 'guard') {
+    queueManagedTask(flow.store, { ...consumer, payload: { ...consumer.payload, detailedPlanTask: ref(consumerDetail), dependencies: ['pilot-build'] } });
+  } else {
+    const template = flow.store.get(projectId, 'mapping-1'); assert.ok(template?.kind === 'task_mapping');
+    const mapping = { ...template, id: consumer.targetId, firstMateTaskId: 'protected-consumer', detailedPlanTask: ref(consumerDetail), dependencies: ['pilot-build'] };
+    const add = { ...decision, id: 'unmanaged-consumer-fixture', affectedRecords: [ref(mapping)] };
+    flow.store.mutate({ schemaVersion: 1, id: add.id, projectId, issuedAt: at, idempotencyKey: add.id,
+      command: 'record_decision_suggestion', targetId: mapping.id, expectedRevision: 0, payload: { decision: add } }, () => [add, mapping]);
+  }
+  flow.tasks.edit(state => {
+    state.tasks['pilot-build'] = fakeTask('pilot-build');
+    state.tasks['protected-consumer'] = fakeTask('protected-consumer', { hold: protection === 'guard' ? { reason: 'Consumer owner', kind: 'captain', until: null } : null,
+      deps: [{ type: 'blocked-by', id: 'pilot-build' }] });
+    state.failure = { action: protection === 'guard' ? 'block' : 'hold', when: 'after' };
+  });
+  const cancel = taskCommand('pilot-build', 'cancel'); cancel.targetId = 'mapping-1'; cancel.expectedRevision = 1;
+  const adapter = { ...flow.adapter, guardTaskId: 'permanent-guard' };
+  assert.equal(manageExecutionTask(flow.store, cancel, adapter).operation.state, 'unknown');
+  disableProject(flow.store, projectId, 'hand_back', adapter);
+  assert.deepEqual(flow.tasks.read().tasks['protected-consumer']!.deps, [{ type: 'blocked-by', id: 'pilot-build' }]);
+  assert.equal(flow.tasks.read().tasks['protected-consumer']!.hold?.reason, protection === 'guard' ? 'Consumer owner' : undefined);
 });

@@ -84,15 +84,16 @@ function adoptedSnapshots(records: FactoryRecord[]) {
 /** Select covering adoptions before checking bytes. A superseded child cannot
  * invalidate a current parent that now owns the complete section. */
 export function legacyContextSections(records: FactoryRecord[], uri: string, original: string) {
-  const history = adoptedSnapshots(records).filter((section) => section.uri === uri);
   const adoptions = currentLegacySections(records, uri).map((adoption) => ({ ...adoption,
     range: sectionRange(original, adoption.section.heading) }));
   const covering = adoptions.filter((child) => !adoptions.some((parent) => {
     if (parent === child || !parent.range) return false;
     if (child.range) return parent.range.start < child.range.start && parent.range.end >= child.range.end;
     // A replacement parent may remove a former child's heading altogether.
-    return history.some((section) => section.heading.trim() === parent.section.heading.trim() &&
-      sectionRange(section.before, child.section.heading)?.start !== undefined);
+    return records.some((record) => record.kind === 'guidance_revision' &&
+      (follows(records, record, child.guidance) || Date.parse(record.updatedAt) > Date.parse(child.guidance.updatedAt)) &&
+      legacySectionsForGuidance(records, record).some((section) => section.uri === uri &&
+        section.heading.trim() === parent.section.heading.trim() && sectionRange(section.before, child.section.heading) !== undefined));
   }));
   const active = activeGuidance(records);
   const sections = covering.map(({ section, guidance, range }) => {

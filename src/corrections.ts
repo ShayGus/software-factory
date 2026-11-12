@@ -344,15 +344,27 @@ export function recoverTaskCorrection(store: ProjectStore, input: unknown, adapt
     const recovery = store.get(data.projectId, recoveryId);
     if (recovery?.kind !== 'operation') throw new StoreError('not_found', 'task_correction_recovery_missing');
     store.assertExternalOperationsAllowed(data.projectId, recovery);
-    if (recovery.state === 'succeeded') return { recovery, task };
+    if (recovery.state === 'succeeded') return { recovery, task, record };
     const originalTaskId = stableId('task-operation', data.projectId, task.idempotencyKey);
     const original = store.get(data.projectId, originalTaskId);
-    if (original?.kind !== 'operation' || !original.suspended) return { recovery, task };
+    if (original?.kind !== 'operation' || !original.suspended) return { recovery, task, record };
     const childKey = stableId('recovered-task-key', recoveryId);
     const childId = stableId('task-operation', data.projectId, childKey);
     const mapping = store.get(data.projectId, task.targetId);
+    // A fresh permission may succeed a retired recovery child for this exact
+    // source intent. Its receipt proves lineage; payload similarity alone does not.
+    const descendant = mapping?.kind === 'task_mapping' && store.exportProject(data.projectId).receipts.some((item) => {
+      if (item.command.command !== 'record_decision_suggestion' || item.command.payload.decision.rationale !== descriptor) return false;
+      const permit = store.get(data.projectId, item.command.targetId);
+      const key = stableId('recovered-task-key', item.command.targetId);
+      const child = store.get(data.projectId, stableId('task-operation', data.projectId, key));
+      const receipt = store.receipt(data.projectId, key);
+      return permit?.kind === 'operation' && !!permit.suspended && child?.kind === 'operation' && !!child.suspended &&
+        child.id === mapping.management?.operationId && receipt?.command.command === 'map_manage_execution_task' &&
+        JSON.stringify(receipt.command.payload) === JSON.stringify(task.payload);
+    });
     if (mapping?.kind !== 'task_mapping' || mapping.firstMateTaskId !== task.payload.task.firstMateTaskId ||
-      ![originalTaskId, childId].includes(mapping.management?.operationId ?? '')) {
+      (![originalTaskId, childId].includes(mapping.management?.operationId ?? '') && !descendant)) {
       throw new StoreError('conflict', 'task_correction_recovery_superseded');
     }
     const prior = store.receipt(data.projectId, childKey);
@@ -360,13 +372,13 @@ export function recoverTaskCorrection(store: ProjectStore, input: unknown, adapt
       if (prior.command.command !== 'map_manage_execution_task' || JSON.stringify(prior.command.payload) !== JSON.stringify(task.payload)) {
         throw new StoreError('conflict', 'task_correction_recovery_payload_conflict');
       }
-      return { recovery, task: prior.command };
+      return { recovery, task: prior.command, record };
     }
-    return { recovery, task: { ...task, id: childId, idempotencyKey: childKey, expectedRevision: mapping.revision, issuedAt: new Date().toISOString() } };
+    return { recovery, record, task: { ...task, id: childId, idempotencyKey: childKey, expectedRevision: mapping.revision, issuedAt: new Date().toISOString() } };
   });
   if (prepared.recovery.state === 'succeeded') return prepared.recovery;
   // BUILD-08 owns the task lock, native-ID read-before-retry and outcome receipt.
-  const result = deliverTaskCorrection(store, data.projectId, observation(store, data.projectId, data.correctionId), options, prepared.task, recoveryId);
+  const result = deliverTaskCorrection(store, data.projectId, prepared.record, options, prepared.task, recoveryId);
   return store.withTaskLock(data.projectId, () => {
     const latest = store.get(data.projectId, recoveryId);
     if (latest?.kind !== 'operation') throw new StoreError('not_found', 'task_correction_recovery_missing');
@@ -392,6 +404,7 @@ function unresolved(store: ProjectStore, projectId: string, record: Correction, 
   store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
     command: 'record_decision_suggestion', targetId: operation.id, expectedRevision: operation.revision, payload: { decision } }, (history) => {
     const latest = corrections(current(history)).find((item) => item.id === record.id)!;
+    if (latest.correction.operationId !== operation.id) throw new StoreError('conflict', 'correction_delivery_intent_changed');
     const captured = recipient ?? latest.correction.deliveryRecipient;
     let finalState = state; let finalNote = note; let accepted = delivered;
     if (captured) {

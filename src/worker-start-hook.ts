@@ -77,14 +77,21 @@ export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
  * This does not replace the native hook's check of FirstMate's final overlay. */
 export function checkConfiguredWorkerStart(store: ProjectStore, projectId: string, taskId: string, home: string, registryPath: string,
   briefPath: string) {
-  const registry = WorkerHookConfigSchema.parse(parseStrictJson(readFileSync(registryPath, 'utf8')));
+  const registryBytes = readFileSync(registryPath, 'utf8');
+  const registry = WorkerHookConfigSchema.parse(parseStrictJson(registryBytes));
   if (!registry.projects.some((entry) => entry.projectId === projectId && realpathSync(entry.home) === realpathSync(home) &&
     realpathSync(entry.database) === store.databasePath)) throw new Error('worker_start_registry_context_mismatch');
   const executable = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
+  const settingsPath = join(home, 'config', 'hooks.json');
+  const settingsBytes = readFileSync(settingsPath, 'utf8');
   const settings = z.object({ version: z.literal(1), hooks: z.array(z.object({ event: z.string(), argv: z.array(z.string()) })) })
-    .parse(parseStrictJson(readFileSync(join(home, 'config', 'hooks.json'), 'utf8')));
+    .parse(parseStrictJson(settingsBytes));
   if (!settings.hooks.some((hook) => hook.event === 'worker.start.before' &&
     JSON.stringify(hook.argv) === JSON.stringify([executable, registryPath]))) throw new Error('required_worker_start_hook_not_configured');
-  return checkStartingWorker(registry, { version: 1, event: 'worker.start.before', home, task_id: taskId,
+  const checked = checkStartingWorker(registry, { version: 1, event: 'worker.start.before', home, task_id: taskId,
     source_brief_path: briefPath, brief_path: briefPath, brief_sha256: createHash('sha256').update(readFileSync(briefPath)).digest('hex') });
+  if (readFileSync(registryPath, 'utf8') !== registryBytes || readFileSync(settingsPath, 'utf8') !== settingsBytes) {
+    throw new Error('worker_start_configuration_changed_during_judgment');
+  }
+  return checked;
 }

@@ -1,4 +1,5 @@
-import { legacyContextSections } from './learning-context.js';
+import { currentLearningRecords, workerContextRecord, legacyContextSections } from './learning-context.js';
+import { markdownSectionRange } from './markdown-sections.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -92,7 +93,7 @@ export function reconcileProject(store: ProjectStore, projectId: string, input: 
     for (const operation of store.operations(projectId)) if (operation.externalAttempt) ids.add(operation.externalAttempt.firstMateTaskId);
     const tasks = [...ids].map((id) => ({ id, task: wrapper.read(id) ?? null }));
     const state = enable ? 'enabled' : project.integration?.resumeAfterRestore ?? 'enabled';
-    const { restoredArtifacts: _retiredGate, restoredUnresolvedReferences: _retiredUnresolved, ...integration } = project.integration!;
+    const { restoredArtifacts: _retiredGate, restoredUnresolvedReferences: _retiredUnresolved, restoreBackupDigest: _retiredBackup, ...integration } = project.integration!;
     saveProject(store, project, { ...integration, state,
       outstandingConditions: project.integration?.outstandingConditions ?? [], observation: JSON.stringify({ snapshot, tasks, verifiedRestoreArtifacts: artifacts }) });
     return { state, snapshot, tasks, suspended: store.operations(projectId).filter((operation) => operation.suspended).map(ref) };
@@ -125,7 +126,7 @@ const localPath = (uri: string, base?: string, unresolved?: Set<string>) => {
   if (base) return resolve(base, uri);
   unresolved?.add(uri); return undefined;
 };
-type SectionContext = { uri: string; records: FactoryRecord[] };
+type SectionContext = { uri: string; records: FactoryRecord[]; pending?: { heading: string; digest: string; before: string }[] };
 function referencedArtifacts(value: unknown, found = new Map<string, string[]>(), base?: string, unresolved?: Set<string>) {
   if (Array.isArray(value)) for (const item of value) referencedArtifacts(item, found, base, unresolved);
   else if (value && typeof value === 'object') {
@@ -160,6 +161,13 @@ function artifactIdentities(project: ProjectExport, base?: string, unresolved?: 
     const path = localPath(uri, base, unresolved);
     if (path) sections.set(path, [...(sections.get(path) ?? []), { uri, records: project.history }]);
   }
+  for (const record of currentLearningRecords(project.history)) {
+    if (record.kind !== 'observation' || !['pending', 'conflict'].includes(record.consolidationState)) continue;
+    for (const section of workerContextRecord(project.history, record).legacySections ?? []) {
+      const path = localPath(section.uri, base, unresolved);
+      if (path) sections.set(path, [...(sections.get(path) ?? []), { uri: section.uri, records: project.history, pending: [section] }]);
+    }
+  }
   return { files, sections };
 }
 function mismatchingSection(content: Buffer, sections: SectionContext[] = []) {
@@ -167,7 +175,13 @@ function mismatchingSection(content: Buffer, sections: SectionContext[] = []) {
   for (const section of sections) {
     // Context assembly selects the current covering adoption before validating
     // bytes. Superseded snapshots stay in history, not in live restore duties.
-    try { legacyContextSections(section.records, section.uri, text); }
+    try {
+      legacyContextSections(section.records, section.uri, text);
+      for (const pending of section.pending ?? []) {
+        const range = markdownSectionRange(text, pending.heading);
+        if (range.before !== pending.before || sha(range.before) !== pending.digest) throw new Error(`legacy_section_changed: ${section.uri} ${pending.heading}`);
+      }
+    }
     catch (error) { return error instanceof Error ? error.message : String(error); }
   }
   return undefined;
@@ -312,9 +326,14 @@ export function restoreProjectBackup(store: ProjectStore, input: unknown, artifa
   }
   // Import first validates the whole closed history and receipts. Gate is atomic
   // with the imported records, so a crash before file restoration cannot replay.
-  store.importProject(backup.project, { requireReconciliation: true, unresolvedReferences: [...unresolved],
-    ...(backup.artifactBase ? { artifactBase: backup.artifactBase } : {}),
-    restoredArtifacts: backup.artifacts.map(({ path, digest, expectedDigests }) => ({ path, digest: expectedDigests?.at(-1) ?? digest })) });
+  const backupDigest = sha(JSON.stringify(backup));
+  const existing = store.get(backup.project.projectId, backup.project.projectId);
+  if (existing?.kind !== 'project' || existing.integration?.state !== 'reconciling' || existing.integration.restoreBackupDigest !== backupDigest) {
+    store.importProject(backup.project, { requireReconciliation: true, backupDigest, unresolvedReferences: [...unresolved],
+      ...(backup.artifactBase ? { artifactBase: backup.artifactBase } : {}),
+      restoredArtifacts: backup.artifacts.map(({ path, digest, expectedDigests, content }) => ({ path,
+        digest: expectedDigests?.at(-1) ?? (content !== null && mismatchingSection(Buffer.from(content, 'base64'), identities.sections.get(path)) ? null : digest) })) });
+  }
   const issues: { path: string; issue: string }[] = [...unresolved].map((path) => ({ path, issue: 'unresolved_reference' }));
   for (const artifact of backup.artifacts) {
     if (artifact.issue) issues.push({ path: artifact.path, issue: artifact.issue });

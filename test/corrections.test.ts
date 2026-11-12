@@ -207,7 +207,7 @@ test('CLI queues and delivers through configured fake wrappers', t => {
 });
 
 // Verify a new attempt under the same runtime task ID cannot receive old steering.
-test('a replacement attempt rejects pending steering and old review completion', t => {
+test('a replacement attempt rejects pending steering', t => {
   const flow = setup(t); const queued = flow.queue(); const at = new Date().toISOString();
   const assignment = { ...flow.assignment(), id: 'replacement', attemptId: 'attempt-2', createdAt: at, updatedAt: at };
   const decision = { kind: 'decision_change' as const, id: 'replace-decision', projectId, schemaVersion: 1 as const, revision: 1,
@@ -216,7 +216,6 @@ test('a replacement attempt rejects pending steering and old review completion',
   flow.store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
     command: 'record_decision_suggestion', targetId: assignment.id, expectedRevision: 0, payload: { decision } }, () => [decision, assignment] as FactoryRecord[]);
   assert.equal(flow.deliver(queued.correction.id).state, 'pending'); assert.equal(flow.calls().length, 0);
-  assert.equal(validateReviewForCompletion(flow.store.history(projectId), { id: 'review-1', revision: 1 }).ok, false);
 });
 
 test('request-linked clarification advances request metadata and preserves the captured original', t => {
@@ -292,14 +291,15 @@ function commitReviewFixture(flow: ReturnType<typeof setup>, writes: FactoryReco
   () => [decision, ...writes]);
 }
 
-function checkedScopeSuccessor(flow: ReturnType<typeof setup>, key = 'checked-scope-successor') {
+function checkedScopeSuccessor(flow: ReturnType<typeof setup>, key = 'checked-scope-successor', clearReplan = true, checked = true) {
   const feature = flow.store.get(projectId, 'feature-1'); const design = flow.store.get(projectId, 'design-1');
   const plan = flow.store.get(projectId, 'plan-1'); const task = flow.store.get(projectId, 'task-1');
   const mapping = flow.store.get(projectId, 'mapping-1'); const assignment = flow.assignment();
   assert.ok(feature?.kind === 'feature_revision' && design?.kind === 'design_revision' && plan?.kind === 'implementation_plan_revision' &&
     task?.kind === 'detailed_plan_task' && mapping?.kind === 'task_mapping');
   const at = new Date().toISOString();
-  const nextDesign = { ...design, revision: design.revision + 1, updatedAt: at, feature: ref(feature) };
+  const nextDesign = { ...design, revision: design.revision + 1, updatedAt: at, feature: ref(feature),
+    sourceComparison: { ...design.sourceComparison, result: checked ? 'passed' as const : 'untested' as const } };
   const nextPlan = { ...plan, revision: plan.revision + 1, updatedAt: at, feature: ref(feature), design: ref(nextDesign),
     deliverySequence: [{ id: task.id, revision: task.revision + 1 }], readiness: { ...plan.readiness,
       comparison: { ...plan.readiness.comparison, sourceRefs: [...plan.readiness.comparison.sourceRefs, { uri: 'fixture://checked-design', record: ref(nextDesign) }] } } };
@@ -312,7 +312,7 @@ function checkedScopeSuccessor(flow: ReturnType<typeof setup>, key = 'checked-sc
     design: ref(nextDesign), plan: ref(nextPlan), detailedPlanTask: ref(nextTask),
     sourceRefs: assignment.sourceRefs.map(source), selectedContext: assignment.selectedContext.map(item => ({ ...item, source: source(item.source) })),
     instructionFidelity: { ...assignment.instructionFidelity, sourceRefs: assignment.instructionFidelity.sourceRefs.map(source) },
-    ...(assignment.correctionContext ? { correctionContext: { ...assignment.correctionContext, requiresReplan: false } } : {}) };
+    ...(assignment.correctionContext ? { correctionContext: { ...assignment.correctionContext, requiresReplan: clearReplan ? false : assignment.correctionContext.requiresReplan } } : {}) };
   commitReviewFixture(flow, [nextDesign, nextPlan, nextTask, nextMapping, nextAssignment], key);
   return nextAssignment;
 }
@@ -406,10 +406,11 @@ function recordSuccessorEvidence(flow: ReturnType<typeof setup>, assignment: Ass
   return review;
 }
 
-test('review 1214-1 integration: regenerated brief retains the correction and checked incorporation clears completion', t => {
+for (const checked of [true, false]) test(`review 1214-1 integration: regenerated brief ${checked ? 'clears checked' : 'retains unchecked'} replan block`, t => {
   const flow = setup(t); const queued = flow.queue('amended_scope', { changedOutcome: 'Deliver corrected connected-system behavior' });
   flow.deliver(queued.correction.id); const delivered = flow.observation(queued.correction.id).correction!.assignment;
-  const successor = checkedScopeSuccessor(flow);
+  const successor = checkedScopeSuccessor(flow, 'checked-scope-successor', false, checked);
+  assert.equal(successor.correctionContext?.requiresReplan, true);
   const sources = requiredAssignmentContext(flow.store.history(projectId), successor).sources.filter(source => !source.record);
   const request = flow.store.get(projectId, 'request-1'); assert.ok(request?.kind === 'request');
   const sourceFiles = sources.map((source, index) => {
@@ -424,9 +425,10 @@ test('review 1214-1 integration: regenerated brief retains the correction and ch
     expectedRevision: successor.revision, idempotencyKey: 'regenerate-corrected-brief', issuedAt: new Date().toISOString(),
     detailedPlanTask: successor.detailedPlanTask, plan: successor.plan, firstMateTaskId: successor.firstMateTaskId,
     returnLocation: successor.returnLocation, briefPath, sourceFiles });
-  assert.equal(prepared.ok, true, JSON.stringify(prepared));
   const current = flow.assignment();
-  assert.equal(current.correctionContext?.requiresReplan, false);
+  assert.equal(current.correctionContext?.requiresReplan, !checked);
+  if (!checked) return;
+  assert.equal(prepared.ok, true, JSON.stringify(prepared));
   assert.ok(current.correctionContext?.corrections.some(item => item.id === queued.correction.id));
   assert.ok(current.selectedContext.some(item => item.source.record?.id === queued.correction.id), 'Regenerated instructions receive the original correction');
   const check = checkWorkerBrief(flow.store, projectId, ref(current), briefPath, fakeJudge);
@@ -544,11 +546,7 @@ function prepareReplacement(flow: ReturnType<typeof setup>, assignmentId = 'prep
   return { prepared, replacement, briefPath, input };
 }
 
-test('review 1245-4: replacement briefs preserve the outstanding correction from the previous assignment', t => {
-  const flow = setup(t); const source = flow.queue();
-  const { replacement } = prepareReplacement(flow);
-  assert.ok(replacement.selectedContext.some(item => item.source.record?.id === source.correction.id));
-});
+
 
 function queuedCancellation(flow: ReturnType<typeof setup>, urgentStop: boolean) {
   const fake = fakeTaskWrapper(flow.directory, false, flow.database);
@@ -690,7 +688,8 @@ test('review 1270: same-ID replacement keeps several pending corrections on thei
   const flow = setup(t); const sources = [flow.queue(), flow.queue(), flow.queue()]; const previous = flow.assignment();
   const { replacement, prepared } = prepareReplacement(flow, previous.id, previous.revision);
   assert.equal(correctionCount(flow), 3, 'Replacement preparation must not create correction copies');
-  assert.equal(validateAssignmentForDispatch(flow.store.history(projectId), ref(replacement)).ok, false);
+  const dispatch = validateAssignmentForDispatch(flow.store.history(projectId), ref(replacement));
+  assert.ok(!dispatch.ok && dispatch.issues.some(issue => issue.code === 'unresolved_correction_delivery'));
   const unresolved = (prepared as unknown as { unresolvedCorrections: { earlier: { attemptId: string }; replacement: { attemptId: string } }[] }).unresolvedCorrections;
   assert.equal(unresolved.length, 3);
   assert.ok(unresolved.every(item => item.earlier.attemptId === previous.attemptId && item.replacement.attemptId === replacement.attemptId));

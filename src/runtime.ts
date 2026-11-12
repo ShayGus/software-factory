@@ -125,10 +125,6 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
     if (operation?.kind !== 'operation') throw new Error('worker_start_intent_missing');
     store.assertExternalOperationsAllowed(data.projectId, operation);
     if (operation.state === 'succeeded') return operation;
-    const latest = store.get(data.projectId, assignment.id);
-    const currentAttempts = store.records(data.projectId).filter((record) => record.kind === 'assignment' && record.firstMateTaskId === assignment.firstMateTaskId);
-    if (latest?.revision !== assignment.revision || currentAttempts.some((record) => record.id !== assignment.id &&
-      Date.parse(record.updatedAt) >= Date.parse(assignment.updatedAt))) throw new Error('worker_start_attempt_superseded');
     let snapshot: FleetSnapshot;
     try { snapshot = readFleetSnapshot(options); }
     catch (error) { return recordOperationObservation(store, operation, operation.externalAttempt ? 'unknown' : 'pending', String(error)); }
@@ -142,6 +138,10 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
         }
         return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Start outcome unresolved; no retry authorized', snapshot }));
       }
+      const latest = store.get(data.projectId, assignment.id);
+      const currentAttempts = store.records(data.projectId).filter((record) => record.kind === 'assignment' && record.firstMateTaskId === assignment.firstMateTaskId);
+      if (latest?.revision !== assignment.revision || currentAttempts.some((record) => record.id !== assignment.id &&
+        Date.parse(record.updatedAt) >= Date.parse(assignment.updatedAt))) throw new Error('worker_start_attempt_superseded');
       // Any pre-existing generation belongs to ordinary FirstMate management.
       if (task?.spawn_gen) return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Existing worker generation; explicit new attempt required', snapshot }));
       if (!data.hookRegistry || !assignment.brief) return recordOperationObservation(store, operation, 'pending', 'Worker start requires configured instruction and dispatch check');

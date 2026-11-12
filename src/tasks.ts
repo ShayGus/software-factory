@@ -52,7 +52,7 @@ export function queueManagedTask(store: ProjectStore, input: unknown): { mapping
   return store.withTaskLock(command.projectId, () => queueTaskIntent(store, command));
 }
 
-function queueTaskIntent(store: ProjectStore, command: TaskCommand): { mapping: TaskMapping; operation: Operation } {
+function queueTaskIntent(store: ProjectStore, command: TaskCommand, inheritedAttempt?: Operation['externalAttempt']): { mapping: TaskMapping; operation: Operation } {
   store.assertExternalOperationsAllowed(command.projectId);
   const operationId = stableId('task-operation', command.projectId, command.idempotencyKey);
   const receipts = store.exportProject(command.projectId).receipts;
@@ -127,7 +127,7 @@ function queueTaskIntent(store: ProjectStore, command: TaskCommand): { mapping: 
         managedDependencies: previous?.management?.managedDependencies ?? previous?.dependencies ?? [],
         holdReason: `Software Factory ${stableId('hold', command.projectId, command.targetId)}` },
     });
-    return [decision, mapping, pendingOperation(command, operationId)];
+    return [decision, mapping, { ...pendingOperation(command, operationId), ...(inheritedAttempt ? { externalAttempt: inheritedAttempt } : {}) }];
   });
   const mappingRef = result.records.find((entry) => entry.id === command.targetId)!;
   const mapping = store.get(command.projectId, mappingRef.id, mappingRef.revision);
@@ -225,10 +225,11 @@ export function reconcileManagedTask(store: ProjectStore, projectId: string, ope
 
 function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId: string, options: TaskAdapterOptions): Operation {
   const wrapper = new TaskWrapper(TaskAdapterOptionsSchema.parse(options));
-  let operation = store.get(projectId, operationId);
-  if (operation?.kind !== 'operation' || operation.command !== 'map_manage_execution_task') {
+  const savedOperation = store.get(projectId, operationId);
+  if (savedOperation?.kind !== 'operation' || savedOperation.command !== 'map_manage_execution_task') {
     throw new StoreError('not_found', 'task_operation_not_found');
   }
+  let operation: Operation = savedOperation;
   store.assertExternalOperationsAllowed(projectId, operation);
   if (operation.state === 'succeeded') return operation;
   const operationKey = operation.idempotencyKey;
@@ -239,11 +240,12 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
   const command = receipt.command;
   validateCommand(command);
   const payload = command.payload;
-  const mapping = store.get(projectId, command.targetId);
-  if (mapping?.kind !== 'task_mapping' || mapping.management?.operationId !== operation.id) {
+  const savedMapping = store.get(projectId, command.targetId);
+  if (savedMapping?.kind !== 'task_mapping' || savedMapping.management?.operationId !== operation.id) {
     throw new StoreError('conflict', 'task_operation_superseded');
   }
-  const holdReason = mapping.management.holdReason;
+  let mapping: TaskMapping = savedMapping;
+  const holdReason = mapping.management!.holdReason;
   const ownHold = (task: FirstMateTask) => task.hold?.reason === holdReason && task.hold.until === null;
   const creationMarker = `Software Factory mapping: ${mapping.id}`;
   let observed: FirstMateTask | undefined;
@@ -268,12 +270,24 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
     const availableIds = desiredIds.filter((id) => dependencies.get(id));
     const reasons = [...taskReadinessReasons(records, mapping), ...desiredIds.filter((id) => !dependencies.get(id))
       .map((id) => `Missing prerequisite ${id}`)];
-    const requireGuard = () => {
+    const retainProtection = (target: TaskMapping, guardId?: string): TaskMapping => {
+      if (target.management && (!guardId || target.management.managedDependencies.includes(guardId))) return target;
+      const owned = { ...target, management: target.management ?? { operationId: operation.id,
+        requirements: [], managedDependencies: [], readiness: [], paused: false,
+        holdReason: `Software Factory ${stableId('hold', projectId, target.id)}` } };
+      operation = recordOutcome(store, operation, operation.state, `Protection intended for ${target.firstMateTaskId}`,
+        owned, [...owned.management.managedDependencies, ...(guardId ? [guardId] : [])]);
+      const saved = store.get(projectId, target.id) as TaskMapping;
+      if (target.id === mapping.id) mapping = saved;
+      return saved;
+    };
+    const requireGuard = (target = mapping) => {
       if (!options.guardTaskId) throw new DefinitiveTaskRejection('permanent_guard_task_required_without_atomic_hold');
       const guard = wrapper.read(options.guardTaskId);
       if (!guard || guard.state === 'done' || !guard.held || !guard.hold || guard.hold.until !== null) {
         throw new DefinitiveTaskRejection('guard_must_be_permanently_held_and_not_done');
       }
+      retainProtection(target, guard.id);
       return guard.id;
     };
     if (mapping.disposition.state === 'cancelled') {
@@ -285,11 +299,12 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
           !cancelledTaskPrerequisites(records, consumer).includes(mapping.firstMateTaskId)) continue;
         let task = wrapper.read(consumer.firstMateTaskId);
         if (!task) continue; // An absent task cannot dispatch; later creation is gated by the same cancellation fact.
-        const reason = consumer.management?.holdReason ?? `Software Factory ${stableId('hold', projectId, consumer.id)}`;
+        const protectedConsumer = retainProtection(consumer);
+        const reason = protectedConsumer.management!.holdReason;
         const protectiveHold = (value: FirstMateTask) => value.hold?.reason === reason && value.hold.until === null;
         if (!task.hold) task = wrapper.write(['hold', task.id, '--reason', reason, '--kind', 'external'], protectiveHold);
         else if (!protectiveHold(task)) {
-          const guardId = requireGuard();
+          const guardId = requireGuard(protectedConsumer);
           if (!taskIds(task).includes(guardId)) wrapper.write(['block', task.id, '--by', guardId], (value) => taskIds(value).includes(guardId));
         }
       }
@@ -313,7 +328,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
       (observed.body !== creationMarker || observed.title !== payload.task.title.trim() || observed.repo !== payload.task.repo.trim())) {
       throw new DefinitiveTaskRejection('stable_task_id_collision');
     }
-    const ownedIds = [...mapping.management.managedDependencies,
+    const ownedIds = [...mapping.management!.managedDependencies,
       ...(options.guardTaskId ? [options.guardTaskId] : [])];
     const fields = payload.action === 'set_priority' ? { priority: payload.priority! } :
       payload.action === 'update' ? payload.update! : {};
@@ -396,12 +411,28 @@ export function manageExecutionTask(store: ProjectStore, input: unknown, options
   return store.withTaskLock(command.projectId, () => {
     // Explicit recovery permission shares the same lock as its child effect, so
     // disable/re-enable cannot revive a retired permission between these steps.
+    let inheritedAttempt: Operation['externalAttempt'];
     if (permitOperationId) {
       const permit = store.get(command.projectId, permitOperationId);
       if (permit?.kind !== 'operation') throw new StoreError('not_found', 'task_recovery_permission_missing');
       store.assertExternalOperationsAllowed(command.projectId, permit);
+      const receipt = store.receipt(command.projectId, permit.idempotencyKey);
+      if (receipt?.command.command !== 'record_decision_suggestion') throw new StoreError('validation', 'task_recovery_permission_receipt_required');
+      const binding = z.strictObject({ correctionId: z.string(), sourceOperationId: z.string(), taskDigest: z.string() })
+        .parse(JSON.parse(receipt.command.payload.decision.rationale));
+      const correction = store.get(command.projectId, binding.correctionId);
+      const source = store.get(command.projectId, binding.sourceOperationId);
+      const sourceReceipt = source?.kind === 'operation' && store.receipt(command.projectId, source.idempotencyKey);
+      const original = sourceReceipt && sourceReceipt.command.command === 'deliver_correction' && sourceReceipt.command.payload.taskCommand;
+      if (correction?.kind !== 'observation' || correction.correction?.operationId !== binding.sourceOperationId ||
+        !original || original.targetId !== command.targetId || commandDigest(original) !== binding.taskDigest || JSON.stringify(original.payload) !== JSON.stringify(command.payload)) {
+        throw new StoreError('conflict', 'task_correction_recovery_binding_changed');
+      }
+      const mapping = store.get(command.projectId, command.targetId);
+      const previous = mapping?.kind === 'task_mapping' && mapping.management && store.get(command.projectId, mapping.management.operationId);
+      if (previous && previous.kind === 'operation' && previous.suspended) inheritedAttempt = previous.externalAttempt;
     }
-    const intent = queueTaskIntent(store, command);
+    const intent = queueTaskIntent(store, command, inheritedAttempt);
     const operation = reconcileTaskIntent(store, intent.mapping.projectId, intent.operation.id, options);
     const latest = store.get(command.projectId, intent.mapping.id);
     // Success also persists the installed dependency snapshot. Return its current

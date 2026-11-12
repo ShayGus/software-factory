@@ -18,7 +18,7 @@ adapter (`fmHome`, optional `snapshotExecutable`, `timeoutMs`,
 `maxObservationAgeMs`). The default snapshot executable is
 `<fmHome>/bin/fm-fleet-snapshot.sh`. Its intent and in-flight marker are saved
 before spawn. Every fresh launch requires the configured native hook and runs the same worker-start checker against the prepared brief, dispatch context and independent instruction check. The native hook still checks FirstMate’s final launch candidate and overlays. Missing hook configuration or a rejected check prevents launch. Repeating the same input after a crash observes the original task
-ID and generation. An observed new generation for the recorded repository
+ID and generation, even if a correction has advanced the assignment revision. Hook settings and the project registry are checked again after instruction judgment before a fresh launch. An observed new generation for the recorded repository
 confirms launch; an empty, stale, malformed or unknown snapshot cannot authorize
 another spawn. Missing metadata for an in-flight or orphaned target, or an explicitly invalid inventory without a trustworthy target generation, also prevents launch. An existing generation before a new launch requires an explicit
 operator decision/new attempt. The one-feature runbook uses this same path.
@@ -92,11 +92,11 @@ manifest entry is invalid, rather than silently dropping an artifact.
 
 The restore gate is imported in the same database transaction as the history and
 receipts. Thus even a crash during file restoration cannot expose pending
-operations. Missing, changed or unresolved artifacts keep the gate closed. If a missing file had no recorded content digest, supplying the file yields `verification_required`. Use `verify-restored-artifact --db <db> --input <verification.json>` with `projectId`, absolute `path`, the expected SHA-256 `digest`, and nonempty verification `evidence`. It checks the supplied bytes and persists their identity and evidence before reconciliation can continue. It cannot replace a known backup digest. Once artifacts
+operations. Repeating restore with the identical backup resumes file restoration against its matching gated import; it neither reimports history nor overwrites changed files. Missing, changed or unresolved artifacts keep the gate closed. If a missing file had no recorded content digest, supplying the file yields `verification_required`. Use `verify-restored-artifact --db <db> --input <verification.json>` with `projectId`, absolute `path`, the expected SHA-256 `digest`, and nonempty verification `evidence`. It checks the supplied bytes and persists their identity and evidence before reconciliation can continue. It cannot replace an authoritative whole-file digest. If a section-only backup captured damaged section bytes, repair the sections and use this verification command to establish the repaired file identity. Once artifacts
 are available, `reconcile-project` reads a fresh fleet snapshot and every recorded
 mapping/assignment/external-attempt ID through the backlog wrapper before lifting
 the gate. No pending mutation runs during these reads. The restore CLI invokes
-this observational reconciliation automatically; it never invokes a pending mutation. Once reconciliation succeeds, the temporary restore artifact gate is retired; verification remains in history and normal regenerated briefs are not compared against old backup bytes on a later re-enable. A backup of a disabled project remains disabled until an explicit re-enable. Commands return nonzero when restoration/reconciliation remains incomplete, a start is unknown, or handback reports an error.
+this observational reconciliation automatically; it never invokes a pending mutation. Once reconciliation succeeds, the temporary restore artifact gate is retired; verification remains in history and normal regenerated briefs are not compared against old backup bytes on a later re-enable. A backup of an interrupted restore preserves its saved enablement destination. A backup of a disabled project remains disabled until an explicit re-enable. Commands return nonzero when restoration/reconciliation remains incomplete, a start is unknown, or handback reports an error.
 
 ### Resolving an imported relative reference
 
@@ -128,7 +128,7 @@ hash. Markdown section obligations use the same current covering adoption as
 context assembly. The current adoption's heading range and section hash must
 match; a covering parent replaces obligations for its former child sections.
 Re-adoption can update a section without making superseded snapshots live restore
-requirements. Those snapshots remain unchanged in history. Distinct current
+requirements. Pending, unadopted observation sections remain validation obligations until adoption retires them. Those snapshots remain unchanged in history. Distinct current
 sections can have different hashes without constraining surrounding content to
 either section's hash; a missing or changed current covering section is rejected.
 A new whole-file identity can be recorded only when no whole-file digest was retained. The recorded base must remain consistent across resolutions; a wrong digest
@@ -155,7 +155,7 @@ remain. Active FirstMate execution continues.
 `--mode hand_back --adapter-config <tasks.json>` also removes holds only when the
 reason exactly matches the mapping's toolkit ownership marker and the hold is
 permanent. It removes a configured toolkit guard dependency only when the mapping's
-persisted installed-dependency list proves ownership. Other holds and dependencies
+persisted dependency ownership intent proves ownership. That intent is saved before guard installation, including guards protecting cancellation consumers. Other holds and dependencies
 remain. Outstanding product conditions are stored on the project. Errors are
 reported per task; repeating handback reads before converging, so a lost unhold
 result is safe. Disable never invokes worker stop or cleanup.
@@ -176,7 +176,7 @@ BUILD-08 before any retry. An interrupted retired child operation receives a
 fresh durable intent for the same native task; an already confirmed result is
 reused. Repeat the recovery key to resume safely after another lost result.
 Disable retires that recovery permission too, and it is checked inside the child
-task lock so re-enable cannot replay it late. An ambiguous prior send cannot be replaced: after re-enable, `deliver-correction` only observes its recorded payload/generation, with no external retry, so a confirmed prior delivery can satisfy incorporation normally. Existing product evidence and correction incorporation requirements remain.
+task lock so re-enable cannot replay it late. After a second disable, use a fresh recovery key to reconcile the suspended child for the same source intent. Recovery remains bound to the captured source operation and task digest, and carries forward a recorded cancellation exit attempt so a lost response cannot trigger another exit. An ambiguous prior send cannot be replaced: after re-enable, `deliver-correction` only observes its recorded payload/generation, with no external retry, so a confirmed prior delivery can satisfy incorporation normally. Existing product evidence and correction incorporation requirements remain.
 
 ## Compatibility and validation
 

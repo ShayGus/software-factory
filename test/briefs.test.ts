@@ -604,3 +604,26 @@ try { prepareWorkerBrief(store,input); fs.writeFileSync(root+'/'+mode+'-done',''
     assert.equal(flow.check().ok, true);
   } finally { for (const child of children) if (child.exitCode === null) child.kill('SIGKILL'); flow.close(); }
 });
+test('review 1277-5: preparation replay restores frozen bytes after guidance changes and consolidation', () => {
+  const flow = setup();
+  try {
+    const prepared = flow.prepare();
+    const bytes = [flow.briefPath, prepared.sidecarPath].map(path => digestText(readFileSync(path, 'utf8')));
+    for (const id of ['first-guidance', 'updated-guidance', 'consolidated-guidance']) {
+      captureLearning(flow.store, { projectId, id, idempotencyKey: id, issuedAt: new Date().toISOString(),
+        identity: { scope: { kind: 'project' }, topic: id === 'consolidated-guidance' ? 'consolidated-policy' : 'replay-policy' }, finding: id + ' exact rule',
+        inputKind: id === 'consolidated-guidance' ? 'inferred' : 'standing_instruction', captureReason: 'direct', evidence: [{ artifact: { uri: 'fixture:policy', revision: id },
+          description: 'Updated standing instruction', observedAt: new Date().toISOString() }],
+        ...(id === 'updated-guidance' ? { supersedes: [{ id: 'first-guidance:guidance', revision: 1 }] } : {}) });
+      if (id === 'consolidated-guidance') {
+        const at = new Date().toISOString(); const agent = structuredClone(fakeJudge);
+        agent.executables.codex = new URL('../../fixtures/fake-learning-agent.mjs', import.meta.url).pathname;
+        consolidateLearning(flow.store, { projectId, id: 'replay-consolidation', idempotencyKey: 'replay-consolidation', issuedAt: at,
+          scheduledWindowId: 'replay-window', scheduledFor: at, scheduleDigest: 'test-schedule', timezone: 'Asia/Jerusalem' }, agent);
+      }
+      rmSync(flow.briefPath); rmSync(prepared.sidecarPath);
+      assert.deepEqual(flow.prepare(), prepared);
+      assert.deepEqual([flow.briefPath, prepared.sidecarPath].map(path => digestText(readFileSync(path, 'utf8'))), bytes);
+    }
+  } finally { flow.close(); }
+});

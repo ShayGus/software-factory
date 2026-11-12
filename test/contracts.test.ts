@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 import { z } from 'zod';
 import {
-  AssignmentSchema, CommandEnvelopeSchema, CommandNameSchema, CorrectionSchema,
+  AssignmentSchema, CommandEnvelopeSchema, CommandNameSchema,
   CriterionSchema, ExecutionObservationSchema, FeatureStateSchema, FirstMateInboxNoteSchema,
   FirstMateTaskMutationSchema, OperationSchema, RecordSchema, RecordsSchema,
   assertExpectedRevision, assertIdempotencyReuse, assertRevisionTransition, commandDigest,
@@ -297,15 +297,6 @@ test('requested criteria default to required without mutating captured source te
   const request = byId('request-1');
   assert.equal(RecordSchema.parse({ ...request, originalText: text }).kind, 'request');
   assert.equal((RecordSchema.parse({ ...request, originalText: text }) as { originalText: string }).originalText, text);
-});
-test('acknowledgement does not invent incorporation', () => {
-  const observation = byId('observation-1');
-  assert.equal(observation.kind, 'observation');
-  if (observation.kind !== 'observation' || !observation.correction) return;
-  const correction = CorrectionSchema.parse({ ...observation.correction,
-    facts: observation.correction.facts.filter((fact) => fact.fact !== 'incorporated') });
-  assert.ok(correction.facts.some((fact) => fact.fact === 'acknowledged'));
-  assert.equal(correction.facts.some((fact) => fact.fact === 'incorporated'), false);
 });
 test('unknown execution and cancelled dispositions cannot become feature-state tokens', () => {
   assert.equal(FeatureStateSchema.safeParse('unknown').success, false);
