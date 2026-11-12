@@ -87,6 +87,10 @@ export const DeliverCorrectionCommandSchema = z.strictObject({
   payload: z.strictObject({
     affectedRevision: RefSchema, assignment: RefSchema, originalCorrection: TextSchema,
     action: CorrectionActionSchema, sequence: z.number().int().positive(), supersedes: z.array(RefSchema),
+    sourceRefs: z.array(SourceRefSchema).min(1).optional(), urgentStop: z.boolean().optional(),
+    compatibilityKey: TextSchema.optional(),
+    changedOutcome: TextSchema.optional(),
+    taskCommand: MapManageExecutionTaskCommandSchema.optional(),
   }),
 });
 export const ReviewDeliveryTargetSchema = z.strictObject({

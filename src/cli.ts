@@ -9,6 +9,7 @@ import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { captureChannelCoverage, chatHookCommand, chatHookSettings } from './capture-coverage.js';
 import { captureChatPrompt } from './chat-hook.js';
+import { queueCorrection, deliverCorrection, recordCorrectionFact, CorrectionAdapterOptionsSchema } from './corrections.js';
 import { deliverRequest } from './delivery.js';
 import { prepareWorkerBrief, checkWorkerBrief } from './briefs.js';
 import { captureRequest, initializeProject, mapRequest, requestCoverage, unclassifiedRequests } from './intake.js';
@@ -51,6 +52,10 @@ All commands print JSON; chat-hook is silent on success. No settings are install
   unclassified   --db <sqlite> --project <id>
   coverage       --db <sqlite> --project <id> --request <request ID>
   outbox         --db <sqlite> --project <id>
+  queue-correction --db <sqlite> --input <DeliverCorrectionCommand JSON file>
+  deliver-correction --db <sqlite> --project <id> --correction <id>
+                 --adapter-config <CorrectionAdapterOptions JSON file>
+  correction-fact --db <sqlite> --input <CorrectionFact JSON file>
   queue-task     --db <sqlite> --input <MapManageExecutionTaskCommand JSON file>
   manage-task    --db <sqlite> --input <MapManageExecutionTaskCommand JSON file>
                  --adapter-config <TaskAdapterOptions JSON file>
@@ -91,6 +96,9 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   unclassified: { db: valueOption, project: valueOption },
   coverage: { db: valueOption, project: valueOption, request: valueOption },
   outbox: { db: valueOption, project: valueOption },
+  'queue-correction': { db: valueOption, input: valueOption },
+  'correction-fact': { db: valueOption, input: valueOption },
+  'deliver-correction': { db: valueOption, project: valueOption, correction: valueOption, 'adapter-config': valueOption },
   'queue-task': { db: valueOption, input: valueOption },
   'manage-task': { db: valueOption, input: valueOption, 'adapter-config': valueOption },
   'reconcile-task': { db: valueOption, project: valueOption, operation: valueOption, 'adapter-config': valueOption },
@@ -177,6 +185,13 @@ export function runCli(args: string[]): number {
         case 'unclassified': output(unclassifiedRequests(store, required('project'))); break;
         case 'coverage': output(requestCoverage(store, required('project'), required('request'))); break;
         case 'outbox': output(store.operations(required('project'))); break;
+        case 'queue-correction': output(queueCorrection(store, jsonFile('input'))); break;
+        case 'correction-fact': output(recordCorrectionFact(store, jsonFile('input'))); break;
+        case 'deliver-correction': {
+          const result = deliverCorrection(store, required('project'), required('correction'),
+            CorrectionAdapterOptionsSchema.parse(jsonFile('adapter-config')));
+          output(result); return result.state === 'succeeded' ? 0 : 1;
+        }
         case 'queue-task': output(queueManagedTask(store, jsonFile('input'))); break;
         case 'manage-task': {
           const result = manageExecutionTask(store, jsonFile('input'), TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')));

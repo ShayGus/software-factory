@@ -930,6 +930,20 @@
               "observedAt": "2026-11-10T10:36:43Z"
             }
           ]
+        },
+        {
+          "fact": "incorporated",
+          "at": "2026-11-10T10:36:43Z",
+          "evidence": [
+            {
+              "artifact": {
+                "uri": "fixture://implementation/feature-x",
+                "revision": "fixture-commit-1"
+              },
+              "description": "Synthetic fixture: independently verified the correction in both system implementations.",
+              "observedAt": "2026-11-10T10:36:43Z"
+            }
+          ]
         }
       ]
     }

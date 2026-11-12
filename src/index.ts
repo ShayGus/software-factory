@@ -27,3 +27,4 @@ export * from './learning-schedule.js';
 export * from './ui-spike.js';
 export * from './worker-start-hook.js';
 export * from './feature-run.js';
+export * from './corrections.js';

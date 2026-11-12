@@ -659,7 +659,13 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       if (record.correction) {
         ctx.get(record, record.correction.assignment, 'assignment', 'correction.assignment');
         if (!ctx.index.has(key(record.correction.affectedRevision))) ctx.add(record, 'missing_reference', 'correction.affectedRevision', 'Missing corrected revision');
-        for (const ref of record.correction.supersedes) ctx.get(record, ref, 'observation', 'correction.supersedes');
+        for (const ref of record.correction.supersedes) {
+          const prior = ctx.get(record, ref, 'observation', 'correction.supersedes');
+          if (prior?.correction && (prior.correction.assignment.id !== record.correction.assignment.id ||
+            prior.correction.sequence >= record.correction.sequence || prior.correction.urgentStop ||
+            prior.correction.facts.some((fact) => fact.fact === 'delivered'))) ctx.add(record,
+            'invalid_correction_supersession', 'correction.supersedes', 'Only earlier undelivered amendments on this assignment can consolidate');
+        }
       }
       break;
     case 'guidance_revision':
@@ -760,6 +766,7 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
     path: 'assignment', message: 'Assignment revision is absent' }] };
   if (ctx.current.get(owner.id)?.revision !== owner.revision) ctx.add(owner,
     'superseded_assignment', 'assignment', 'A newer revision of this assignment exists');
+  if (owner.correctionContext?.requiresReplan) ctx.add(owner, 'correction_requires_replan', 'assignment', 'Amended outcome needs checked replanning');
   if (owner.instructionFidelity.result !== 'passed') ctx.add(owner, 'instruction_fidelity', 'instructionFidelity',
     'Instruction comparison with original request, design and task has not passed');
   for (const source of missingAssignmentContext(validated.data, owner)) ctx.add(owner,
@@ -807,6 +814,31 @@ export function validateReviewForCompletion(input: unknown, reviewRef: Ref): Val
   if (!owner || owner.kind !== 'product_review') return { ok: false, issues: [{ code: 'missing_review', recordId: reviewRef.id,
     path: 'review', message: 'Review revision is absent' }] };
   checkCompletion(ctx, owner);
+  // A historical review remains valid history, but cannot complete current work.
+  if (owner.feature) {
+    const feature = ctx.current.get(owner.feature.id);
+    if (feature?.kind !== 'feature_revision' || (feature.revision !== owner.feature.revision && !(feature.completionEvidence &&
+      sameRef(feature.completionEvidence.review, owner) && carriesCompletionEvidence(ctx, feature)))) ctx.add(owner,
+      'superseded_feature', 'feature', 'Completion requires the current feature revision');
+  }
+  for (const assignment of owner.assignments) {
+    const target = ctx.index.get(key(assignment));
+    if (target?.kind !== 'assignment') continue;
+    const candidates = [...ctx.current.values()].filter((record) => record.kind === 'assignment' && record.firstMateTaskId === target.firstMateTaskId);
+    const time = Math.max(...candidates.map((record) => Date.parse(record.updatedAt)));
+    const latest = candidates.filter((record) => Date.parse(record.updatedAt) === time);
+    if (latest.length !== 1 || !sameRef(latest[0]!, assignment)) ctx.add(owner,
+      'superseded_assignment', 'assignments', 'Completion requires the current unambiguous attempt');
+    const mapping = [...ctx.current.values()].find((record) => record.kind === 'task_mapping' && record.firstMateTaskId === target.firstMateTaskId);
+    if (mapping?.kind === 'task_mapping' && mapping.disposition.state !== 'active') ctx.add(owner,
+      'inactive_mapping', 'assignments', 'Cancelled or deferred work cannot establish current completion');
+    if (target.correctionContext?.requiresReplan) ctx.add(owner, 'correction_requires_replan', 'assignments', 'Changed outcome requires checked design and plan');
+    for (const record of ctx.current.values()) if (record.kind === 'observation' && record.correction &&
+      record.correction.assignment.id === assignment.id && !record.correction.supersededBy &&
+      ['clarification', 'amended_scope', 'rewind', 'cancellation'].includes(record.correction.action) &&
+      !record.correction.facts.some((fact) => fact.fact === 'incorporated')) ctx.add(owner,
+      'correction_not_incorporated', 'assignments', 'Pending correction cannot be closed by acknowledgement or worker completion');
+  }
   if (owner.conformance) for (const assignment of owner.assignments) {
     if (ctx.current.get(assignment.id)?.revision !== assignment.revision) ctx.add(owner, 'superseded_assignment', 'assignments', 'Completion names an old assignment');
   }
@@ -827,6 +859,15 @@ export function assertRevisionTransition(previousInput: unknown, nextInput: unkn
   if (previous.id !== next.id || previous.projectId !== next.projectId || previous.kind !== next.kind ||
     next.revision !== previous.revision + 1 || next.createdAt !== previous.createdAt ||
     Date.parse(next.updatedAt) < Date.parse(previous.updatedAt)) throw new Error('invalid_revision_transition');
+  if (previous.kind === 'observation' && next.kind === 'observation' && previous.correction) {
+    const old = previous.correction; const correction = next.correction;
+    if (!correction || canonical([old.action, old.originalText, old.sequence, old.affectedRevision, old.supersedes, old.sourceRefs, old.operationId, old.urgentStop, old.compatibilityKey, old.impact]) !==
+      canonical([correction.action, correction.originalText, correction.sequence, correction.affectedRevision, correction.supersedes, correction.sourceRefs, correction.operationId, correction.urgentStop, correction.compatibilityKey, correction.impact]) ||
+      old.facts.some((fact) => !correction.facts.some((item) => canonical(fact) === canonical(item))) ||
+      old.assignment.id !== correction.assignment.id || (old.supersededBy && !sameRef(old.supersededBy, correction.supersededBy ?? null))) {
+      throw new Error('correction_history_mutation');
+    }
+  }
   if (previous.kind === 'request' && next.kind === 'request' && canonical([
     previous.originalText, previous.source, previous.channel, previous.capturedAt, previous.clientRequestId, previous.attachments,
   ]) !== canonical([next.originalText, next.source, next.channel, next.capturedAt, next.clientRequestId, next.attachments])) {

@@ -174,6 +174,9 @@ export const AssignmentSchema = record('assignment', {
   sourceRefs: z.array(SourceRefSchema).min(1), selectedContext: z.array(SelectedContextSchema).min(1),
   criteria: z.array(RefSchema), prerequisiteArtifacts: z.array(ArtifactSchema), returnLocation: TextSchema,
   instructionText: TextSchema, instructionFidelity: ComparisonSchema,
+  correctionContext: z.strictObject({
+    feature: RefSchema.nullable(), corrections: z.array(RefSchema).min(1), requiresReplan: z.boolean(),
+  }).optional(),
   // Absent on historical assignments. New generated briefs retain the original
   // lifecycle template and identities so a later gate can detect file damage.
   brief: z.strictObject({
@@ -238,13 +241,23 @@ export const CorrectionSchema = z.strictObject({
   action: CorrectionActionSchema, originalText: TextSchema, assignment: RefSchema,
   affectedRevision: RefSchema, sequence: z.number().int().positive(),
   supersedes: z.array(RefSchema),
+  sourceRefs: z.array(SourceRefSchema).optional(),
+  urgentStop: z.boolean().optional(), compatibilityKey: TextSchema.optional(),
+  supersededBy: RefSchema.optional(), operationId: IdSchema.optional(),
+  impact: z.strictObject({ assignments: z.array(RefSchema), dependencies: z.array(RefSchema),
+    completedEvidence: z.array(RefSchema), requiresReplan: z.boolean() }).optional(),
   facts: z.array(z.strictObject({
     fact: CorrectionDeliveryFactSchema, at: TimestampSchema, evidence: z.array(EvidenceSchema).min(1),
   })).min(1),
 }).refine((value) => new Set(value.facts.map((fact) => fact.fact)).size === value.facts.length,
   'Delivery facts must be distinct')
   .refine((value) => value.facts.some((fact) => fact.fact === 'recorded'),
-    'Correction must have its recorded fact');
+    'Correction must have its recorded fact')
+  .refine((value) => value.facts.every((fact) => fact.fact === 'recorded' ||
+    (Date.parse(fact.at) >= Date.parse(value.facts.find((item) => item.fact === 'recorded')?.at ?? '') &&
+      (!['acknowledged', 'incorporated'].includes(fact.fact) || value.facts.some((item) =>
+        item.fact === 'delivered' && Date.parse(item.at) <= Date.parse(fact.at))))),
+    'Acknowledgement and incorporation require an earlier delivered fact');
 
 export const ObservationSchema = record('observation', {
   finding: TextSchema, affectedScope: z.array(SourceRefSchema).min(1), evidence: z.array(EvidenceSchema),

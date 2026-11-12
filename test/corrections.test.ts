@@ -1,0 +1,279 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test, { type TestContext } from 'node:test';
+import { ProjectStore, RecordsSchema, queueCorrection, deliverCorrection, recordCorrectionFact,
+  validateReviewForCompletion, validateRecords, ref, correctionOperation, taskReadinessReasons, assertRevisionTransition, requiredAssignmentContext, type CorrectionAdapterOptions,
+  type Observation, type FactoryRecord, type CorrectionAction } from '../src/index.js';
+import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
+
+const projectId = 'project-1';
+const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
+function setup(t: TestContext) {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-corrections-'));
+  const database = join(directory, 'store.sqlite');
+  const store = new ProjectStore(database);
+  store.importProject({ schemaVersion: 1, projectId, history: baseline.filter(record => !['observation', 'guidance_revision'].includes(record.kind)), receipts: [] });
+  const executable = join(directory, 'wrapper');
+  writeFileSync(executable, `#!/usr/bin/env node
+const fs = require('node:fs'); const path = require('node:path');
+const home = process.env.FM_HOME;
+fs.appendFileSync(path.join(home, 'calls'), JSON.stringify({ args: process.argv.slice(2), env: Object.keys(process.env).filter(k => k.startsWith('FM_')) }) + '\\n');
+if (fs.existsSync(path.join(home, 'fail'))) process.exit(1);
+process.stdout.write('accepted');
+`);
+  chmodSync(executable, 0o755);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const assignment = () => { const item = store.get(projectId, 'assignment-1'); assert.ok(item?.kind === 'assignment'); return item; };
+  const options = (state: 'active' | 'stopped' | 'unknown' = 'active'): CorrectionAdapterOptions => ({ fmHome: directory,
+    sendExecutable: executable, controlExecutable: executable, recipients: [{ assignment: ref(assignment()),
+      attemptId: assignment().attemptId, firstMateTaskId: assignment().firstMateTaskId, state, observedAt: new Date().toISOString() }] });
+  let number = 0;
+  const command = (action: CorrectionAction = 'clarification', extra: Record<string, unknown> = {}) => {
+    const n = ++number;
+    return { schemaVersion: 1 as const, id: `command-${n}`, projectId, issuedAt: new Date().toISOString(),
+      idempotencyKey: `correction-key-${n}`, command: 'deliver_correction' as const, targetId: `correction-${n}`, expectedRevision: 0,
+      payload: { affectedRevision: ref(store.get(projectId, 'feature-1')!), assignment: ref(assignment()),
+        originalCorrection: `Correction ${n}: preserve the exact source\nwith trailing detail`, action, sequence: n,
+        supersedes: [], sourceRefs: [{ uri: `fixture://source/${n}` }], ...extra } };
+  };
+  const queue = (action: CorrectionAction = 'clarification', extra: Record<string, unknown> = {}) => queueCorrection(store, command(action, extra));
+  const deliver = (id: string, config = options()) => deliverCorrection(store, projectId, id, config);
+  const calls = (): { args: string[]; env: string[] }[] => {
+    try { return readFileSync(join(directory, 'calls'), 'utf8').trim().split('\n').map(line => JSON.parse(line)); } catch { return []; }
+  };
+  const observation = (id: string) => store.get(projectId, id) as Observation;
+  const fact = (id: string, name: 'acknowledged' | 'incorporated') => {
+    const record = observation(id);
+    return recordCorrectionFact(store, { projectId, correction: ref(record), assignment: record.correction!.assignment,
+      fact: name, at: new Date().toISOString(), idempotencyKey: `${name}-${id}`, evidence: [{ artifact: { uri: `fixture://${name}/${id}`, revision: '1' },
+        description: name === 'acknowledged' ? 'Durable inbox message moved to handled' : 'Verified correction in delivered artifact', observedAt: new Date().toISOString() }] });
+  };
+  return { directory, database, store, options, command, queue, deliver, calls, observation, fact, assignment };
+}
+
+test('ordered steering goes to the exact current attempt and preserves the original correction', t => {
+  const flow = setup(t); const first = flow.queue(); const second = flow.queue();
+  assert.equal(flow.deliver(second.correction.id).state, 'pending'); assert.equal(flow.calls().length, 0);
+  assert.equal(flow.deliver(first.correction.id).state, 'succeeded');
+  assert.equal(flow.deliver(second.correction.id).state, 'succeeded');
+  assert.deepEqual(flow.calls().map(call => JSON.parse(call.args[1]!).corrections[0].sequence), [1, 2]);
+  assert.ok(flow.calls().every(call => call.args[0] === 'pilot-build'));
+  assert.equal(JSON.parse(flow.calls()[0]!.args[1]!).attemptId, 'attempt-1');
+  assert.equal(JSON.parse(flow.calls()[0]!.args[1]!).corrections[0].originalText, first.correction.correction!.originalText);
+  assert.deepEqual(flow.calls()[0]!.env, ['FM_HOME']);
+  flow.deliver(first.correction.id); assert.equal(flow.calls().length, 2);
+});
+
+test('compatible pending amendments consolidate recursively without losing any source or instruction', t => {
+  const flow = setup(t);
+  const ids = [1, 2, 3].map(n => flow.queue('amended_scope', { changedOutcome: `Outcome ${n}`, compatibilityKey: 'same-outcome-edit' }).correction.id);
+  assert.equal(flow.store.get(projectId, 'feature-1')!.revision, 4);
+  assert.equal(flow.assignment().revision, 4);
+  const feature = flow.store.get(projectId, 'feature-1'); assert.ok(feature?.kind === 'feature_revision');
+  const context = requiredAssignmentContext(flow.store.history(projectId), { ...flow.assignment(), feature: ref(feature) });
+  for (const id of ids) {
+    const decision = feature.decisions.map(pointer => flow.store.get(projectId, pointer.id, pointer.revision))
+      .find(record => record?.kind === 'decision_change' && record.originalInstruction === flow.observation(id).correction!.originalText);
+    assert.ok(decision?.kind === 'decision_change');
+    assert.ok(context.sources.some(source => source.record?.id === decision.id), 'Future briefs must carry the original scope amendment');
+  }
+  assert.equal(flow.assignment().correctionContext?.requiresReplan, true);
+  assert.equal(flow.observation(ids[0]!)!.correction!.supersededBy!.id, ids[1]);
+  assert.equal(flow.deliver(ids[2]!).state, 'succeeded');
+  const delivered = JSON.parse(flow.calls()[0]!.args[1]!).corrections;
+  assert.deepEqual(delivered.map((item: { sequence: number }) => item.sequence), [1, 2, 3]);
+  assert.deepEqual(delivered.map((item: { sources: { uri: string }[] }) => item.sources[0]!.uri),
+    ['fixture://source/1', 'fixture://source/2', 'fixture://source/3']);
+  for (const id of ids.slice(0, 2)) assert.equal(flow.observation(id).correction!.facts.some(f => f.fact === 'delivered'), false);
+  assert.equal(flow.observation(ids[2]!).correction!.impact!.completedEvidence.length, 3);
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), { id: 'review-1', revision: 1 }).ok, false);
+});
+
+test('a distinct intervening clarification prevents amendment coalescing across it', t => {
+  const flow = setup(t);
+  const first = flow.queue('amended_scope', { changedOutcome: 'Changed once', compatibilityKey: 'outcome' });
+  flow.queue();
+  const third = flow.queue('amended_scope', { changedOutcome: 'Changed twice', compatibilityKey: 'outcome' });
+  assert.equal(flow.observation(first.correction.id).correction!.supersededBy, undefined);
+  assert.equal(flow.deliver(third.correction.id).state, 'pending');
+});
+
+test('urgent stop bypasses pending earlier steering and maps exactly to interrupt', t => {
+  const flow = setup(t); flow.queue();
+  const stop = flow.queue('clarification', { urgentStop: true });
+  assert.equal(flow.deliver(stop.correction.id).state, 'succeeded');
+  assert.deepEqual(flow.calls().map(call => call.args), [['pilot-build', 'interrupt']]);
+  assert.equal(flow.observation(stop.correction.id).correction!.supersededBy, undefined);
+});
+
+test('rewind exposes missing capability and never invokes any lifecycle or launch operation', t => {
+  const flow = setup(t); const correction = flow.queue('rewind');
+  const operation = flow.deliver(correction.correction.id);
+  assert.equal(operation.state, 'failed'); assert.match(operation.reconciliation!.note, /Missing capability/);
+  assert.equal(flow.calls().length, 0);
+});
+
+test('resume requires a stopped exact attempt and calls only relaunch', t => {
+  const flow = setup(t); const correction = flow.queue('resume');
+  assert.equal(flow.deliver(correction.correction.id).state, 'pending');
+  assert.equal(flow.deliver(correction.correction.id, flow.options('stopped')).state, 'succeeded');
+  assert.deepEqual(flow.calls()[0]!.args, ['pilot-build', 'relaunch']);
+});
+
+test('delivery failure stays unresolved, cannot acknowledge or complete, and never blindly retries', t => {
+  const flow = setup(t); const correction = flow.queue();
+  writeFileSync(join(flow.directory, 'fail'), 'fail');
+  assert.equal(flow.deliver(correction.correction.id).state, 'unknown');
+  assert.throws(() => flow.fact(correction.correction.id, 'acknowledged'), /delivered_exact_recipient/);
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), { id: 'review-1', revision: 1 }).ok, false);
+  flow.deliver(correction.correction.id); assert.equal(flow.calls().length, 1);
+});
+
+test('acknowledgement is independent of incorporation; only evidence of incorporation clears the correction gate', t => {
+  const flow = setup(t); const correction = flow.queue();
+  flow.deliver(correction.correction.id); flow.fact(correction.correction.id, 'acknowledged');
+  assert.deepEqual(flow.observation(correction.correction.id).correction!.facts.map(f => f.fact), ['recorded', 'delivered', 'acknowledged']);
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), { id: 'review-1', revision: 1 }).ok, false);
+  flow.fact(correction.correction.id, 'incorporated');
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), { id: 'review-1', revision: 1 }).ok, true);
+});
+
+for (const missing of ['absent', 'unknown', 'stale', 'wrong-attempt', 'wrong-revision'] as const) test(`unresolved ${missing} recipient does not deliver`, t => {
+  const flow = setup(t); const correction = flow.queue(); const options = flow.options();
+  if (missing === 'absent') options.recipients = [];
+  if (missing === 'unknown') options.recipients[0]!.state = 'unknown';
+  if (missing === 'stale') options.recipients[0]!.observedAt = '2020-01-01T00:00:00Z';
+  if (missing === 'wrong-attempt') options.recipients[0]!.attemptId = 'another-attempt';
+  if (missing === 'wrong-revision') options.recipients[0]!.assignment.revision++;
+  assert.equal(flow.deliver(correction.correction.id, options).state, 'pending'); assert.equal(flow.calls().length, 0);
+});
+
+test('idempotency and sequence conflicts leave intent and revisions unchanged', t => {
+  const flow = setup(t); const command = flow.command();
+  const one = queueCorrection(flow.store, command);
+  assert.deepEqual(queueCorrection(flow.store, command), one);
+  assert.throws(() => queueCorrection(flow.store, { ...command, payload: { ...command.payload, originalCorrection: 'Different' } }), /idempotency_conflict/);
+  assert.throws(() => queueCorrection(flow.store, { ...flow.command(), payload: { ...command.payload, sequence: 3 } }), /sequence_must_be_next/);
+  assert.equal(flow.store.records(projectId).filter(record => record.kind === 'observation' && record.correction).length, 1);
+});
+
+test('late returns stay historical and cannot close a changed outcome', t => {
+  const flow = setup(t); const old = flow.store.get(projectId, 'result-general')!;
+  flow.queue('amended_scope', { changedOutcome: 'A changed outcome requires new design evidence' });
+  assert.deepEqual(flow.store.get(projectId, old.id), old);
+  assert.equal(validateRecords(flow.store.history(projectId)).ok, true);
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), { id: 'review-1', revision: 1 }).ok, false);
+});
+
+test('cancellation and new work require matching BUILD-08 commands; no spawn mapping exists', t => {
+  const flow = setup(t);
+  assert.throws(() => flow.queue('new_work'), /BUILD08/);
+  const operations = ['clarification', 'amended_scope', 'rewind', 'resume', 'cancellation', 'new_work', 'status'].map(action => correctionOperation(action as CorrectionAction));
+  assert.deepEqual(operations, ['steer', 'steer', 'unsupported_rewind', 'relaunch', 'cancel_task', 'create_task', 'read_status']);
+});
+
+test('cancellation uses BUILD-08 with fake task and lifecycle wrappers', t => {
+  const flow = setup(t); const fake = fakeTaskWrapper(flow.directory, false, flow.database);
+  fake.edit(state => { state.tasks['pilot-build'] = fakeTask('pilot-build', { state: 'in_flight' }); });
+  const command = flow.command('cancellation', { taskCommand: {
+    schemaVersion: 1, id: 'cancel-task', projectId, issuedAt: new Date().toISOString(), idempotencyKey: 'cancel-task',
+    command: 'map_manage_execution_task', targetId: 'mapping-1', expectedRevision: 1,
+    payload: { task: { kind: 'existing', firstMateTaskId: 'pilot-build' }, action: 'cancel', feature: { id: 'feature-1', revision: 1 },
+      criteria: flow.assignment().criteria, detailedPlanTask: flow.assignment().detailedPlanTask, dependencies: [], reason: 'Explicit cancellation' } } });
+  const correction = queueCorrection(flow.store, command);
+  const options = flow.options(); options.taskAdapter = { fmHome: flow.directory, tasksExecutable: fake.executable,
+    controlExecutable: options.controlExecutable };
+  assert.equal(flow.deliver(correction.correction.id, options).state, 'succeeded');
+  assert.deepEqual(flow.calls()[0]!.args, ['pilot-build', 'exit']);
+  const mapping = flow.store.get(projectId, 'mapping-1'); assert.ok(mapping?.kind === 'task_mapping');
+  assert.equal(mapping.disposition.state, 'cancelled');
+});
+
+test('CLI queues and delivers through configured fake wrappers', t => {
+  const flow = setup(t); const input = join(flow.directory, 'input.json'); const config = join(flow.directory, 'config.json');
+  writeFileSync(input, JSON.stringify(flow.command())); writeFileSync(config, JSON.stringify(flow.options()));
+  const cli = (args: string[]) => spawnSync(process.execPath, [new URL('../src/cli.js', import.meta.url).pathname,
+    ...args, '--db', flow.database], { encoding: 'utf8' });
+  const queued = cli(['queue-correction', '--input', input]); assert.equal(queued.status, 0, queued.stderr);
+  const id = JSON.parse(queued.stdout).correction.id;
+  const delivered = cli(['deliver-correction', '--project', projectId, '--correction', id, '--adapter-config', config]);
+  assert.equal(delivered.status, 0, delivered.stderr); assert.equal(JSON.parse(delivered.stdout).state, 'succeeded');
+});
+
+// Verify a new attempt under the same runtime task ID cannot receive old steering.
+test('a replacement attempt rejects pending steering and old review completion', t => {
+  const flow = setup(t); const queued = flow.queue(); const at = new Date().toISOString();
+  const assignment = { ...flow.assignment(), id: 'replacement', attemptId: 'attempt-2', createdAt: at, updatedAt: at };
+  const decision = { kind: 'decision_change' as const, id: 'replace-decision', projectId, schemaVersion: 1 as const, revision: 1,
+    createdAt: at, updatedAt: at, questionOrChange: 'New explicit attempt', affectedRecords: [ref(flow.assignment())], rationale: 'Explicit replacement',
+    disposition: 'selected' as const, sourceRefs: [{ uri: 'fixture://replacement' }], scopeChanges: [] };
+  flow.store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
+    command: 'record_decision_suggestion', targetId: assignment.id, expectedRevision: 0, payload: { decision } }, () => [decision, assignment] as FactoryRecord[]);
+  assert.equal(flow.deliver(queued.correction.id).state, 'pending'); assert.equal(flow.calls().length, 0);
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), { id: 'review-1', revision: 1 }).ok, false);
+});
+
+test('request-linked clarification advances request metadata and preserves the captured original', t => {
+  const flow = setup(t); const request = flow.store.get(projectId, 'request-1'); assert.ok(request?.kind === 'request');
+  const correction = flow.queue('clarification', { affectedRevision: ref(request) });
+  const next = flow.store.get(projectId, request.id); assert.ok(next?.kind === 'request');
+  assert.equal(next.revision, 2); assert.equal(next.originalText, request.originalText);
+  assert.deepEqual(next.interpretationRefs.at(-1), ref(correction.correction));
+});
+
+test('missing steering executable reports failed without claiming delivery', t => {
+  const flow = setup(t); const correction = flow.queue(); const options = flow.options();
+  options.sendExecutable = join(flow.directory, 'missing');
+  assert.equal(flow.deliver(correction.correction.id, options).state, 'failed');
+  assert.deepEqual(flow.observation(correction.correction.id).correction!.facts.map(f => f.fact), ['recorded']);
+});
+
+for (const state of ['state: active', 'state: unknown', 'arbitrary output']) test(`status reads ${state} without steering or lifecycle`, t => {
+  const flow = setup(t); const correction = flow.queue('status');
+  const executable = join(flow.directory, 'state-wrapper');
+  writeFileSync(executable, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(state + '\n')});\n`); chmodSync(executable, 0o755);
+  const options = flow.options(); options.stateExecutable = executable;
+  assert.equal(flow.deliver(correction.correction.id, options).state, state === 'state: active' ? 'succeeded' : 'unknown');
+  assert.equal(flow.calls().length, 0);
+});
+
+test('new work creates a held managed task through BUILD-08 without launching or steering', t => {
+  const flow = setup(t); const fake = fakeTaskWrapper(flow.directory, false, flow.database);
+  const command = flow.command('new_work', { taskCommand: {
+    schemaVersion: 1, id: 'new-task', projectId, issuedAt: new Date().toISOString(), idempotencyKey: 'new-task',
+    command: 'map_manage_execution_task', targetId: 'new-mapping', expectedRevision: 0,
+    payload: { task: { kind: 'new', firstMateTaskId: 'followup', title: 'Planned followup', repo: 'sample' }, action: 'create',
+      feature: { id: 'feature-1', revision: 1 }, criteria: flow.assignment().criteria, detailedPlanTask: flow.assignment().detailedPlanTask,
+      dependencies: [], readiness: [{ id: 'hold-for-check', reason: 'Check before execution', evidence: [] }], reason: 'Explicit new work' } } });
+  const correction = queueCorrection(flow.store, command);
+  const options = flow.options(); options.taskAdapter = { fmHome: flow.directory, tasksExecutable: fake.executable, guardTaskId: 'permanent-guard' };
+  assert.equal(flow.deliver(correction.correction.id, options).state, 'succeeded');
+  assert.equal(fake.read().tasks.followup!.held, true); assert.equal(flow.calls().length, 0);
+});
+
+test('pending correction invalidates completed prerequisite evidence until incorporation', t => {
+  const flow = setup(t); const mapping = flow.store.get(projectId, 'mapping-1'); assert.ok(mapping?.kind === 'task_mapping');
+  const consumer = { ...mapping, id: 'consumer', firstMateTaskId: 'consumer', detailedPlanTask: { id: 'consumer-task', revision: 1 },
+    management: { operationId: '', requirements: [{ prerequisiteTaskId: 'task-1', consumerTaskId: 'consumer-task', reason: 'Need corrected result',
+      needs: { kind: 'criterion' as const, criterion: { id: 'criterion-general', revision: 1 } } }], paused: false,
+      readiness: [], managedDependencies: [], holdReason: 'Consumer readiness' } };
+  assert.deepEqual(taskReadinessReasons(flow.store.records(projectId), consumer), []);
+  const correction = flow.queue();
+  assert.match(taskReadinessReasons(flow.store.records(projectId), consumer).join('\n'), /Product prerequisite not met/);
+  flow.deliver(correction.correction.id); flow.fact(correction.correction.id, 'acknowledged');
+  assert.match(taskReadinessReasons(flow.store.records(projectId), consumer).join('\n'), /Product prerequisite not met/);
+  flow.fact(correction.correction.id, 'incorporated');
+  assert.deepEqual(taskReadinessReasons(flow.store.records(projectId), consumer), []);
+});
+
+test('correction revision cannot erase original source or prior delivery facts', t => {
+  const flow = setup(t); const correction = flow.queue(); flow.deliver(correction.correction.id);
+  const record = flow.observation(correction.correction.id); assert.ok(record.correction);
+  const next = { ...record, revision: record.revision + 1 };
+  assert.throws(() => assertRevisionTransition(record, { ...next, correction: { ...record.correction, originalText: 'Rewritten source' } }), /correction_history_mutation/);
+  assert.throws(() => assertRevisionTransition(record, { ...next, correction: { ...record.correction,
+    facts: record.correction!.facts.filter(fact => fact.fact !== 'delivered') } }), /correction_history_mutation/);
+});

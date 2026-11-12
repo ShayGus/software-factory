@@ -1276,3 +1276,82 @@ Successful learning runs persist the last good window with schedule/config/snaps
 Failures leave the window eligible for a later invocation.
 Repeated DST hours share one local window ID; skipped hours catch up at the next configured slot.
 There is no resident learning agent or additional scheduling service.
+
+## Corrections to active work (BUILD-09)
+
+`queueCorrection(store, DeliverCorrectionCommand)` commits an immutable original
+correction, its sources and impact summary, and an external-operation intent in
+one transaction. `deliverCorrection(store, projectId, correctionId, options)`
+performs the recorded operation. The corresponding CLI commands are
+`queue-correction --input command.json` and
+`deliver-correction --project ID --correction ID --adapter-config adapter.json`,
+with `--db project.sqlite` on both. No model or network call is involved.
+
+The command targets an exact current assignment reference and a linked current
+request or feature reference. Its sequence must be the next positive integer for
+that assignment ID, across amended assignment revisions. Replaying an idempotency
+key returns its original intent; changing its payload conflicts. Source text is
+preserved verbatim. Classification is an explicit caller decision; the runtime
+does not guess lifecycle intent from prose.
+
+| Intent | Existing operation |
+| --- | --- |
+| Clarification or amended scope | Configured `fm-send.sh TASK_ID MESSAGE` durable steering |
+| Urgent stop (`urgentStop: true`) | Configured `fm-control.sh TASK_ID interrupt`, bypassing earlier pending steering |
+| Rewind | Failed operation with the installed recovery-capability gap; no worker launch |
+| Resume | Configured `fm-control.sh TASK_ID relaunch`, requiring an observed stopped attempt |
+| Cancellation | Matching BUILD-08 cancel command, including its active-work `exit` and protective dependency holds |
+| New work | Matching BUILD-08 create command and its existing plan/readiness gates |
+| Status | Configured `fm-crew-state.sh TASK_ID` observational read; never steering or worker launch |
+
+Cancellation remains cancellation when urgent. Neither rewind nor new work is
+translated to relaunch. New work creates a managed task without dispatching it.
+Cancellation and new work require a `taskCommand` using the existing
+`MapManageExecutionTaskCommand` contract and a configured BUILD-08 `taskAdapter`.
+
+The adapter configuration supplies absolute `fmHome`, `sendExecutable` and
+`controlExecutable` paths, plus `stateExecutable` for status. No installation path
+is hard-coded. Child processes use argument arrays and an explicit `FM_HOME`;
+inherited `FM_*` overrides are removed. `recipients` contains fresh observations
+from the integrating runtime read model, each with `assignment`, `attemptId`,
+`firstMateTaskId`, `state` (`active`, `stopped` or `unknown`) and `observedAt`.
+`maxObservationAgeMs` defaults to 30 seconds; `timeoutMs` defaults to 10 seconds.
+A task ID alone does not establish which attempt currently owns its inbox. Missing,
+ambiguous, stale or mismatched bindings leave delivery pending with an unresolved
+reason. A replacement attempt cannot receive steering intended for its predecessor.
+The adapter consumer is responsible for supplying truthful current observations.
+
+An `amended_scope` command requires `changedOutcome` on its affected feature.
+It advances the feature revision, reopens completed work, amends the identified
+assignments while retaining their checked design/plan baseline, and records
+`correctionContext.requiresReplan`. Its impact lists assignments, dependent task
+mappings and completed result/review evidence. Old evidence remains inspectable;
+current completion and product-prerequisite readiness cannot consume it. The
+planning and brief workflow must produce checked replacements before dispatch or
+completion. A targeted correction delivers to its named assignment; the impact
+list exposes the other affected assignments for explicit targeted steering.
+
+Pending scope amendments can consolidate only when they share an explicit
+`compatibilityKey` and no intervening distinct instruction forms an ordering
+barrier. Consolidation recursively sends every original correction and source in
+sequence, marks superseded instructions, and leaves their delivery facts untouched.
+Delivered messages and urgent stops never consolidate. A failed or unknown earlier
+correction blocks later ordinary steering. Urgent cancellation and interruption
+bypass that queue.
+
+`recordCorrectionFact` (CLI `correction-fact --input fact.json --db project.sqlite`)
+records acknowledgement and incorporation separately. Its input names
+`projectId`, exact `correction` and `assignment` references, `fact`, `at`,
+`idempotencyKey`, and nonempty artifact `evidence`. The integrating observer records
+acknowledgement after the durable inbox message moves to `handled/`. Incorporation
+requires separate implementation/verification evidence for the current assignment.
+Acknowledgement never creates incorporation. The BUILD-10 completion gate checks
+pending corrections, current assignment/feature revisions and replanning state.
+Historical returns and reviews remain stored without satisfying current criteria.
+
+External delivery is marked unconfirmed durably before invoking a wrapper. A
+nonzero exit or timeout can follow a saved message, so it remains `unknown` and is
+never blindly retried; missing or non-executable wrappers report `failed`. Unknown
+status output also remains unresolved. An exit-zero steering/lifecycle receipt
+records only `delivered`. Reconciliation of ambiguous delivery after a crash is
+reserved for BUILD-15.

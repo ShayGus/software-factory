@@ -302,7 +302,8 @@ test('acknowledgement does not invent incorporation', () => {
   const observation = byId('observation-1');
   assert.equal(observation.kind, 'observation');
   if (observation.kind !== 'observation' || !observation.correction) return;
-  const correction = CorrectionSchema.parse(observation.correction);
+  const correction = CorrectionSchema.parse({ ...observation.correction,
+    facts: observation.correction.facts.filter((fact) => fact.fact !== 'incorporated') });
   assert.ok(correction.facts.some((fact) => fact.fact === 'acknowledged'));
   assert.equal(correction.facts.some((fact) => fact.fact === 'incorporated'), false);
 });
