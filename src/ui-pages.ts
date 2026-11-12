@@ -3,7 +3,7 @@ import type { FactoryRecord, DetailedPlanTask } from './records.js';
 import type { EditContext } from './ui-edit.js';
 import { relatedRefs, sameRef, uiStaleAfterMs, type FeatureView, type ProjectView } from './ui-state.js';
 import { durationLabel, workView, type WorkView } from './ui-work.js';
-import { stageCriteria, stageDependencies } from './planning-checks.js';
+import { stageCriteria, stageDependencies, stageSliceCriteria } from './planning-checks.js';
 import { StoreError } from './store.js';
 
 export const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>"']/gu, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
@@ -177,10 +177,10 @@ function artifacts(view: ProjectView, feature: FeatureView) {
   const base = saved && stage ? { ...saved,
     tasks: saved.tasks.map((task) => ({ ...task, criteria: stageCriteria(view.history, stage, task.criteria, task.feature, [task]) })),
     plan: { ...saved.plan, dependencies: stageDependencies(view.history, stage, saved.plan.dependencies, saved.plan.feature),
-      ...(saved.plan.workflow ? { workflow: { ...saved.plan.workflow, slices: saved.plan.workflow.slices.map((slice) => ({ ...slice,
-        criteria: stageCriteria(view.history, stage, slice.criteria,
-          slice.criteriaFeature ?? (sameRef(saved.plan, stage.artifact) ? undefined : saved.plan.feature), undefined, slice.id),
-        criteriaFeature: { id: feature.feature.id, revision: feature.feature.revision } })) } } : {}) },
+      ...(saved.plan.workflow ? { workflow: { ...saved.plan.workflow, slices: saved.plan.workflow.slices.map((slice) => {
+        const criteriaProvenance = stageSliceCriteria(view.history, stage, saved.plan, slice);
+        return { ...slice, criteria: criteriaProvenance.criteria, criteriaProvenance };
+      }) } } : {}) },
   } : saved;
   const context = base && design ? { feature: feature.feature, ...base,
     expectedRevisions: [feature.feature, base.design, base.plan, ...base.tasks].map((record) => {

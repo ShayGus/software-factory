@@ -1,7 +1,7 @@
 import { correctionTargetsAttempt, outstandingTaskCorrections, unresolvedTaskCorrections, correctionOrder, type TrackedCorrection } from './correction-state.js';
 import { activeGuidance, learningKey } from './learning-context.js';
 import { reusableAnswer } from './decision-context.js';
-import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
+import { planReadinessFindings, stageCriteria, stageDependencies, stageSliceCriteria } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { expectedReviewCriteria } from './review-contracts.js';
 import { missingAssignmentContext } from './instruction-context.js';
@@ -9,7 +9,7 @@ import { assertTaskDependencyAcyclic, taskReadinessReasons } from './task-readin
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
 import {
-  RecordSchema, RecordsSchema, type Assignment, type FactoryRecord, type FeatureRevision,
+  RecordSchema, RecordsSchema, type Assignment, type FactoryRecord, type FeatureRevision, type StageRevision,
   type ProductReview, type Operation, type DetailedPlanTask, type ImplementationPlanRevision,
   DetailedPlanTaskSchema,
 } from './records.js';
@@ -541,6 +541,13 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
     }
     case 'implementation_plan_revision': {
       const feature = record.feature ? ctx.get(record, record.feature, 'feature_revision', 'feature') : undefined;
+      for (const slice of record.workflow?.slices ?? []) if (slice.criteriaProvenance) {
+        if (canonical(slice.criteria) !== canonical(slice.criteriaProvenance.criteria)) ctx.add(record,
+          'invalid_ref', 'workflow.slices.criteriaProvenance', 'Slice criteria must match its explicit provenance snapshot');
+        const origin = slice.criteriaProvenance.feature ?
+          ctx.get(record, slice.criteriaProvenance.feature, 'feature_revision', 'workflow.slices.criteriaProvenance.feature') : undefined;
+        ctx.criteria(record, slice.criteriaProvenance.criteria, origin);
+      }
       const design = ctx.get(record, record.design, 'design_revision', 'design');
       if (design && !hasCheckedDesignReuse(ctx.records, design, record.feature)) ctx.equal(record, design.feature, record.feature, 'design.feature');
       const covered = new Set<string>();
@@ -585,17 +592,27 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
           if (check) ctx.equal(record, check.feature, record.feature, 'readinessCheck.feature');
           const previous = check && ctx.get(record, check.plan, 'implementation_plan_revision', 'readinessCheck.plan');
           const detail = check && ctx.index.get(key(check.detailStage));
-          const content = (plan: typeof record, dependencies = plan.dependencies) => {
+          const content = (plan: typeof record, dependencies = plan.dependencies, selectedDetail?: StageRevision) => {
             const { revision: _revision, updatedAt: _updatedAt, readiness: _readiness, feature: _feature, workflow, ...rest } = plan;
             if (!workflow) return { ...rest, dependencies };
             const { readinessCheck: _check, retainedTasks: _retained, changeReason: _reason, ...design } = workflow;
-            return { ...rest, dependencies, workflow: design };
+            return { ...rest, dependencies, workflow: { ...design, slices: design.slices.map((slice) => {
+              const { criteriaProvenance: _provenance, criteriaFeature: _legacy, ...content } = slice;
+              return selectedDetail && record.workflow?.slices.some((item) => item.id === slice.id && item.criteriaProvenance) ?
+                { ...content, criteria: stageSliceCriteria(ctx.records, selectedDetail, plan, slice).criteria } : content;
+            }) } };
           };
           if (previous) {
             const dependencies = detail?.kind === 'stage_revision' ?
               stageDependencies(ctx.records, detail, previous.dependencies) : previous.dependencies;
-            if (canonical(content(previous, dependencies)) !== canonical(content(record))) ctx.add(record,
+            if (canonical(content(previous, dependencies, detail?.kind === 'stage_revision' ? detail : undefined)) !== canonical(content(record))) ctx.add(record,
               'plan_not_ready', 'workflow.readinessCheck', 'Ready plan content differs from the checked plan revision');
+            if (detail?.kind === 'stage_revision') for (const slice of record.workflow.slices) {
+              const old = previous.workflow?.slices.find((item) => item.id === slice.id);
+              if (slice.criteriaProvenance && old && canonical(slice.criteriaProvenance) !==
+                canonical(stageSliceCriteria(ctx.records, detail, previous, old))) ctx.add(record,
+                'plan_not_ready', 'workflow.slices.criteriaProvenance', 'Slice provenance differs from the checked criterion interpretation');
+            }
           }
           if (!check || !check.ready || check.plan.id !== record.id || check.plan.revision !== record.revision - 1) {
             ctx.add(record, 'plan_not_ready', 'workflow.readinessCheck', 'Ready revision needs a successful deterministic check of its predecessor');

@@ -733,7 +733,7 @@ a key with a changed payload fails, and a replay returns the original receipt.
 | --- | --- | --- |
 | `understand` | `UnderstandingRevisionSchema` | Goal, user behavior, vocabulary, priorities, examples, exclusions, researched existing work, explicit unknowns, request scope roles |
 | `design` | `DesignRevisionSchema` | `workflow.understanding`; `workflow.reuse` with `alreadyWorks`, `gap`, `change`; `workflow.scope`; `workflow.changeReason`. Existing behavior, technical design, source comparison and decision references remain canonical. |
-| `plan` | `ImplementationPlanRevisionSchema` | `workflow.slices` (ordered IDs, behavior, criteria, task refs and `criteriaFeature` provenance), `scope`, `integrationSteps`, `finalVerification`, `retainedTasks`, `changeReason`. Existing execution strategy, ordered tasks, real dependencies and priorities remain canonical. |
+| `plan` | `ImplementationPlanRevisionSchema` | `workflow.slices` (ordered IDs, behavior, criteria, task refs and `criteriaProvenance: {feature, criteria}` snapshots), `scope`, `integrationSteps`, `finalVerification`, `retainedTasks`, `changeReason`. Existing execution strategy, ordered tasks, real dependencies and priorities remain canonical. |
 | `detail` | The selected plan or a later revision of it | Detailed task revisions containing behavior, design references, `decisionsToKeep`, boundaries, reuse targets, inputs, outputs, blockers, acceptance cases, `verificationMethod` and return requirements |
 
 At Plan, include linked draft tasks in `records` alongside the plan, using
@@ -767,8 +767,17 @@ additional request; directly applicable scope entries still have to agree with
 that request. Reuse translates prerequisite criteria through the recorded map in
 the generated ready plan. A prerequisite must supply every criterion a dependency
 translates to. Repeated reuse composes the prior checked plan's mappings for
-retained tasks and slices. Tasks authored against the current feature keep their
-explicit criteria.
+retained tasks. Tasks authored against the current feature keep their explicit criteria.
+Each slice has one explicit `criteriaProvenance` record binding its criteria to an
+exact feature revision. Staged and combined authoring preserve that record when
+only task links change; criterion edits author a new snapshot against the current
+feature. To reauthor identical criterion references against current scope, supply
+the current feature and criteria explicitly in that record. The `criteria` list
+mirrors the snapshot for compatibility and must agree with it. Readiness translates
+both lists once against the checked reuse map and saves a snapshot for the selected
+feature, which the editor also reads. Historical plans without the record (including
+legacy `criteriaFeature` metadata) resolve through prior slice and readiness history
+at one compatibility boundary; new writes persist the resolved record.
 When Detail revises a reused ready plan, verified task retention links preserve
 the selected plan's earlier criterion mappings across that refinement.
 Earlier designs with prose reuse findings can be selected through this check;

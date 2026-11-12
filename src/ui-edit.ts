@@ -130,8 +130,12 @@ export function buildEditCommand(context: EditContext, values: EditValues, key: 
   plan.deliverySequence = tasks.map(ref);
   if (plan.workflow) {
     const { readinessCheck: _check, ...workflow } = plan.workflow;
-    plan.workflow = { ...workflow, changeReason: reason, retainedTasks: [], slices: workflow.slices.map((slice) => ({ ...slice, criteria: criteria(slice.criteria),
-      tasks: slice.tasks.map((target) => ref(tasks.find((task) => task.id === target.id) ?? target)) })),
+    plan.workflow = { ...workflow, changeReason: reason, retainedTasks: [], slices: workflow.slices.map((slice) => {
+      const { criteriaFeature: _legacy, ...content } = slice;
+      const currentCriteria = criteria(slice.criteria);
+      return { ...content, criteria: currentCriteria, criteriaProvenance: { feature: ref(feature), criteria: currentCriteria },
+        tasks: slice.tasks.map((target) => ref(tasks.find((task) => task.id === target.id) ?? target)) };
+    }),
       integrationSteps: values.integrationSteps === undefined ? workflow.integrationSteps : lines(values.integrationSteps),
       finalVerification: values.finalVerification === undefined ? workflow.finalVerification : lines(values.finalVerification) };
   }

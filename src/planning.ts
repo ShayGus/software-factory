@@ -1,10 +1,10 @@
 import { bundleUrl } from './ui-bundle.js';
 import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { DesignPlanFeatureCommandSchema } from './commands.js';
 import { ref, stableId } from './intake.js';
-import { planReadinessFindings, planningRecord, samePlanningRef, stageDependencies } from './planning-checks.js';
+import { planReadinessFindings, planningRecord, samePlanningRef, stageDependencies,
+  stageSliceCriteria, withSliceCriterionProvenance } from './planning-checks.js';
 import { IdSchema, RefSchema, TimestampSchema } from './primitives.js';
 import {
   DesignRevisionSchema, DetailedPlanTaskSchema, ImplementationPlanRevisionSchema, DecisionChangeSchema,
@@ -78,17 +78,8 @@ export function recordStage(store: ProjectStore, input: unknown) {
         throw new StoreError('validation', 'use_readiness_check_to_record_ready_plan');
       }
     }
-    const records = data.records.map((record) => {
-      if (record.kind !== 'implementation_plan_revision' || !record.workflow) return record;
-      const previous = planningRecord(history, { id: record.id, revision: record.revision - 1 });
-      // Copy provenance only for an unchanged slice. Detail can explicitly name
-      // the current feature when reauthoring identical refs against current scope.
-      return { ...record, workflow: { ...record.workflow, slices: record.workflow.slices.map((slice) => {
-        const old = previous?.kind === 'implementation_plan_revision' && previous.workflow?.slices.find((item) => item.id === slice.id);
-        const retained = old && isDeepStrictEqual(old.criteria, slice.criteria) && isDeepStrictEqual(old.tasks, slice.tasks);
-        return { ...slice, criteriaFeature: retained ? slice.criteriaFeature ?? old.criteriaFeature ?? previous.feature ?? stage.feature : stage.feature };
-      }) } };
-    });
+    const records = data.records.map((record) => record.kind === 'implementation_plan_revision' ?
+      withSliceCriterionProvenance(history, record, stage.feature) : record);
     return [...records, stage];
   });
 }
@@ -131,6 +122,11 @@ export function checkPlanReadiness(store: ProjectStore, input: unknown) {
       }));
       writes.push(ImplementationPlanRevisionSchema.parse({ ...plan, feature: stage.feature, revision: plan.revision + 1,
         updatedAt: data.issuedAt, dependencies: stageDependencies(history, stage, plan.dependencies), workflow: { ...plan.workflow,
+          slices: plan.workflow.slices.map((slice) => {
+            const { criteriaFeature: _legacy, ...content } = slice;
+            const criteriaProvenance = stageSliceCriteria(history, stage, plan, slice);
+            return { ...content, criteria: criteriaProvenance.criteria, criteriaProvenance };
+          }),
           changeReason: 'Deterministic plan-readiness check passed', readinessCheck: ref(check),
           retainedTasks: plan.deliverySequence.map((task) => ({ task, reason: 'Unchanged detail verified by readiness check' })),
         }, readiness: { ready: true, comparison: { result: 'passed', sourceRefs, findings: [],
@@ -193,7 +189,8 @@ export function designPlanFeature(store: ProjectStore, input: unknown) {
         throw new StoreError('validation', `missing_expected_revision: ${record.id}`);
       }
     }
-    return writes;
+    return writes.map((record) => record.kind === 'implementation_plan_revision' ?
+      withSliceCriterionProvenance(history, record, payload.feature) : record);
   });
   const bundle = { design: ref(payload.design), plan: ref(payload.plan), tasks: payload.plan.deliverySequence };
   return { ...result, bundle, ...(payload.feature ? { resumeUrl: bundleUrl(command.projectId, payload.feature.id, bundle) } : {}) };

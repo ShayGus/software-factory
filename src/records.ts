@@ -117,6 +117,11 @@ export const DependencySchema = z.strictObject({
     z.strictObject({ kind: z.literal('criterion'), criterion: RefSchema }),
   ]),
 });
+/** A slice's criterion snapshot at an exact feature revision. Planning writes
+ * keep the legacy criteria list in sync; checked reuse materializes a new snapshot. */
+export const SliceCriterionProvenanceSchema = z.strictObject({
+  feature: RefSchema.nullable(), criteria: z.array(RefSchema),
+});
 export const ImplementationPlanRevisionSchema = record('implementation_plan_revision', {
   feature: RefSchema.nullable(), design: RefSchema, deliverySequence: z.array(RefSchema).min(1),
   strategy: ExecutionStrategySchema, strategyReason: TextSchema, integrationApproach: TextSchema,
@@ -127,8 +132,8 @@ export const ImplementationPlanRevisionSchema = record('implementation_plan_revi
   workflow: z.strictObject({
     slices: z.array(z.strictObject({
       id: IdSchema, behavior: TextSchema, criteria: z.array(RefSchema), tasks: z.array(RefSchema),
-      // Feature against which these slice criteria were authored, independently
-      // of task retention. Absent on historical plan revisions.
+      criteriaProvenance: SliceCriterionProvenanceSchema.optional(),
+      // Legacy input only. New planning writes use criteriaProvenance.
       criteriaFeature: RefSchema.optional(),
     })).min(1),
     scope: z.array(PlannedScopeSchema), integrationSteps: z.array(TextSchema),
@@ -364,6 +369,7 @@ export type FeatureRevision = z.infer<typeof FeatureRevisionSchema>;
 export type Criterion = z.infer<typeof CriterionSchema>;
 export type DesignRevision = z.infer<typeof DesignRevisionSchema>;
 export type ImplementationPlanRevision = z.infer<typeof ImplementationPlanRevisionSchema>;
+export type SliceCriterionProvenance = z.infer<typeof SliceCriterionProvenanceSchema>;
 export type DetailedPlanTask = z.infer<typeof DetailedPlanTaskSchema>;
 export type TaskMapping = z.infer<typeof TaskMappingSchema>;
 export type Assignment = z.infer<typeof AssignmentSchema>;
