@@ -1,16 +1,23 @@
 import { buildEditCommand, type EditContext } from './ui-edit.js';
 import type { CommandEnvelope } from './commands.js';
+import type { Ref } from './primitives.js';
 
 const pageState = document.querySelector<HTMLElement>('#page-state')!;
 const forms = [...document.querySelectorAll<HTMLFormElement>('form[data-editor]')];
-const states = forms.map(() => ({ dirty: false, pending: undefined as CommandEnvelope | undefined, busy: false, version: 0, submittedVersion: 0 }));
-const protectedEdits = () => states.some((state) => state.dirty || state.pending || state.busy);
+const states = forms.map(() => ({ dirty: false, pending: undefined as CommandEnvelope | undefined, busy: false, conflicted: false, version: 0, submittedVersion: 0 }));
+const protectedEdits = () => states.some((state) => state.dirty || state.pending || state.busy || state.conflicted);
 const editorIdentity = (context: EditContext) => JSON.stringify(context.kind === 'task' ? [context.kind, context.mapping.id, context.action] :
   context.kind === 'answer' ? [context.kind, context.decision.id, context.reuse?.id] :
   context.kind === 'standing-instruction' ? [context.kind, context.projectId] :
   context.kind === 'criterion' ? [context.kind, context.criterion.id] :
   context.kind === 'feature' ? [context.kind, context.feature.id] :
   [context.kind, context.feature.id, context.design.id, context.plan.id, context.kind === 'plan-task' ? context.taskId : undefined]);
+const editorRevisions = (context: EditContext): Ref[] => context.kind === 'task' ? [context.mapping] :
+  context.kind === 'answer' ? [context.decision, ...(context.reuse ? [context.reuse] : [])] :
+  context.kind === 'standing-instruction' ? context.guidance :
+  context.kind === 'criterion' ? [context.feature, context.criterion] :
+  context.kind === 'feature' ? [context.feature] :
+  context.expectedRevisions ?? [context.feature, context.design, context.plan, ...context.tasks];
 const lastRefresh = Date.now();
 const configuredThreshold = Number(document.querySelector<HTMLElement>('main')?.dataset?.staleAfterMs);
 const staleAfterMs = Number.isFinite(configuredThreshold) && configuredThreshold > 0 ? configuredThreshold : 60000;
@@ -19,10 +26,20 @@ for (const form of forms) {
   const state = states[forms.indexOf(form)]!;
   const output = form.querySelector('output')!;
   const button = form.querySelector<HTMLButtonElement>('button[type=submit]')!;
+  const conflict = () => {
+    state.conflicted = true;
+    output.textContent = 'Stale — revision conflict. Your edit is retained. Reload and compare the current record before saving again.';
+    pageState.textContent = 'Stale — another edit changed a referenced revision. Reload to compare.';
+    state.pending = undefined;
+    button.textContent = 'Reload current records';
+    button.type = 'button';
+    button.disabled = false;
+    button.addEventListener('click', () => { if (confirm('Reload current records? Copy any unsaved edits first.')) location.reload(); });
+  };
   form.addEventListener('input', () => { state.dirty = true; state.version++; });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (state.busy) return;
+    if (state.busy || state.conflicted) return;
     try {
       const data = new FormData(form);
       const context = JSON.parse(String(data.get('context'))) as EditContext;
@@ -37,13 +54,7 @@ for (const form of forms) {
       const response = await fetch('/canonical', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state.pending) });
       const result = await response.json();
       if (response.status === 409) {
-        output.textContent = 'Stale — revision conflict. Your edit is retained. Reload and compare the current record before saving again.';
-        pageState.textContent = 'Stale — another edit changed a referenced revision. Reload to compare.';
-        state.pending = undefined;
-        button.textContent = 'Reload current records';
-        button.type = 'button';
-        button.disabled = false;
-        button.addEventListener('click', () => { if (confirm('Reload current records? Copy any unsaved edits first.')) location.reload(); });
+        conflict();
         return;
       }
       if (result.operation?.state && result.operation.state !== 'succeeded') {
@@ -71,15 +82,23 @@ for (const form of forms) {
         link.href = result.resumeUrl; link.textContent = ' Inspect/Resume saved bundle'; output.append(link);
       }
       if (state.dirty) {
-        // Refresh only revision context; the live inputs retain anything typed
-        // while the first command was pending. The next submit gets a new key.
+        // Advance only to revisions proved by this save. A competing writer's
+        // newer context must not authorize overwriting it with retained inputs.
         const refreshed = await fetch(result.resumeUrl ?? location.href);
         if (!refreshed.ok) throw new Error('Could not refresh saved revision context. Keep your draft and reload to compare.');
         const page = new DOMParser().parseFromString(await refreshed.text(), 'text/html');
         const candidates = [...page.querySelectorAll<HTMLFormElement>('form[data-editor]')];
         const current = candidates.map((candidate) => candidate.querySelector<HTMLInputElement>('[name=context]')?.value)
           .find((value) => value && editorIdentity(JSON.parse(value) as EditContext) === editorIdentity(context));
-        if (!current) throw new Error('This editor is no longer available. Keep your draft and reload to compare.');
+        if (!current) { conflict(); return; }
+        const before = editorRevisions(context);
+        const expected = new Map([...before, ...(result.records ?? []), ...(result.mapping ? [result.mapping] : [])]
+          .map((record: Ref) => [record.id, record.revision]));
+        const refreshedRevisions = editorRevisions(JSON.parse(current) as EditContext);
+        if (refreshedRevisions.some((record) => expected.get(record.id) !== record.revision) ||
+          before.some((record) => !refreshedRevisions.some((fresh) => fresh.id === record.id))) {
+          conflict(); return;
+        }
         form.querySelector<HTMLInputElement>('[name=context]')!.value = current;
         button.disabled = false;
         button.textContent = 'Save change';

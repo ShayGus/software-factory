@@ -162,3 +162,63 @@ test('work snapshot becomes stale at the configured threshold without polling or
   assert.match(snapshot.textContent, /^Stale — FirstMate snapshot taken/u);
   assert.match(pageState.textContent, /^Stale — page has exceeded its freshness threshold/u);
 });
+
+for (const competing of ['feature', 'design', 'feature-behind-design'] as const)
+test(`review 1438 finding 1: ${competing} writer between save and refresh preserves draft and locks further submission`, async t => {
+  const store = new ProjectStore(':memory:'); t.after(() => store.close());
+  const history = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
+  store.importProject({ schemaVersion: 1, projectId: 'project-1', history, receipts: [] });
+  const feature = () => {
+    const record = store.get('project-1', 'feature-1'); assert.ok(record?.kind === 'feature_revision'); return record;
+  };
+  const context = (): EditContext => {
+    if (competing === 'feature') return { kind: 'feature', feature: feature() };
+    const design = store.get('project-1', 'design-1'); assert.ok(design?.kind === 'design_revision');
+    const plan = store.get('project-1', 'plan-1'); assert.ok(plan?.kind === 'implementation_plan_revision');
+    const tasks = plan.deliverySequence.map(ref => {
+      const task = store.get('project-1', ref.id, ref.revision); assert.ok(task?.kind === 'detailed_plan_task'); return task;
+    });
+    return { kind: 'design', feature: feature(), design, plan, tasks,
+      expectedRevisions: [feature(), design, plan, ...tasks].map(({ id, revision }) => ({ id, revision })) };
+  };
+  const initial = context();
+  let respond!: () => void;
+  let submissions = 0;
+  const form = client(async (_url, options) => {
+    if (!options?.body) {
+      const rival = competing === 'design' ? context() : { kind: 'feature' as const, feature: feature() };
+      applyCommand(store, buildEditCommand(rival, { reason: 'Concurrent writer scope clarification',
+        ...(competing === 'design' ? { productBehavior: 'Concurrent design behavior' } : { priority: '2', outcome: 'Concurrent feature outcome' }) },
+        'competing-writer', new Date().toISOString()));
+      return { ok: true, text: async () => JSON.stringify(context()) };
+    }
+    submissions++;
+    const result = applyCommand(store, JSON.parse(options.body));
+    const response = { status: 200, ok: true, json: async () => result };
+    if (submissions === 1) return new Promise(resolve => { respond = () => resolve(response); });
+    return response;
+  }, 1, initial);
+  if (initial.kind === 'feature') form.values.set('outcome', initial.feature.outcome);
+  else if (initial.kind === 'design') form.values.set('productBehavior', initial.design.productBehavior);
+  const saving = form.submit();
+  const field = competing === 'feature' ? 'priority' : 'technicalDesign';
+  const draft = competing === 'feature' ? '4' : 'Retained technical draft';
+  form.edit(0, field, draft);
+  respond(); await saving;
+  assert.match(form.output.textContent, /revision conflict/u);
+  assert.match(form.pageState.textContent, /Stale/u);
+  assert.equal(form.values.get(field), draft);
+  assert.deepEqual(JSON.parse(form.values.get('context')!), initial, 'Do not silently adopt the competing revisions');
+  assert.equal(form.button.type, 'button');
+  assert.equal(form.button.textContent, 'Reload current records');
+  const before = store.exportProject('project-1');
+  await form.submit();
+  assert.equal(submissions, 1, 'Even a direct submit event is refused until reload');
+  assert.deepEqual(store.exportProject('project-1'), before);
+  if (competing === 'design') {
+    const design = store.get('project-1', 'design-1'); assert.ok(design?.kind === 'design_revision');
+    assert.equal(design.productBehavior, 'Concurrent design behavior');
+  } else assert.equal(feature().outcome, 'Concurrent feature outcome');
+  assert.equal(form.guarded(), true);
+  assert.equal(form.reloads(), 0);
+});
