@@ -4,11 +4,11 @@ import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkStartingWorker, ProjectStore, RecordsSchema, ref, recordSource, runFeature, stableId,
-  validateReviewForCompletion, FeatureRunConfigSchema } from '../src/index.js';
+  validateReviewForCompletion, FeatureRunConfigSchema, prepareWorkerBrief } from '../src/index.js';
 import type { z } from 'zod';
 import { fakeTaskWrapper } from './task-wrapper-helper.js';
 
@@ -96,6 +96,7 @@ if(step==='instruction_check') {
  out={verdict:'pass',findings:[]};
  if(mode.narrow) { assert.ok(snapshot.candidateInstructions.includes('Implement feature X for ERPNext only.')); out={verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'instructions',text:'Implement feature X for ERPNext only.'}]}]}; }
 }
+
 if(step==='product_review') {
  assert.equal(snapshot.originalRequests[0].text,${JSON.stringify(original)});
  assert.equal(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').text,mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)});
@@ -157,6 +158,71 @@ process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing techni
     mode: (value: unknown) => save(join(root, 'mode.json'), value),
     close: () => { if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; rmSync(root, { recursive: true, force: true }); } };
 }
+
+function laterAttempt(flow: ReturnType<typeof scenario>, suffix: string) {
+  const store = new ProjectStore(flow.database);
+  try {
+    const original = store.get('project-1', 'milestone-worker-assignment'); assert.ok(original?.kind === 'assignment');
+    const directory = join(flow.data, 'milestone-worker', `attempt-${suffix}`); mkdirSync(directory, { recursive: true });
+    const briefPath = join(directory, 'brief.md');
+    writeFileSync(briefPath, readFileSync(new URL('../../fixtures/firstmate-brief.md', import.meta.url), 'utf8'));
+    const prepared = prepareWorkerBrief(store, { projectId: 'project-1', assignmentId: `${original.id}-${suffix}`,
+      attemptId: `attempt-${suffix}`, expectedRevision: 0, idempotencyKey: `prepare-${suffix}`,
+      issuedAt: new Date(Date.parse(original.updatedAt) + 1000).toISOString(),
+      detailedPlanTask: original.detailedPlanTask, plan: original.plan, firstMateTaskId: original.firstMateTaskId,
+      returnLocation: original.returnLocation, briefPath, sourceFiles: flow.config.sourceFiles });
+    assert.equal(prepared.ok, true, JSON.stringify(prepared)); return prepared;
+  } finally { store.close(); }
+}
+
+function startingEvent(flow: ReturnType<typeof scenario>, source: string) {
+  return { version: 1, event: 'worker.start.before', home: flow.home, task_id: 'milestone-worker',
+    source_brief_path: source, brief_path: source, brief_sha256: createHash('sha256').update(readFileSync(source)).digest('hex') };
+}
+
+test('review 1251 finding 5: hook checks the current attempt and refuses a historical brief', () => {
+  const flow = scenario();
+  try {
+    runFeature(flow.config, 'prepare');
+    const latest = laterAttempt(flow, 'current');
+    const registry = JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8'));
+    const report = checkStartingWorker(registry, startingEvent(flow, latest.briefPath));
+    assert.equal(report.ok, true, JSON.stringify(report));
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    const call = JSON.parse(calls.trimEnd().split('\n').at(-1)!);
+    const judged = JSON.parse(call.prompt.trimEnd().split('\n').at(-1)!);
+    assert.equal(judged.assignment.id, latest.assignment.id);
+    const historical = checkStartingWorker(registry, startingEvent(flow, join(flow.data, 'milestone-worker', 'brief.md')));
+    assert.equal(historical.ok, false);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), calls);
+  } finally { flow.close(); }
+});
+
+test('review 1251 finding 5: genuinely tied current attempts remain blocked before judgment', () => {
+  const flow = scenario();
+  try {
+    runFeature(flow.config, 'prepare');
+    const first = laterAttempt(flow, 'tied-a'); laterAttempt(flow, 'tied-b');
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    assert.throws(() => checkStartingWorker(JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8')),
+      startingEvent(flow, first.briefPath)), /hook_managed_assignment_missing_or_ambiguous/);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), calls);
+  } finally { flow.close(); }
+});
+
+test('review 1251 finding 9: relative snapshot paths are rejected before capture', () => {
+  const flow = scenario();
+  try {
+    const snapshot = fileURLToPath(new URL('../../fixtures/firstmate-brief.md', import.meta.url));
+    flow.config.sourceFiles = [{ source: { uri: 'fixture:planning-research' }, path: relative(process.cwd(), snapshot) }];
+    const before = readFileSync(flow.database);
+    assert.throws(() => runFeature(flow.config, 'prepare'), /Snapshot paths must be absolute/);
+    assert.deepEqual(readFileSync(flow.database), before);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+    assert.equal(existsSync(join(flow.root, 'agents.jsonl')), false);
+    assert.equal(existsSync(join(flow.config.runDirectory, 'prepare.started')), false);
+  } finally { flow.close(); }
+});
 
 test('review 1201 finding 5: bootstrap works before hook enablement without an agent config and keeps unmanaged starts available', () => {
   const flow = scenario({ bootstrap: false });

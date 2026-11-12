@@ -71,8 +71,10 @@ backlog or use a symlink to another home's backlog.
 The scripted run requires the standard `home/data` layout so scaffold, task-wrapper
 and launch paths agree; individual adapters retain their existing configuration APIs.
 
-Supply original, readable research/code snapshots in `sourceFiles`. Planning agents
-receive their bytes, record history and the exact captured request. These agents are
+Supply original, readable research/code snapshots in `sourceFiles`.
+Every `sourceFiles[].path` must be absolute; relative snapshot paths are
+rejected before capture so planning and brief preparation read the same file.
+Planning agents receive their bytes, record history and the exact captured request. These agents are
 read-only and do not inspect the repository themselves. The snapshots must be enough
 to establish existing behavior, reuse and the actual gap. External references in
 generated designs and tasks need matching local snapshots for brief preparation.
@@ -241,6 +243,11 @@ identity must be available before any task can be classified as unmanaged. An
 empty, truncated, incompatible or wrong-project database causes a nonzero refusal.
 The brief cannot label itself unmanaged.
 A task with no matching managed records passes without calling an agent. A managed
+task uses `currentAssignmentAttempts` to collapse revisions within each assignment
+ID and select the latest task attempt by update time. Historical IDs do not make
+a unique current attempt ambiguous; genuinely tied attempts remain blocked. The
+selected current attempt must pass the existing managed-mapping and brief checks;
+a historical matching brief cannot substitute for conflicting current context. A managed
 task with missing/ambiguous assignment, unavailable database, stale context, altered
 sidecar/source, invalid event or unavailable reviewer fails closed. Registry entries
 must remain available while their managed tasks can launch or relaunch.

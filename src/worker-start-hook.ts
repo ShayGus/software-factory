@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { checkWorkerBrief } from './briefs.js';
 import { ProjectStore } from './store.js';
+import { currentAssignmentAttempts } from './task-readiness.js';
 import { parseStrictJson } from './strict-json.js';
 
 const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
@@ -34,7 +35,10 @@ export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
       }
       const records = store.records(project.projectId);
       const mapping = records.filter((record) => record.kind === 'task_mapping' && record.firstMateTaskId === event.task_id);
-      const assignments = records.filter((record) => record.kind === 'assignment' && record.firstMateTaskId === event.task_id);
+      // Resolve task-wide attempt currency before checking the selected attempt
+      // against its managed mapping. Do not fall back to a historical match if
+      // the current attempt conflicts with that mapping; dispatch rules reject it.
+      const assignments = currentAssignmentAttempts(records, (record) => record.firstMateTaskId === event.task_id);
       if (mapping.length || assignments.length) matches.push({ project, assignments });
     } finally { store.close(); }
   }

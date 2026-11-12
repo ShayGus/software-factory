@@ -32,7 +32,8 @@ export const FeatureRunConfigSchema = z.strictObject({
     timeoutMs: z.number().int().positive().max(3_600_000).default(1_080_000),
     launchTimeoutMs: z.number().int().positive().max(600_000).default(120_000),
   }),
-  sourceFiles: PrepareWorkerBriefInputSchema.shape.sourceFiles,
+  sourceFiles: PrepareWorkerBriefInputSchema.shape.sourceFiles.refine(
+    (sources) => sources.every((source) => isAbsolute(source.path)), 'Snapshot paths must be absolute'),
   baselineEvidence: z.array(EvidenceSchema).min(1),
 }).refine((value) => resolve(value.firstMate.dataDirectory) === join(resolve(value.firstMate.home), 'data'),
   'Feature run requires the standard home/data layout used by the task adapter');
