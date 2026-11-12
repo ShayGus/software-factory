@@ -67,11 +67,11 @@ export function stageCriteria(records: FactoryRecord[], detail: StageRevision, r
 }
 
 export function stageDependencies(records: FactoryRecord[], detail: StageRevision,
-  dependencies: ImplementationPlanRevision['dependencies']): ImplementationPlanRevision['dependencies'] {
+  dependencies: ImplementationPlanRevision['dependencies'], sourceFeature?: Ref | null): ImplementationPlanRevision['dependencies'] {
   const plan = planningRecord(records, detail.artifact);
   if (plan?.kind !== 'implementation_plan_revision') return dependencies;
   return dependencies.flatMap((dependency) => dependency.needs.kind === 'criterion' ?
-    stageCriteria(records, detail, [dependency.needs.criterion], plan.feature).map((criterion) => ({
+    stageCriteria(records, detail, [dependency.needs.criterion], sourceFeature === undefined ? plan.feature : sourceFeature).map((criterion) => ({
       ...dependency, needs: { kind: 'criterion' as const, criterion },
     })) : [dependency]);
 }

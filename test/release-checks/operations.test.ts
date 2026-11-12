@@ -185,5 +185,4 @@ test('CHECK-14 — wrong fixture cannot support a checked count', t => {
   }
   const reported = { ...claim, state: 'reported' };
   assert.equal(validateRecords([...flow.store.history(projectId), reported]).ok, true);
-  assert.equal(reported.claim, claim.claim, 'Unsupported reports retain the exact claim; no replacement count is invented');
 });

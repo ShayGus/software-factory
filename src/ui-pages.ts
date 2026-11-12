@@ -3,6 +3,7 @@ import type { FactoryRecord, DetailedPlanTask } from './records.js';
 import type { EditContext } from './ui-edit.js';
 import { relatedRefs, sameRef, uiStaleAfterMs, type FeatureView, type ProjectView } from './ui-state.js';
 import { durationLabel, workView, type WorkView } from './ui-work.js';
+import { stageCriteria, stageDependencies } from './planning-checks.js';
 import { StoreError } from './store.js';
 
 export const escapeHtml = (value: unknown) => String(value ?? '').replace(/[&<>"']/gu, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
@@ -169,13 +170,21 @@ function artifacts(view: ProjectView, feature: FeatureView) {
     const task = view.history.find((record) => sameRef(record, target));
     return task?.kind === 'detailed_plan_task' ? [task] : [];
   }) ?? [];
-  const base = feature.editBundle;
+  const saved = feature.editBundle;
+  const stage = feature.editStage;
+  // Apply the canonical, source-aware lineage rules before sending browser-safe
+  // editor context. A resumed draft already names its translated feature.
+  const base = saved && stage ? { ...saved,
+    tasks: saved.tasks.map((task) => ({ ...task, criteria: stageCriteria(view.history, stage, task.criteria, task.feature, [task]) })),
+    plan: { ...saved.plan, dependencies: stageDependencies(view.history, stage, saved.plan.dependencies, saved.plan.feature),
+      ...(saved.plan.workflow ? { workflow: { ...saved.plan.workflow, slices: saved.plan.workflow.slices.map((slice) => ({ ...slice,
+        criteria: stageCriteria(view.history, stage, slice.criteria, saved.plan.readiness.ready ? undefined : saved.plan.feature, slice.tasks) })) } } : {}) },
+  } : saved;
   const context = base && design ? { feature: feature.feature, ...base,
     expectedRevisions: [feature.feature, base.design, base.plan, ...base.tasks].map((record) => {
       const head = view.records.find((candidate) => candidate.id === record.id) ?? record;
       return { id: head.id, revision: head.revision };
     }),
-    criterionMap: feature.stages.filter((stage) => sameRef(stage.feature, feature.feature)).flatMap((stage) => stage.reuse?.criterionMap ?? []),
   } : undefined;
   const taskEditor = (task: DetailedPlanTask) => context ? edit({ ...context, kind: 'plan-task', taskId: task.id }, `Edit plan task ${task.id} · r${task.revision}`,
     field('expectedBehavior', 'Expected behavior', task.expectedBehavior) + field('verificationMethod', 'Verification method', task.verificationMethod ?? 'Run the listed verification cases') +
@@ -222,14 +231,14 @@ export function renderFeature(view: ProjectView, item: FeatureView) {
       ${record?.kind === 'request' ? `<blockquote>${h(record.originalText)}</blockquote><p>Source: ${external(record.source.uri)} · ${h(record.channel)} · ${h(record.capturedAt)}</p>` : empty('Unknown — original request unavailable.')}
       <p>Request coverage: ${coverage.structuralCoverageComplete ? 'Mapped' : 'Incomplete — unmapped original text remains'}. Semantic review: ${h(coverage.semanticReview)}.</p>
       ${items(coverage.unmapped.map((range) => range.text))}</article>`).join('')}</section>
-    <section><h2>Stage progress</h2><p>Recorded feature stage: ${h(item.feature.methodStage)}</p>${named ? empty('Named bundle inspection does not change stage selections.') : item.stages.map((stage) => `<p>${recordLink(projectId, stage, stage.stage)} → ${recordLink(projectId, stage.artifact)} · ${sameRef(stage.feature, item.feature) ? 'Current feature revision' : 'Stale — earlier feature revision'} · ${h(stage.changeReason)}</p>`).join('') || empty('Unknown — stage history not recorded.')}</section>
+    <section><h2>Stage progress</h2><p>Recorded feature stage: ${h(item.feature.methodStage)}</p>${named ? '<p>Selected-stage history · named bundle inspection does not change stage selections.</p>' : ''}${item.stages.map((stage) => `<p>${recordLink(projectId, stage, stage.stage)} → ${recordLink(projectId, stage.artifact)} · ${sameRef(stage.feature, item.feature) ? 'Current feature revision' : 'Stale — earlier feature revision'} · ${h(stage.changeReason)}</p>`).join('') || empty('Unknown — stage history not recorded.')}</section>
     ${artifacts(view, item)}<section id="criteria"><h2>Criteria & evidence</h2><p>Evidence for displayed bundle: ${scope}.</p>${item.criteria.map((criterion) => `<article class="criterion"><h3>${recordLink(projectId, criterion.target, criterion.criterion?.kind === 'criterion' ? criterion.criterion.expectedBehavior : criterion.target.id)}</h3>
       <p class="state">${h(criterion.label)}</p>${criterion.criterion?.kind === 'criterion' ? `<p>${h(criterion.criterion.requirement)} · ${h(criterion.criterion.disposition.state)} · Verify: ${h(criterion.criterion.verificationMethod)}</p>
       ${edit({ kind: 'criterion', feature: item.feature, criterion: criterion.criterion }, 'Edit criterion', field('expectedBehavior', 'Expected behavior', criterion.criterion.expectedBehavior) + field('verificationMethod', 'Verification method', criterion.criterion.verificationMethod))}` : empty('Unknown — criterion record unavailable.')}
       <ul>${evidence(view, criterion)}</ul></article>`).join('')}</section>
     <section id="briefs"><h2>Worker briefs → plan tasks</h2>${item.assignments.map((assignment) => `<article><h3>${recordLink(projectId, assignment, `Assignment ${assignment.id}`)}</h3>
       <p>Attempt: ${h(assignment.attemptId)} · Execution task: ${h(assignment.firstMateTaskId)}</p><p>Derived from ${recordLink(projectId, assignment.detailedPlanTask, 'Detailed plan task')} in ${recordLink(projectId, assignment.plan, 'Plan')} and ${recordLink(projectId, assignment.design, 'Design')}.</p>
-      <p>${sameRef(assignment.plan, item.plan) && sameRef(assignment.design, item.design) && sameRef(assignment.feature, item.feature) ? 'Current referenced revisions' : 'Stale — assignment references earlier product revisions'}. Fidelity: ${h(assignment.instructionFidelity.result)}</p>
+      <p>${sameRef(assignment.plan, item.displayPlan) && sameRef(assignment.design, item.displayDesign) && sameRef(assignment.feature, item.feature) ? 'Current referenced revisions' : 'Stale — assignment references earlier product revisions'}. Fidelity: ${h(assignment.instructionFidelity.result)}</p>
       <details><summary>Read worker instructions</summary><pre>${h(assignment.instructionText)}</pre></details><p>Original requests: ${links(projectId, item.feature.sourceRequests)}</p></article>`).join('') || empty('Unknown — no assignments recorded.')}</section>
     <section><h2>Task progress</h2>${taskRows(item)}</section><section id="changes"><h2>Decisions & changes</h2>
       ${item.decisions.map((decision) => `<article><h3>${recordLink(projectId, decision, decision.questionOrChange)}</h3><p>${h(decision.disposition)}${decision.choice ? ` · ${h(decision.choice.state)}` : ''}</p>${text(decision.rationale)}<p>Affected records: ${links(projectId, decision.affectedRecords)}</p></article>`).join('') || empty('No linked decisions recorded.')}
@@ -245,6 +254,7 @@ export function renderFeature(view: ProjectView, item: FeatureView) {
 }
 export function renderRecord(view: ProjectView, record: FactoryRecord) {
   const related = relatedRefs(record);
+  const currentDecision = record.kind === 'decision_change' ? view.records.find((entry) => entry.id === record.id) : undefined;
   const guidance = record.kind === 'guidance_revision' ? view.learning.guidance.find((item) => sameRef(item.record, record)) : undefined;
   const contexts = view.features.filter((item) => {
     const records = [item.feature, ...item.designs, ...item.plans, ...item.assignments, ...item.decisions, ...item.corrections,
@@ -256,7 +266,7 @@ export function renderRecord(view: ProjectView, record: FactoryRecord) {
     <p>${h(record.kind)} · Recorded ${h(record.updatedAt)}</p>
     ${guidance ? `<p class="state">${guidance.active ? 'Current guidance' : guidance.replacements.length ? 'Superseded guidance' : 'Inactive guidance'}</p>
       ${guidance.replacements.length ? `<p>Replaced by: ${links(view.options.projectId, guidance.replacements)}</p>` : ''}<p><a href="/projects/${enc(view.options.projectId)}/learning#guidance">Guidance scope and history</a></p>` : ''}
-    ${record.kind === 'decision_change' && record.choice?.kind === 'product' && record.choice.state === 'open' ? `<p><a href="/projects/${enc(view.options.projectId)}/decisions#question-${enc(record.id)}">Answer in context</a></p>` : ''}
+    ${record.kind === 'decision_change' && record.choice?.kind === 'product' && record.choice.state === 'open' ? currentDecision?.kind === 'decision_change' && currentDecision.choice?.state === 'resolved' ? `<p>${recordLink(view.options.projectId, currentDecision, 'Saved answer')}</p>` : `<p><a href="/projects/${enc(view.options.projectId)}/decisions#question-${enc(record.id)}">Answer in context</a></p>` : ''}
     <h2>Original requests & related features</h2>
     ${contexts.map((item) => `<p><a href="${featureUrl(view.options.projectId, item.feature.id)}">${h(item.feature.outcome)}</a> · ${links(view.options.projectId, item.feature.sourceRequests)}</p>`).join('') || empty('Unknown — no related feature has been linked.')}
     <h2>Related work, sources & evidence records</h2><p>${links(view.options.projectId, relatedRefs(record))}</p><h2>Revision history</h2>
@@ -265,14 +275,14 @@ export function renderRecord(view: ProjectView, record: FactoryRecord) {
 
 function decisionRows(view: ProjectView) {
   const projectId = view.options.projectId;
-  return view.questions.map(({ decision, affected, context, requests, answers, answerConflict }) => `<article class="question" id="question-${h(decision.id)}">
+  return view.questions.map(({ decision, affected, context, currentContext, requests, answers, answerConflict }) => `<article class="question" id="question-${h(decision.id)}">
     <h3>${recordLink(projectId, decision, decision.questionOrChange)}</h3><p class="state">Open product question</p>${text(decision.rationale)}
     <p>Affects: ${links(projectId, decision.affectedRecords)}</p>
     ${requests.map((request) => `<details><summary>Original request · ${h(request.id)} r${request.revision}</summary><blockquote>${h(request.originalText)}</blockquote>${recordLink(projectId, request)}</details>`).join('') || empty('Unknown — no original request link resolves.')}
     ${context.map((item) => `<p>Affected feature revision: ${recordLink(projectId, item.feature, item.feature.outcome)}</p>
       <p>Criteria: ${item.criteria.map(({ target, record }) => recordLink(projectId, target, record?.kind === 'criterion' ? record.expectedBehavior : 'Unknown criterion')).join(' · ')} · Related work: ${links(projectId, item.tasks)}</p>`).join('')}
     ${affected.map((record) => record.kind === 'criterion' ? text(record.expectedBehavior) : '').join('')}
-    ${context.flatMap((item) => item.currentFeature ? [`<p>Current feature context (separate from this question): ${recordLink(projectId, item.currentFeature, item.currentFeature.outcome)} · <a href="${featureUrl(projectId, item.currentFeature.id)}">Review current feature</a></p>`] : []).join('')}
+    ${currentContext.map((item) => `<p>Current feature context (separate from this question): ${recordLink(projectId, item.feature, item.feature.outcome)} · <a href="${featureUrl(projectId, item.feature.id)}">Review current feature</a> · Related current work: ${links(projectId, item.tasks)}</p>`).join('')}
     ${answerConflict ? '<p class="state">Unresolved conflict — matching previous answers disagree. Inspect decision history before answering.</p>' : ''}
     ${answers.length ? `<p>Existing answer available for the same question and affected revisions:</p>${text(answers[0]!.answer!.text)}
       <p>Source: ${links(projectId, answers)}</p>${edit({ kind: 'answer', decision, reuse: answers[0]! }, 'Use existing answer', empty('Reuse records the source answer in this decision revision.'))}` : ''}

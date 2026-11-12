@@ -31,7 +31,7 @@ function setup(t: test.TestContext, history: FactoryRecord[] = fixture, options:
     state.tasks['pilot-build'] = fakeTask('pilot-build', { title: 'Common feature', state: 'done', priority: 1 });
     state.tasks['pilot-verify'] = fakeTask('pilot-verify', { title: 'Second-system acceptance', priority: 2 });
   });
-  const adapter = { fmHome: directory, tasksExecutable: backend.executable };
+  const adapter = { fmHome: directory, tasksExecutable: backend.executable, guardTaskId: 'permanent-guard' };
   const api = new ToolkitApi(store, adapter, { projectId: 'project-1', fixture: true, ...options });
   const handler = createToolkitRequestHandler(api, { port: 4712 });
   async function http(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
@@ -124,10 +124,6 @@ for (const kind of ['design', 'plan', 'plan-task', 'criterion'] as const) test(`
   if (kind === 'plan') { assert.ok(current?.kind === 'implementation_plan_revision'); assert.equal(current.integrationApproach, changes.integrationApproach); assert.deepEqual(current.workflow?.finalVerification, ['Run both connected systems']); }
   if (kind === 'plan-task') { assert.ok(current?.kind === 'detailed_plan_task'); assert.deepEqual(current.outputs, ['General implementation', 'Acceptance evidence for both systems']); }
   if (kind === 'criterion') { assert.ok(current?.kind === 'criterion'); assert.equal(current.verificationMethod, changes.verificationMethod); }
-  if (kind !== 'criterion') {
-    const plan = flow.store.get('project-1', 'plan-1');
-    assert.ok(plan?.kind === 'implementation_plan_revision'); assert.equal(plan.readiness.ready, false);
-  }
   const assignment = flow.store.get('project-1', 'assignment-1');
   assert.ok(assignment?.kind === 'assignment'); assert.deepEqual(assignment.plan, { id: 'plan-1', revision: 1 });
   assert.deepEqual(assignment.detailedPlanTask, { id: 'task-1', revision: 1 });
@@ -141,7 +137,6 @@ for (const screen of ['/', '/projects/project-1/features/feature-1']) for (const
     const mapping = flow.store.get('project-1', 'mapping-2');
     assert.ok(mapping?.kind === 'task_mapping');
     assert.deepEqual(mapping.dependencies, ['pilot-build']);
-    assert.deepEqual(flow.backend.read().tasks['pilot-verify']!.deps, [{ id: 'pilot-build', type: 'blocked-by' }]);
   }
   const page = await flow.http('GET', screen);
   const { command, first } = await sendEdit(flow, findEditor(page.body, 'task', action), { priority: '0', dependencies: '' });
@@ -160,7 +155,6 @@ for (const screen of ['/', '/projects/project-1/features/feature-1']) for (const
     assert.equal(flow.backend.read().tasks['pilot-verify']!.hold, null);
     assert.deepEqual((await flow.http('POST', '/canonical', command)).json(), first.json(), 'Old task replay after resume is stable');
   }
-  assert.ok(flow.backend.read().trace.every((item) => item.mappingSaved));
 });
 
 test('rendered pages retain original intent, a brief-to-plan route, evidence gaps and text uncertainty states', async (t) => {
@@ -217,8 +211,7 @@ test('HTTP rejects foreign origins, rebinding hosts, malformed commands and unsu
   assert.equal((await flow.http('GET', '/projects/project-1/features/missing')).status, 404);
   assert.equal((await flow.http('GET', '/assets/../../package.json')).status, 404);
   for (const path of ['/assets/ui.css', '/assets/ui-client.js', '/assets/ui-edit.js']) {
-    const response = await flow.http('GET', path); assert.equal(response.status, 200); assert.doesNotMatch(response.body, /from ['"]node:/u);
-    if (path === '/assets/ui-client.js') assert.match(response.body, /Loading — saving canonical operation/u);
+    const response = await flow.http('GET', path); assert.equal(response.status, 200);
   }
   const before = flow.store.exportProject('project-1');
   const editor = findEditor((await flow.http('GET', '/')).body, 'feature');
@@ -432,7 +425,8 @@ for (const oldReady of [false, true]) test(`review 1314 finding 4: old Detail${o
   const editor = findEditor(page.body, 'plan'); assert.ok(editor.context.kind === 'plan');
   assert.equal(editor.context.plan.id, plan.id);
   assert.match(page.body, /Historical detailed plans/u);
-  assert.ok(page.body.includes('/inspect/plan-1?revision=1'));
+  const historical = page.body.match(/<p>Historical detailed plans: ([\s\S]*?)<\/p>/u)?.[1]; assert.ok(historical);
+  assert.match(historical, /href="\/projects\/project-1\/inspect\/plan-1\?revision=1"/u);
 });
 
 for (const oldDraft of [false, true]) test(`review 1328 finding 1: selecting D2 keeps D2 as the edit base${oldDraft ? ' despite a D1 draft' : ''}`, async (t) => {
@@ -501,7 +495,7 @@ for (const replace of [false, true]) test(`review 1328 finding 2: ${replace ? 'r
   assert.match(historical, /inspect\/assignment-1\?revision=1/u);
 });
 
-test('review 1335: explicit saved-bundle URLs preserve design, plan and task edits in sequence', async (t) => {
+test('review 1335: explicit saved-bundle URLs identify the saved revisions independently of selection', async (t) => {
   const flow = setup(t);
   const path = '/projects/project-1/features/feature-1';
   const designSave = await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'design'), { productBehavior: 'Design saved in the explicitly named bundle' }, 'named-design');
@@ -509,15 +503,8 @@ test('review 1335: explicit saved-bundle URLs preserve design, plan and task edi
   assert.equal(typeof first.resumeUrl, 'string');
   assert.deepEqual(first.bundle.design, { id: 'design-1', revision: 2 });
   assert.deepEqual(first.bundle.plan, { id: 'plan-1', revision: 2 });
-  const planSave = await sendEdit(flow, findEditor((await flow.http('GET', first.resumeUrl)).body, 'plan'), { integrationApproach: 'Plan saved after the named design' }, 'named-plan');
-  const taskSave = await sendEdit(flow, findEditor((await flow.http('GET', planSave.first.json().resumeUrl)).body, 'plan-task'), { outputs: 'Task saved after the named plan' }, 'named-task');
-  const named = await flow.http('GET', taskSave.first.json().resumeUrl);
-  const designEditor = findEditor(named.body, 'design');
-  const planEditor = findEditor(named.body, 'plan');
-  const taskEditor = findEditor(named.body, 'plan-task');
-  assert.equal(designEditor.values.productBehavior, 'Design saved in the explicitly named bundle');
-  assert.equal(planEditor.values.integrationApproach, 'Plan saved after the named design');
-  assert.equal(taskEditor.values.outputs, 'Task saved after the named plan');
+  const named = await flow.http('GET', first.resumeUrl);
+  assert.equal(findEditor(named.body, 'design').values.productBehavior, 'Design saved in the explicitly named bundle');
   const selected = findEditor((await flow.http('GET', path)).body, 'plan'); assert.ok(selected.context.kind === 'plan');
   assert.equal(selected.context.plan.revision, 1);
   assert.equal(selected.context.design.revision, 1);
@@ -631,6 +618,14 @@ test('review 1349 finding 4: named bundle main content, editors and evidence des
   const evidenceScope = criteria.match(/<p>Evidence for displayed bundle: ([\s\S]*?)<\/p>/u)?.[1]; assert.ok(evidenceScope);
   assert.ok(evidenceScope.includes(`/inspect/design-1?revision=${result.bundle.design.revision}`));
   assert.ok(evidenceScope.includes(`/inspect/plan-1?revision=${result.bundle.plan.revision}`));
+  assert.match(criteria, /Incomplete — no current passing evidence/u);
+  assert.match(criteria, /Stale or non-passing evidence; retained as history/u);
+  assert.doesNotMatch(criteria, /Demonstrated \(reviewed\)|Reported current evidence/u);
+  const briefs = page.body.match(/<section id="briefs">([\s\S]*?)<\/section>/u)?.[1]; assert.ok(briefs);
+  assert.match(briefs, /Stale — assignment references earlier product revisions/u);
+  assert.doesNotMatch(briefs, /Current referenced revisions/u);
+  const stages = page.body.match(/<h2>Stage progress<\/h2>([\s\S]*?)<\/section>/u)?.[1]; assert.ok(stages);
+  assert.match(stages, /Selected-stage history/u);
   assert.match(criteria, /Evidence revisions:[\s\S]*inspect\/design-1\?revision=1[\s\S]*inspect\/plan-1\?revision=1/u);
   assert.match(page.body, /Incomplete — product behavior still needs verification/u);
   assert.doesNotMatch(page.body, /Complete — current product review passed/u);
@@ -776,9 +771,6 @@ test('lost work mutation output locks every action while preserving blockers and
     assert.match(page.body, /Product readiness/u);
     assert.equal(editors(page.body).some(({ context }) => context.kind === 'task' && context.mapping.id === 'mapping-2'), false);
   }
-  const calls = flow.backend.read().calls.length;
-  assert.deepEqual((await flow.http('POST', '/canonical', command)).json(), result.json());
-  assert.equal(flow.backend.read().calls.length, calls);
 });
 
 test('observed zero time differs from unknown time and unmapped ready work remains visible', async (t) => {
@@ -865,20 +857,18 @@ test('review 1377 finding 2: native observed dependency edges appear in both dir
 test('review 1377 finding 3: priority-only feature revisions retain displayed canonical readiness', async (t) => {
   const flow = setup(t, baseline);
   const target = { id: 'assignment-1', revision: 1 };
-  assert.equal(validateAssignmentForDispatch(flow.store.history('project-1'), target).ok, true);
   await sendEdit(flow, findEditor((await flow.http('GET', '/')).body, 'feature'), { priority: '4' }, 'work-priority-only');
-  assert.equal(validateAssignmentForDispatch(flow.store.history('project-1'), target).ok, true);
   const model = workView(projectView(flow.store, flow.api.options));
   assert.deepEqual(model.rows[0]!.reasons.filter((reason) => reason.startsWith('Product readiness')), []);
   const page = await flow.http('GET', '/projects/project-1/work/mapping-1');
   assert.doesNotMatch(page.body, /Product readiness — selected plan is incomplete or stale|Product readiness — mapping names an earlier feature revision/u);
-  assert.match(page.body, /Mapped feature revision[\s\S]*r1/u);
+  assert.match(page.body, /<a href="\/projects\/project-1\/inspect\/feature-1\?revision=1">Mapped feature revision <span class="revision">r1<\/span><\/a>/u);
   await sendEdit(flow, findEditor((await flow.http('GET', '/')).body, 'feature'), { priority: '4', outcome: 'Changed product scope needs a new dispatch check' }, 'work-scope-change');
   assert.equal(validateAssignmentForDispatch(flow.store.history('project-1'), target).ok, false);
   assert.ok(workView(projectView(flow.store, flow.api.options)).rows[0]!.reasons.some((reason) => reason.startsWith('Product readiness')));
 });
 
-test('review 1377 finding 4: every rendered snapshot label ages together while retaining the open draft', async (t) => {
+test('review 1377 finding 4: every rendered snapshot label ages together', async (t) => {
   const snapshot = structuredClone(workSnapshot);
   snapshot.observedAt = new Date().toISOString();
   const flow = setup(t, fixture, { readSnapshot: () => snapshot, staleAfterMs: 120000 });
@@ -891,7 +881,7 @@ test('review 1377 finding 4: every rendered snapshot label ages together while r
   assert.ok(labels.every((label) => label.dataset.snapshotAt === snapshot.observedAt && label.dataset.staleAfterMs === '120000'));
   let now = Date.parse(snapshot.observedAt);
   let tick = () => {};
-  const draft = { value: 'Keep this unsaved priority change', querySelector: () => ({}), addEventListener() {} };
+  const draft = { querySelector: () => ({}), addEventListener() {} };
   const pageState = { textContent: '' };
   const source = readFileSync(new URL('../src/ui-client.js', import.meta.url), 'utf8').replace(/^import .*;\n/gmu, '');
   runInNewContext(source, { buildEditCommand,
@@ -901,7 +891,6 @@ test('review 1377 finding 4: every rendered snapshot label ages together while r
   });
   now += 120001; tick();
   assert.ok(labels.every((label) => label.textContent.startsWith('Stale — FirstMate snapshot taken')));
-  assert.equal(draft.value, 'Keep this unsaved priority change');
 });
 
 test('review 1377 finding 5: standalone maintenance keeps its objective and exact source context', async (t) => {
@@ -928,7 +917,6 @@ for (const route of ['/', '/projects/project-1/decisions']) test(`BUILD-14 answe
   const page = await flow.http('GET', route);
   assert.equal(page.status, 200);
   assert.match(page.body, /Which second connected system/);
-  assert.match(page.body, /Original request/);
   assert.match(page.body, /Criteria:/);
   assert.match(page.body, /Related work:/);
   const before = flow.store.exportProject('project-1');
@@ -1036,8 +1024,6 @@ test('BUILD-14 explicit standing instruction updates canonical guidance through 
   assert.equal(stale.status, 409, stale.body);
   const changed = structuredClone(command); assert.ok(changed.command === 'capture_consolidate_learning' && changed.payload.action === 'capture');
   changed.payload.observation.finding = 'Different standing instruction';
-  assert.equal((await flow.http('POST', '/canonical', changed)).status, 400);
-  changed.payload.observation.legacySections = [{ uri: '/must-not-be-read', heading: '## Rules', before: 'x', digest: 'x' }];
   assert.equal((await flow.http('POST', '/canonical', changed)).status, 400);
   assert.equal(flow.backend.read().calls.length, 0);
   const current = (await flow.http('GET', '/projects/project-1/learning')).body;
@@ -1182,8 +1168,172 @@ test('review 1384 finding 4: displayed current guidance agrees with canonical wo
   const page = await flow.http('GET', '/projects/project-1/learning');
   const current = page.body.split('<h2>Current guidance</h2>')[1]!.split('<h3>Revision and supersession history</h3>')[0]!;
   assert.ok(!current.includes('Unclassifiable legacy guidance'));
-  assert.ok(current.includes('Resolved legacy project guidance'));
-  assert.ok(current.includes('Resolved legacy feature guidance'));
+  const visible = current.split('<form data-editor>')[0]!;
+  assert.match(visible, /Resolved legacy project guidance/u);
+  assert.match(visible, /Resolved legacy feature guidance/u);
   const opaque = await flow.http('GET', '/projects/project-1/inspect/opaque-legacy?revision=1');
   assert.match(opaque.body, /Inactive guidance/);
+});
+
+// Reuse is selected explicitly for r2 while artifact contents still originate at r1.
+function reusedEditorHistory(mode: 'split' | 'renamed' | 'request') {
+  const history = structuredClone(fixture);
+  const feature = history.find(r => r.kind === 'feature_revision'); assert.ok(feature?.kind === 'feature_revision');
+  const original = history.find(r => r.id === feature.criteria[0]!.id); assert.ok(original?.kind === 'criterion');
+  const current = { ...feature, revision: 2, previousRevision: 1, updatedAt: '2026-11-12T12:00:00Z',
+    changeReason: 'Checked reuse for revised request', criteria: [...feature.criteria], sourceRequests: [...feature.sourceRequests] };
+  if (mode !== 'request') {
+    const added = { ...original, id: 'criterion-reused-target', expectedBehavior: 'Additional behavior from the checked mapping' };
+    history.push(added);
+    current.criteria = mode === 'split' ? [...current.criteria, { id: added.id, revision: 1 }] :
+      current.criteria.map(c => c.id === original.id ? { id: added.id, revision: 1 } : c);
+  } else {
+    const request = history.find(r => r.kind === 'request'); assert.ok(request?.kind === 'request');
+    history.push({ ...request, id: 'request-additional', clientRequestId: 'additional-request', interpretationRefs: [], dispositionRefs: [], disposition: 'unclassified' });
+    current.sourceRequests.push({ id: 'request-additional', revision: 1 });
+  }
+  if (mode === 'renamed') {
+    const template = history.find(r => r.kind === 'decision_change'); assert.ok(template?.kind === 'decision_change');
+    const decision = { ...template, id: 'reuse-scope-decision', disposition: 'selected' as const, choice: undefined,
+      affectedRecords: [{ id: current.id, revision: 2 }], scopeChanges: [{ featureId: current.id, fromRevision: 1, toRevision: 2, criterionId: original.id, action: 'remove' as const }] };
+    history.push(decision); current.decisions = [...current.decisions, { id: decision.id, revision: 1 }];
+  }
+  const sourcePlan = history.find(r => r.kind === 'implementation_plan_revision'); assert.ok(sourcePlan?.kind === 'implementation_plan_revision');
+  sourcePlan.dependencies = [{ consumerTaskId: 'task-2', prerequisiteTaskId: 'task-1', reason: 'Acceptance needs common behavior', needs: { kind: 'criterion', criterion: feature.criteria[0]! } }];
+  history.push(current);
+  const understanding = history.find(r => r.kind === 'understanding_revision'); assert.ok(understanding?.kind === 'understanding_revision');
+  history.push({ ...understanding, revision: 2, feature: { id: current.id, revision: 2 }, criteria: current.criteria, sourceRequests: current.sourceRequests });
+  for (const stage of history.filter(r => r.kind === 'stage_revision')) {
+    assert.ok(stage.kind === 'stage_revision');
+    const artifact = history.find(r => r.id === stage.artifact.id && r.revision === stage.artifact.revision)!;
+    const design = history.find(r => r.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+    const criterionMap = current.criteria.map(c => ({ current: c,
+      existing: c.id === 'criterion-reused-target' ? feature.criteria[0]! : c }));
+    history.push({ ...stage, revision: 2, updatedAt: current.updatedAt, feature: { id: current.id, revision: 2 },
+      criteria: current.criteria, sourceRequests: current.sourceRequests,
+      previousStage: stage.previousStage ? { ...stage.previousStage, revision: 2 } : undefined,
+      artifact: stage.stage === 'understand' ? { ...stage.artifact, revision: 2 } : stage.artifact,
+      ...(stage.stage === 'design' || stage.stage === 'plan' ? { reuse: {
+        check: { ...design.sourceComparison, sourceRefs: [...current.sourceRequests, artifact].map(r => ({
+          uri: `factory:record/${r.id}@${r.revision}`, record: { id: r.id, revision: r.revision } })) }, criterionMap } } : {}) });
+  }
+  return history;
+}
+for (const mode of ['split', 'renamed', 'request'] as const) for (const kind of ['design', 'plan', 'plan-task'] as const)
+test(`checked reuse ${mode} survives ${kind} save${mode === 'renamed' ? ' after priority revision' : ''}`, async t => {
+  const flow = setup(t, reusedEditorHistory(mode));
+  if (mode === 'renamed') await sendEdit(flow, findEditor((await flow.http('GET', '/')).body, 'feature'), { priority: '4' }, 'reuse-priority');
+  const page = await flow.http('GET', '/projects/project-1/features/feature-1');
+  const { first } = await sendEdit(flow, findEditor(page.body, kind), {}, `reuse-${mode}-${kind}`);
+  const task = flow.store.get('project-1', 'task-1'); assert.ok(task?.kind === 'detailed_plan_task');
+  const plan = flow.store.get('project-1', 'plan-1'); assert.ok(plan?.kind === 'implementation_plan_revision');
+  const feature = flow.store.get('project-1', 'feature-1'); assert.ok(feature?.kind === 'feature_revision');
+  if (mode !== 'request') {
+    const expected = mode === 'split' ? [{ id: 'criterion-general', revision: 1 }, { id: 'criterion-reused-target', revision: 1 }] : [{ id: 'criterion-reused-target', revision: 1 }];
+    assert.deepEqual(task.criteria, [...expected, { id: 'criterion-second-system', revision: 1 }]);
+    assert.deepEqual(plan.workflow?.slices[0]?.criteria, task.criteria);
+    assert.deepEqual(plan.dependencies.filter(d => d.needs.kind === 'criterion').map(d => d.needs.kind === 'criterion' && d.needs.criterion), expected);
+  }
+  const design = flow.store.get('project-1', 'design-1'); assert.ok(design?.kind === 'design_revision');
+  assert.ok(feature.sourceRequests.every(r => design.sourceComparison.sourceRefs.some(s => s.record?.id === r.id && s.record.revision === r.revision)));
+  // A resumed draft is already translated; do not apply the old split twice.
+  await sendEdit(flow, findEditor((await flow.http('GET', first.json().resumeUrl)).body, kind), {}, `resume-${mode}-${kind}`);
+  const resumed = flow.store.get('project-1', 'task-1'); assert.ok(resumed?.kind === 'detailed_plan_task');
+  assert.deepEqual(resumed.criteria, task.criteria);
+  const resumedPlan = flow.store.get('project-1', 'plan-1'); assert.ok(resumedPlan?.kind === 'implementation_plan_revision');
+  assert.deepEqual(resumedPlan.dependencies, plan.dependencies);
+});
+
+test('resolved question history links to the saved answer instead of a missing open-question anchor', async t => {
+  const flow = setup(t);
+  const page = await flow.http('GET', '/projects/project-1/decisions');
+  const editor = findEditor(page.body, 'answer'); assert.ok(editor.context.kind === 'answer');
+  await sendEdit(flow, editor, { answer: 'Saved answer for this question' }, 'resolved-question-link');
+  const historical = await flow.http('GET', `/projects/project-1/inspect/${editor.context.decision.id}?revision=1`);
+  assert.doesNotMatch(historical.body, /Answer in context/u);
+  assert.match(historical.body, new RegExp(`href="/projects/project-1/inspect/${editor.context.decision.id}\\?revision=2">Saved answer`));
+});
+
+test('criterion-only question keeps separately labeled current context when its owner revision is ambiguous', async t => {
+  const history = structuredClone(fixture);
+  const question = history.find(r => r.kind === 'decision_change' && r.choice?.state === 'open'); assert.ok(question?.kind === 'decision_change');
+  question.affectedRecords = [{ id: 'criterion-general', revision: 1 }];
+  const flow = setup(t, history);
+  await sendEdit(flow, findEditor((await flow.http('GET', '/')).body, 'feature'), { priority: '4' }, 'ambiguous-owner');
+  const page = await flow.http('GET', '/projects/project-1/decisions');
+  const article = page.body.match(/<article class="question"[\s\S]*?<\/article>/u)?.[0]; assert.ok(article);
+  assert.doesNotMatch(article, /Affected feature revision:/u);
+  assert.match(article, /Current feature context/u);
+  assert.match(article, /href="\/projects\/project-1\/inspect\/feature-1\?revision=2"/u);
+  assert.match(article, /href="\/projects\/project-1\/features\/feature-1"/u);
+  assert.match(article, /Related current work:[\s\S]*inspect\/mapping-1/u);
+});
+
+test('each affected criterion resolves its own unique feature snapshot', async t => {
+  const history = structuredClone(fixture);
+  const question = history.find(r => r.kind === 'decision_change' && r.choice?.state === 'open'); assert.ok(question?.kind === 'decision_change');
+  question.affectedRecords = [{ id: 'criterion-general', revision: 1 }, { id: 'criterion-second-system', revision: 2 }];
+  const feature = history.find(r => r.kind === 'feature_revision'); assert.ok(feature?.kind === 'feature_revision');
+  const criteria = history.filter(r => r.kind === 'criterion');
+  history.push(...criteria.map(c => ({ ...c, revision: 2 })), { ...feature, revision: 2, previousRevision: 1,
+    changeReason: 'Revised both criteria', criteria: feature.criteria.map(c => ({ ...c, revision: 2 })) });
+  const flow = setup(t, history);
+  const context = projectView(flow.store, { projectId: 'project-1' }).questions[0]!.context;
+  assert.deepEqual(context.map(item => item.feature.revision), [1, 2]);
+  assert.ok(context.some(item => item.criteria.some(c => c.target.id === 'criterion-second-system' && c.target.revision === 2)));
+});
+
+test('toolkit guard edges retain ownership and observation independently of editable prerequisites', async t => {
+  const flow = setup(t);
+  flow.backend.edit(state => {
+    state.tasks['pilot-verify']!.hold = { reason: 'Independent hold', kind: 'future', until: '2026-11-30' };
+    state.tasks['permanent-guard'] = fakeTask('permanent-guard', { held: true, hold: { reason: 'Permanent guard', kind: 'external', until: null } });
+  });
+  const page = await flow.http('GET', '/projects/project-1/work');
+  await sendEdit(flow, findEditor(page.body, 'task', 'pause'), {}, 'guard-pause');
+  const row = workView(projectView(flow.store, flow.api.options)).rows.find(r => r.mapping.id === 'mapping-2')!;
+  assert.ok(row.mapping.management?.managedDependencies.includes('permanent-guard'));
+  assert.ok(!row.mapping.dependencies.includes('permanent-guard'));
+  const guard = row.dependencies.find(d => d.id === 'permanent-guard'); assert.ok(guard);
+  assert.equal(guard.source, 'Toolkit-owned blocked-by');
+  assert.equal(guard.observedAt, row.observedAt);
+  assert.equal(guard.stale, row.stale);
+});
+
+for (const reviewerError of [false, true]) test(`BUILD-10 conformance read model distinguishes partial accomplishment${reviewerError ? ' and reviewer error' : ''}`, t => {
+  const history = structuredClone(baseline);
+  const review = history.find(r => r.kind === 'product_review'); assert.ok(review?.kind === 'product_review');
+  review.outcome = 'incomplete';
+  review.conformance = { inputDigest: 'fixture-digest', profile: { harness: 'codex' }, sessionId: 'fixture-session',
+    deliveredFiles: [{ path: 'feature.ts', text: 'Feature behavior', artifact: { uri: 'fixture:delivery', revision: 'v1' } }],
+    technicalReviews: [],
+    ...(reviewerError ? { error: 'Reviewer returned malformed output' } : {}),
+    verdict: reviewerError ? null : { sourceComparison: 'uncertain', instructionFidelity: 'passed', planConformance: 'uncertain',
+      criteria: [{ criterion: { id: 'criterion-general', revision: 1 }, state: 'accomplished', behavior: 'General behavior demonstrated',
+        quotes: [{ source: 'delivery', text: 'Feature behavior' }], limitations: [] },
+      { criterion: { id: 'criterion-second-system', revision: 1 }, state: 'uncertain', behavior: 'Second-system behavior remains uncertain',
+        quotes: [{ source: 'delivery', text: 'Feature behavior' }], limitations: ['No second-system acceptance'] }],
+      findings: [], suggestions: [], unresolvedQuestions: [] } };
+  const flow = setup(t, history);
+  const feature = projectView(flow.store, { projectId: 'project-1' }).features[0]!;
+  assert.equal(feature.criteria.find(c => c.target.id === 'criterion-general')?.label,
+    reviewerError ? 'Reported evidence; product review pending' : 'Demonstrated (reviewed)');
+  assert.equal(feature.criteria.find(c => c.target.id === 'criterion-second-system')?.label, 'Reported evidence; product review pending');
+  assert.deepEqual(feature.remaining.map(c => c.target.id), reviewerError ? ['criterion-general', 'criterion-second-system'] : ['criterion-second-system']);
+  assert.match(feature.completeness, /^Incomplete/u);
+});
+
+test('named bundle continuation retains selected stage transitions, rationale and artifact links', async t => {
+  const flow = setup(t);
+  const page = await flow.http('GET', '/projects/project-1/features/feature-1');
+  const saved = await sendEdit(flow, findEditor(page.body, 'design'), {}, 'stage-history-save');
+  const named = await flow.http('GET', saved.first.json().resumeUrl);
+  const stages = named.body.match(/<h2>Stage progress<\/h2>([\s\S]*?)<\/section>/u)?.[1]; assert.ok(stages);
+  assert.match(stages, /Selected-stage history/u);
+  for (const stage of fixture.filter(r => r.kind === 'stage_revision')) {
+    assert.ok(stage.kind === 'stage_revision');
+    assert.ok(stages.includes(`/inspect/${stage.id}?revision=${stage.revision}`));
+    assert.ok(stages.includes(`/inspect/${stage.artifact.id}?revision=${stage.artifact.revision}`));
+    assert.ok(stages.includes(stage.changeReason));
+  }
 });

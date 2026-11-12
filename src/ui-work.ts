@@ -30,6 +30,14 @@ export const WorkSnapshotSchema = z.strictObject({
 });
 export type WorkSnapshot = z.infer<typeof WorkSnapshotSchema>;
 
+function prIdentity(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = ''; url.search = ''; url.pathname = url.pathname.replace(/\/+$/u, '');
+    return url.href;
+  } catch { return value; }
+}
+
 /** Project integration observations are captured by the runtime adapter/importer.
  * Reading Work projects that evidence without invoking FirstMate or refreshing its time. */
 function importedWorkSnapshot(view: ProjectView): WorkSnapshot | undefined {
@@ -69,8 +77,9 @@ function importedWorkSnapshot(view: ProjectView): WorkSnapshot | undefined {
       // Run-step details name the run's PR (including inventory-selected
       // `run: … · pr=…`). Task metadata alone may belong to an older run.
       const runPrs = current.source === 'run-step' && !/\bearlier run:/iu.test(detail) ?
-        [...new Set(detail.match(/https?:\/\/[^\s·<>]+\/pull\/\d+\b/gu) ?? [])] : [];
-      const conflict = runPrs.length > 1 || (runPrs.length === 1 && metadata.success && metadata.data.url !== runPrs[0]);
+        [...new Set((detail.match(/https?:\/\/[^\s·<>]+\/pull\/\d+\b/gu) ?? []).map(prIdentity))] : [];
+      const metadataPr = metadata.success ? prIdentity(metadata.data.url) : undefined;
+      const conflict = runPrs.length > 1 || (runPrs.length === 1 && metadata.success && metadataPr !== runPrs[0]);
       if (ready && conflict) omissions.push(`Conflict — PR identity for task ${task.id}: current run ${runPrs.join(', ')}; metadata ${metadata.success ? metadata.data.url : 'Unknown'}`);
       else if (ready && !runPrs.length) omissions.push(`Task ${task.id}: PR identity is unknown for the current run`);
       const reference = ready && !conflict && runPrs.length === 1 ? runPrs[0] : undefined;
@@ -112,12 +121,14 @@ export function workView(view: ProjectView, now = Date.parse(view.readAt)) {
   // Native observed edges enrich navigation, never the editable canonical intent.
   const graph = new Map(mappings.map((mapping) => {
     const execution = executions.get(mapping.id)!;
-    const managed = new Set(taskDependencyIds(view.records, mapping));
+    const desired = new Set(taskDependencyIds(view.records, mapping));
+    const owned = new Set(mapping.management?.managedDependencies ?? []);
     const native = execution.task?.deps.filter((edge) => edge.type === 'blocked-by').map((edge) => edge.id) ?? [];
-    return [mapping.id, [...new Set([...managed, ...native])].map((id) => ({ id,
-      source: managed.has(id) ? 'Toolkit/product prerequisite' : 'Native observed blocked-by',
-      observedAt: managed.has(id) ? undefined : execution.observedAt,
-      stale: !managed.has(id) && execution.stale,
+    return [mapping.id, [...new Set([...desired, ...native])].map((id) => ({ id,
+      source: owned.has(id) ? desired.has(id) ? 'Toolkit-owned prerequisite' : 'Toolkit-owned blocked-by' :
+        desired.has(id) ? 'Toolkit/product prerequisite' : 'Native observed blocked-by',
+      observedAt: native.includes(id) ? execution.observedAt : undefined,
+      stale: native.includes(id) && execution.stale,
     }))] as const;
   }));
   const rows = mappings.map((mapping) => {

@@ -132,7 +132,7 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
     const tasks = records.filter((record): record is Extract<FactoryRecord, { kind: 'task_mapping' }> => record.kind === 'task_mapping' && record.feature?.id === feature.id).map((mapping) => {
       return executionTaskView(records, mapping, options, now);
     });
-    return { feature, designs, design, displayDesign, designDrafts, plans, plan, displayPlan, planDrafts, editBundle, missingBundle, savedBundles, historicalDetails, assignments, reviews, criteria, decisions, corrections, tasks,
+    return { feature, designs, design, displayDesign, designDrafts, plans, plan, displayPlan, planDrafts, editBundle, missingBundle, savedBundles, historicalDetails, editStage: planStage, assignments, reviews, criteria, decisions, corrections, tasks,
       stages: history.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> => record.kind === 'stage_revision' && record.feature.id === feature.id),
       requests: feature.sourceRequests.map((target) => ({ target, record: lookup(target),
         coverage: requestCoverage(store, options.projectId, target.id) })),
@@ -150,20 +150,24 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
     });
     // A criterion names a feature ID but no feature revision. Infer its owner
     // only when that exact criterion revision has one unambiguous owner snapshot.
-    for (const record of affected) if (record.kind === 'criterion' && !exactFeatures.some((feature) => feature.id === record.featureId)) {
+    for (const record of affected) if (record.kind === 'criterion') {
       const owners = history.filter((feature): feature is FeatureRevision => feature.kind === 'feature_revision' && feature.id === record.featureId && feature.criteria.some((target) => sameRef(target, record)));
       if (owners.length === 1) exactFeatures.push(owners[0]!);
     }
     const context = [...new Map(exactFeatures.map((feature) => [`${feature.id}@${feature.revision}`, feature])).values()].map((feature) => ({
       feature, criteria: feature.criteria.map((target) => ({ target, record: lookup(target) })),
       tasks: [...new Map(history.filter((record) => record.kind === 'task_mapping' && sameRef(record.feature, feature)).map((record) => [record.id, record])).values()],
-      currentFeature: features.find((current) => current.id === feature.id && !sameRef(current, feature)),
     }));
+    const currentContext = features.filter((feature) =>
+      (exactFeatures.some((affected) => affected.id === feature.id && !sameRef(affected, feature)) ||
+        affected.some((record) => record.kind === 'criterion' && record.featureId === feature.id &&
+          !exactFeatures.some((owner) => sameRef(owner, feature)))))
+      .map((feature) => ({ feature, tasks: records.filter((record) => record.kind === 'task_mapping' && record.feature?.id === feature.id) }));
     const requestRefs = [...context.flatMap((item) => item.feature.sourceRequests), ...affected.flatMap((record) => 'sourceRefs' in record ? record.sourceRefs.flatMap((source) => source.record ? [source.record] : []) : []), ...decision.sourceRefs.flatMap((source) => source.record ? [source.record] : []), ...decision.affectedRecords];
     const requests = [...new Map(requestRefs.flatMap((target) => { const record = lookup(target); return record?.kind === 'request' ? [[`${record.id}@${record.revision}`, record] as const] : []; })).values()];
     const answers = records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && reusableAnswer(decision, record));
     const texts = new Set(answers.map((answer) => answer.answer!.text));
-    return { decision, affected, context, requests, answers: texts.size === 1 ? answers : [], answerConflict: texts.size > 1 };
+    return { decision, affected, context, currentContext, requests, answers: texts.size === 1 ? answers : [], answerConflict: texts.size > 1 };
   });
   return { project, options, history, records, features: featureViews, suggestions, input, questions,
     learning: learningView(store, options.projectId, options.learningSchedule, new Date(now).toISOString()),

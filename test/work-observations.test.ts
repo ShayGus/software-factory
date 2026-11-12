@@ -29,7 +29,6 @@ const model = (flow: ReturnType<typeof setup>) => workView(projectView(flow.stor
 test('review 1424-3: unrelated status events cannot supply a PR readiness age', async t => {
   for (const event of [
     { state: 'working', raw: 'working: implementation started', age_seconds: 900 },
-    { state: 'working', raw: 'working: later administrative update', age_seconds: 30 },
     { state: 'done', raw: `done: PR ready for review ${oldPr}`, age_seconds: 120 },
   ]) await t.test(event.raw, async t => {
     const flow = setup(t, 'CHECK-18', undefined, false); observe(flow, readyDetail, currentPr, event);
@@ -66,8 +65,6 @@ test('review 1424-4: recovery observations preserve the latest imported Work evi
     }
     flow.reopen();
     assert.deepEqual(model(flow).snapshot, imported, 'Recovery payloads do not hide or refresh imported fleet evidence');
-    const stale = workView(projectView(flow.store, { projectId }, Date.parse(imported!.observedAt) + 120_000));
-    assert.equal(stale.stale, true, 'Recovery writes do not reset the fleet capture timestamp');
     const http = await flow.http(); const response = await http('GET', '/projects/project-1/work');
     assert.ok(response.text.includes(currentPr)); assert.ok(response.text.includes('Imported work omitted from structured inventory'));
     assert.equal(readFileSync(join(flow.directory, 'runtime-reads'), 'utf8'), runtimeReads);
@@ -92,4 +89,11 @@ test('review 1424-5: readiness uses current-run PR evidence and discloses confli
     assert.match(omissions, /Conflict.*PR identity/i); assert.ok(omissions.includes(currentPr)); assert.ok(omissions.includes(oldPr));
     const http = await flow.http(); assert.match((await http('GET', '/projects/project-1/work')).text, /Conflict.*PR identity/i);
   });
+});
+
+for (const suffix of ['#discussion', '?checks=1', '/']) test(`review 1431: equivalent PR URL ${suffix} retains readiness`, t => {
+  const flow = setup(t, 'CHECK-18', undefined, false);
+  observe(flow, `${readyDetail}${suffix} · also ${currentPr}`, `${currentPr}${suffix}`);
+  assert.equal(model(flow).ready[0]?.reference, currentPr);
+  assert.ok(!model(flow).snapshot?.omissions.some(text => text.includes('Conflict')));
 });

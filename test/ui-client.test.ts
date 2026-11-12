@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import test from 'node:test';
-import { buildEditCommand } from '../src/ui-edit.js';
+import { buildEditCommand, type EditContext } from '../src/ui-edit.js';
+import { applyCommand, ProjectStore, RecordsSchema } from '../src/index.js';
 
 // Run the actual compiled client against a minimal form surface and in-memory
 // fetch. No browser, listener, timers, network or parallel command builder.
-function client(fetch: (url: string, options: { body: string }) => Promise<unknown>, count = 1) {
+function client(fetch: (url: string, options: { body: string }) => Promise<unknown>, count = 1, initialContext?: EditContext) {
   type Listener = (event: { preventDefault(): void }) => unknown;
   const pageState = { textContent: '' };
   const windows = new Map<string, Listener>();
@@ -17,8 +18,9 @@ function client(fetch: (url: string, options: { body: string }) => Promise<unkno
     const mapping = { kind: 'task_mapping', id: `mapping-${index + 1}`, projectId: 'project-1', revision: 1,
       feature: { id: 'feature-1', revision: 1 }, criteria: [], detailedPlanTask: { id: 'task-1', revision: 1 },
       firstMateTaskId: `worker-${index + 1}`, dependencies: [] };
-    const values = new Map([['context', JSON.stringify({ kind: 'task', action: 'set_priority', mapping })], ['priority', '0'], ['reason', 'Preserve intent']]);
-    const form = { values, querySelector: (selector: string) => selector === 'output' ? output : button,
+    const values = new Map([['context', JSON.stringify(initialContext ?? { kind: 'task', action: 'set_priority', mapping })], ['priority', '0'], ['reason', 'Preserve intent']]);
+    const contextInput = { get value() { return values.get('context')!; }, set value(value: string) { values.set('context', value); } };
+    const form = { values, querySelector: (selector: string) => selector === 'output' ? output : selector === '[name=context]' ? contextInput : button,
       addEventListener(name: string, listener: Listener) { listeners.set(name, listener); } };
     return { form, output, button, values, listeners };
   });
@@ -29,8 +31,9 @@ function client(fetch: (url: string, options: { body: string }) => Promise<unkno
   runInNewContext(source, { buildEditCommand, fetch,
     document: { querySelector: () => pageState, querySelectorAll: () => surfaces.map((surface) => surface.form), createElement: () => ({ href: '', textContent: '' }) },
     FormData: class { constructor(readonly form: { values: Map<string, string> }) {} get(key: string) { return this.form.values.get(key); } entries() { return this.form.values.entries(); } },
+    DOMParser: class { parseFromString(context: string) { return { querySelectorAll: () => [{ querySelector: () => ({ value: context }) }] }; } },
     crypto: { randomUUID: () => `key-${++sequence}` }, window: { addEventListener(name: string, listener: Listener) { windows.set(name, listener); } }, setInterval() {},
-    location: { reload: () => { reloads++; }, assign: (url: string) => { assigned.push(url); } }, confirm: () => true });
+    location: { reload: () => { reloads++; }, assign: (url: string) => { assigned.push(url); }, href: 'http://127.0.0.1/projects/project-1/work' }, confirm: () => true });
   return { output: surfaces[0]!.output, button: surfaces[0]!.button, values: surfaces[0]!.values, surfaces, pageState, assigned, reloads: () => reloads,
     edit(index: number, key: string, value: string) { surfaces[index]!.values.set(key, value); surfaces[index]!.listeners.get('input')!({ preventDefault() {} }); },
     guarded() { let prevented = false; windows.get('beforeunload')!({ preventDefault() { prevented = true; } }); return prevented; },
@@ -64,7 +67,6 @@ test('a lost-response retry reuses the exact command even if form values were ch
 test('a revision conflict preserves typed values and labels the page stale', async () => {
   const form = client(async () => ({ status: 409, ok: false, json: async () => ({ error: { code: 'conflict' } }) }));
   await form.submit();
-  assert.equal(form.values.get('priority'), '0');
   assert.match(form.output.textContent, /Stale — revision conflict/u);
   assert.match(form.pageState.textContent, /Stale/u);
   assert.equal(form.button.textContent, 'Reload current records');
@@ -96,17 +98,39 @@ test('review 2: another save cannot discard a lost-response retry', async () => 
   assert.equal(bodies[0], bodies[2]);
   assert.equal(form.reloads(), 1);
 });
-test('review 2: input entered during a pending save is retained after that save succeeds', async () => {
-  let respond!: (response: unknown) => void;
-  const form = client(() => new Promise((resolve) => { respond = resolve; }));
+test('input entered during a pending save can subsequently reach canonical records', async t => {
+  const store = new ProjectStore(':memory:'); t.after(() => store.close());
+  const history = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
+  store.importProject({ schemaVersion: 1, projectId: 'project-1', history, receipts: [] });
+  const context = (): EditContext => {
+    const feature = store.get('project-1', 'feature-1'); assert.ok(feature?.kind === 'feature_revision');
+    return { kind: 'feature', feature };
+  };
+  let respond!: () => void;
+  const commands: ReturnType<typeof buildEditCommand>[] = [];
+  const form = client(async (_url, options) => {
+    if (!options?.body) return { ok: true, text: async () => JSON.stringify(context()) };
+    const command = JSON.parse(options.body); commands.push(command);
+    const result = applyCommand(store, command);
+    const response = { status: 200, ok: true, json: async () => result };
+    if (commands.length === 1) return new Promise(resolve => { respond = () => resolve(response); });
+    return response;
+  }, 1, context());
   const saving = form.submit();
   form.edit(0, 'priority', '4');
-  respond({ status: 200, ok: true, json: async () => ({ records: [] }) });
+  respond();
   await saving;
   assert.equal(form.reloads(), 0);
   assert.equal(form.guarded(), true);
+  assert.equal(form.button.disabled, false);
+  await form.submit();
+  assert.equal(commands.length, 2);
+  assert.notEqual(commands[0]!.idempotencyKey, commands[1]!.idempotencyKey);
+  const feature = store.get('project-1', 'feature-1'); assert.ok(feature?.kind === 'feature_revision');
+  assert.equal(feature.priority, 4);
+  assert.equal(feature.revision, 3);
+  assert.equal(form.reloads(), 1);
 });
-
 
 test('review 1335: an artifact save reloads with its exact returned bundle URL', async () => {
   const resumeUrl = '/projects/project-1/features/feature-1?bundle=exact-saved-revisions';

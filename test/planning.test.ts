@@ -11,7 +11,7 @@ import {
   recordStage, checkPlanReadiness, planReadinessHistory, ref, validateRecords, validateAssignmentForDispatch, planReadinessFindings,
   type FactoryRecord, type StageRevision, type ImplementationPlanRevision, type Ref,
   prepareWorkerBrief, checkWorkerBrief, requiredAssignmentContext, recordSource,
-  projectView, workView,
+  projectView, workView, renderFeature, buildEditCommand, applyCommand, type EditContext,
 } from '../src/index.js';
 
 const time = '2026-11-10T10:36:43Z';
@@ -836,4 +836,32 @@ test('review 1377 finding 3: checked reuse remains selected after priority and w
     assert.deepEqual(row.reasons.filter((reason) => reason.startsWith('Product readiness')), []);
     assert.equal(row.unknowns.includes('Unknown — selected product plan unavailable'), false);
   } finally { display.close(); flow.store.close(); }
+});
+
+test('artifact editors compose checked reuse through ready-plan lineage for retained tasks and slices', () => {
+  const flow = setup();
+  try {
+    flow.start(); flow.finish();
+    const original = flow.criteria;
+    const second = original.map(c => ({ ...c, revision: 2 }));
+    const splitMap = [{ existing: original[0]!, current: second[0]! }, { existing: original[0]!, current: second[1]! }, { existing: original[1]!, current: second[1]! }];
+    const initial = replan(flow, flow.detailedPlan, { criteria: second,
+      designMap: splitMap, planMap: splitMap });
+    assert.ok(initial.result.readyPlan);
+    const selected = flow.store.get(base.projectId, initial.result.readyPlan.id, initial.result.readyPlan.revision);
+    assert.ok(selected?.kind === 'implementation_plan_revision');
+    const third = original.map(c => ({ ...c, revision: 3 }));
+    const refined = replan(flow, selected, { criteria: third,
+      designMap: splitMap.map(entry => ({ existing: entry.existing, current: { ...entry.current, revision: 3 } })), planMap: second.map((existing, i) => ({ existing, current: third[i]! })) });
+    assert.ok(refined.result.readyPlan);
+    const view = projectView(flow.store, { projectId: base.projectId });
+    const html = renderFeature(view, view.features[0]!);
+    const contexts = [...html.matchAll(/name="context" value="([^"]*)"/gu)].map(match => JSON.parse(match[1]!.replace(/&quot;/gu, '"').replace(/&#39;/gu, "'").replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&amp;/gu, '&')) as EditContext);
+    const context = contexts.find(c => c.kind === 'plan'); assert.ok(context?.kind === 'plan');
+    const command = buildEditCommand(context, { reason: 'Refine composed reused artifacts' }, 'composed-editor', '2026-11-12T12:00:00Z');
+    assert.ok(command.command === 'design_plan_feature' && 'tasks' in command.payload);
+    assert.deepEqual(command.payload.tasks[0]!.criteria, third);
+    assert.deepEqual(command.payload.plan.workflow!.slices[0]!.criteria, third);
+    applyCommand(flow.store, command);
+  } finally { flow.store.close(); }
 });

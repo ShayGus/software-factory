@@ -5,7 +5,7 @@ import type { Criterion, DecisionChange, DesignRevision, DetailedPlanTask, Featu
 import type { LearningIdentity } from './learning-contracts.js';
 
 type ProductContext = { feature: FeatureRevision; design: DesignRevision; plan: ImplementationPlanRevision; tasks: DetailedPlanTask[];
-  expectedRevisions?: Ref[]; criterionMap?: { existing: Ref; current: Ref }[] };
+  expectedRevisions?: Ref[] };
 export type EditContext =
   | { kind: 'answer'; decision: DecisionChange; reuse?: DecisionChange }
   | { kind: 'standing-instruction'; projectId: string; identities: LearningIdentity[]; guidance: GuidanceRevision[] }
@@ -97,14 +97,13 @@ export function buildEditCommand(context: EditContext, values: EditValues, key: 
   }
   const expectedRevisions = context.expectedRevisions ?? [feature, context.design, context.plan, ...context.tasks].map(ref);
   const head = (record: Ref) => expectedRevisions.find((entry) => entry.id === record.id) ?? ref(record);
-  const criteria = (refs: Ref[]) => [...new Map(refs.flatMap((target) => {
-    const current = feature.criteria.find((entry) => entry.id === target.id);
-    if (current) return [current];
-    const mapped = context.criterionMap?.filter((entry) => entry.existing.id === target.id && entry.existing.revision === target.revision).map((entry) => entry.current);
-    return mapped?.length ? mapped : [target];
-  }).map((target) => [`${target.id}@${target.revision}`, target])).values()];
+  const criteria = (refs: Ref[]) => [...new Map(refs.map((target) => feature.criteria.find((entry) => entry.id === target.id) ?? target)
+    .map((target) => [`${target.id}@${target.revision}`, target])).values()];
   const design = { ...context.design, revision: head(context.design).revision + 1, updatedAt: at, feature: ref(feature),
-    sourceComparison: { ...context.design.sourceComparison, result: 'untested' as const, findings: [], comparedAt: at } };
+    sourceComparison: { ...context.design.sourceComparison, result: 'untested' as const, findings: [], comparedAt: at,
+      sourceRefs: [...context.design.sourceComparison.sourceRefs, ...feature.sourceRequests.filter((request) =>
+        !context.design.sourceComparison.sourceRefs.some((source) => source.record?.id === request.id && source.record.revision === request.revision))
+        .map((request) => ({ uri: `factory:record/${encodeURIComponent(request.id)}@${request.revision}`, record: request }))] } };
   if (design.workflow) design.workflow = { ...design.workflow, changeReason: reason };
   if (context.kind === 'design') {
     for (const field of ['productBehavior', 'technicalDesign', 'dataFlow', 'testingApproach'] as const) if (values[field] !== undefined) design[field] = values[field];
