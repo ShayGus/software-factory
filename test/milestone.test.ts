@@ -475,3 +475,32 @@ test('followup: automated preparation accepts an operator source snapshot and pr
     assert.equal(text.includes('MUTATED_REQUEST_FILE'), false);
   } finally { flow.close(); }
 });
+
+
+test('review 1446 finding 2: planners cite the complete configured source reference instead of its snapshot path', () => {
+  const flow = scenario();
+  try {
+    const source = { uri: 'research:configured-interface', excerpt: 'Common interface for every connected system.' };
+    const path = join(flow.root, 'operator-snapshot.txt');
+    writeFileSync(path, source.excerpt);
+    flow.config.sourceFiles = [{ source, path }];
+    const agent = JSON.parse(readFileSync(flow.config.agentConfig, 'utf8')).executables.codex;
+    const script = readFileSync(agent, 'utf8');
+    writeFileSync(agent, script.replace("if(step==='plan_check')", `if(['understand','design','plan','detail'].includes(step)) {
+      assert.doesNotMatch(prompt,/use local snapshot paths for external source references/i);
+      assert.match(prompt,/complete.{0,25}source.{0,25}reference/i);
+      if(step==='design') out.records.find(r=>r.kind==='design_revision').sourceRefs.push(snapshot.research[0].source);
+    }
+if(step==='plan_check')`));
+    runFeature(flow.config, 'prepare');
+    const store = new ProjectStore(flow.database, { readOnly: true });
+    try {
+      const assignment = store.records('project-1').find((record) => record.kind === 'assignment');
+      assert.ok(assignment?.kind === 'assignment');
+      const selected = assignment.selectedContext.find((context) => context.source.uri === source.uri);
+      assert.deepEqual(selected?.source, source);
+      assert.equal(selected?.artifact?.uri, path);
+      assert.equal(selected?.extract, source.excerpt);
+    } finally { store.close(); }
+  } finally { flow.close(); }
+});
