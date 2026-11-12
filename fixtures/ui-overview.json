@@ -1081,5 +1081,262 @@
       "kind": "product",
       "state": "open"
     }
+  },
+  {
+    "projectId": "project-1",
+    "schemaVersion": 1,
+    "revision": 1,
+    "createdAt": "2026-11-11T12:00:00Z",
+    "updatedAt": "2026-11-11T12:00:00Z",
+    "kind": "observation",
+    "id": "learning-pending",
+    "finding": "A second-system case should retain its original request wording.",
+    "affectedScope": [
+      {
+        "uri": "factory:project/project-1"
+      }
+    ],
+    "evidence": [
+      {
+        "artifact": {
+          "uri": "fixture:learning-transcript",
+          "revision": "1"
+        },
+        "description": "Synthetic correction captured for the learning view",
+        "observedAt": "2026-11-11T12:00:00Z"
+      }
+    ],
+    "proposedGeneralization": null,
+    "consolidationState": "pending",
+    "learning": {
+      "scope": {
+        "kind": "project"
+      },
+      "topic": "learning-pending",
+      "inputKind": "inferred",
+      "captureReason": "stow"
+    }
+  },
+  {
+    "projectId": "project-1",
+    "schemaVersion": 1,
+    "revision": 1,
+    "createdAt": "2026-11-11T12:00:00Z",
+    "updatedAt": "2026-11-11T12:00:00Z",
+    "kind": "observation",
+    "id": "learning-conflict",
+    "finding": "Two sources disagree about whether the second system supports offline delivery.",
+    "affectedScope": [
+      {
+        "uri": "factory:project/project-1"
+      }
+    ],
+    "evidence": [
+      {
+        "artifact": {
+          "uri": "fixture:learning-transcript",
+          "revision": "1"
+        },
+        "description": "Synthetic correction captured for the learning view",
+        "observedAt": "2026-11-11T12:00:00Z"
+      }
+    ],
+    "proposedGeneralization": null,
+    "consolidationState": "conflict",
+    "learning": {
+      "scope": {
+        "kind": "project"
+      },
+      "topic": "learning-conflict",
+      "inputKind": "inferred",
+      "captureReason": "stow"
+    }
+  },
+  {
+    "projectId": "project-1",
+    "schemaVersion": 1,
+    "revision": 1,
+    "createdAt": "2026-11-11T12:00:00Z",
+    "updatedAt": "2026-11-11T12:00:00Z",
+    "kind": "observation",
+    "id": "learning-source-old",
+    "finding": "Write a new general rule after every correction.",
+    "affectedScope": [
+      {
+        "uri": "factory:project/project-1"
+      }
+    ],
+    "evidence": [
+      {
+        "artifact": {
+          "uri": "fixture:learning-transcript",
+          "revision": "1"
+        },
+        "description": "Synthetic correction captured for the learning view",
+        "observedAt": "2026-11-11T12:00:00Z"
+      }
+    ],
+    "proposedGeneralization": null,
+    "consolidationState": "consolidated",
+    "learning": {
+      "scope": {
+        "kind": "project"
+      },
+      "topic": "rule-writing",
+      "inputKind": "inferred",
+      "captureReason": "stow"
+    }
+  },
+  {
+    "projectId": "project-1",
+    "schemaVersion": 1,
+    "revision": 1,
+    "createdAt": "2026-11-11T12:00:00Z",
+    "updatedAt": "2026-11-11T12:00:00Z",
+    "kind": "observation",
+    "id": "learning-source-current",
+    "finding": "Keep inferred lessons pending until the scheduled consolidation.",
+    "affectedScope": [
+      {
+        "uri": "factory:project/project-1"
+      }
+    ],
+    "evidence": [
+      {
+        "artifact": {
+          "uri": "fixture:learning-transcript",
+          "revision": "1"
+        },
+        "description": "Synthetic correction captured for the learning view",
+        "observedAt": "2026-11-11T12:00:00Z"
+      }
+    ],
+    "proposedGeneralization": null,
+    "consolidationState": "consolidated",
+    "learning": {
+      "scope": {
+        "kind": "project"
+      },
+      "topic": "rule-writing",
+      "inputKind": "inferred",
+      "captureReason": "stow"
+    }
+  },
+  {
+    "projectId": "project-1",
+    "schemaVersion": 1,
+    "revision": 1,
+    "createdAt": "2026-11-11T12:00:00Z",
+    "updatedAt": "2026-11-11T12:00:00Z",
+    "kind": "guidance_revision",
+    "id": "guidance-old",
+    "text": "Write a new general rule after every correction.",
+    "scope": [
+      {
+        "uri": "factory:project/project-1"
+      }
+    ],
+    "supportingObservations": [
+      {
+        "id": "learning-source-old",
+        "revision": 1
+      }
+    ],
+    "supersededGuidance": [],
+    "applicability": "Project learning cadence",
+    "unresolvedConflicts": [],
+    "learning": {
+      "scope": {
+        "kind": "project"
+      },
+      "topic": "rule-writing",
+      "authority": "inferred"
+    }
+  },
+  {
+    "projectId": "project-1",
+    "schemaVersion": 1,
+    "revision": 1,
+    "createdAt": "2026-11-11T12:00:00Z",
+    "updatedAt": "2026-11-11T12:00:00Z",
+    "kind": "guidance_revision",
+    "id": "guidance-current",
+    "text": "Keep inferred lessons pending until the scheduled consolidation.",
+    "scope": [
+      {
+        "uri": "factory:project/project-1"
+      }
+    ],
+    "supportingObservations": [
+      {
+        "id": "learning-source-current",
+        "revision": 1
+      }
+    ],
+    "supersededGuidance": [
+      {
+        "id": "guidance-old",
+        "revision": 1
+      }
+    ],
+    "applicability": "Project learning cadence",
+    "unresolvedConflicts": [],
+    "learning": {
+      "scope": {
+        "kind": "project"
+      },
+      "topic": "rule-writing",
+      "authority": "inferred"
+    }
+  },
+  {
+    "projectId": "project-1",
+    "schemaVersion": 1,
+    "revision": 1,
+    "createdAt": "2026-11-11T12:00:00Z",
+    "updatedAt": "2026-11-11T12:00:00Z",
+    "kind": "learning_run",
+    "id": "fixture-learning-run",
+    "scheduledWindowId": "fixture-learning-window",
+    "scheduledFor": "2026-11-11T07:00:00Z",
+    "scheduleDigest": "fixture-schedule",
+    "timezone": "Asia/Jerusalem",
+    "agentConfigDigest": "fixture-fake-agent",
+    "snapshotDigest": "fixture-snapshot",
+    "observations": [
+      {
+        "id": "learning-source-current",
+        "revision": 1
+      }
+    ],
+    "guidance": [
+      {
+        "id": "guidance-old",
+        "revision": 1
+      }
+    ],
+    "verdict": {
+      "decisions": [
+        {
+          "groupId": "rule-writing:project",
+          "outcome": "supersede",
+          "text": "Keep inferred lessons pending until the scheduled consolidation.",
+          "rationale": "Synthetic consolidation replaced the accumulating rule with bounded learning cadence.",
+          "observationRefs": [
+            {
+              "id": "learning-source-current",
+              "revision": 1
+            }
+          ],
+          "guidanceRefs": [
+            {
+              "id": "guidance-old",
+              "revision": 1
+            }
+          ]
+        }
+      ]
+    },
+    "sectionDiffs": []
   }
 ]

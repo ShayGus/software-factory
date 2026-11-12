@@ -4,6 +4,7 @@ import { designPlanFeature } from './planning.js';
 import { manageExecutionTask, type TaskAdapterOptions } from './tasks.js';
 import { ProjectStore, StoreError } from './store.js';
 import { commandDigest } from './rules.js';
+import { captureLearning } from './learning.js';
 
 /** Bounded, model-free application boundary used by both local CLI and HTTP. */
 export function applyCommand(store: ProjectStore, input: unknown, tasks?: TaskAdapterOptions) {
@@ -38,6 +39,28 @@ export function applyCommand(store: ProjectStore, input: unknown, tasks?: TaskAd
   // agent-running/lifecycle commands deliberately remain outside this boundary.
   if (command.command === 'capture_consolidate_learning' && command.payload.action === 'capture') {
     const observation = command.payload.observation;
+    if (observation.learning) {
+      if (command.targetId !== observation.id || command.id !== observation.id || command.expectedRevision !== 0 ||
+        observation.revision !== 1 || observation.createdAt !== command.issuedAt || observation.updatedAt !== command.issuedAt ||
+        observation.projectId !== command.projectId || observation.legacySections?.length || command.payload.feature ||
+        !['standing_instruction', 'inferred', 'operational'].includes(observation.learning.inputKind)) {
+        throw new StoreError('validation', 'invalid_ui_learning_capture');
+      }
+      const identity = observation.learning;
+      const expectedObservation = { kind: 'observation', schemaVersion: 1, id: observation.id, projectId: command.projectId,
+        revision: 1, createdAt: command.issuedAt, updatedAt: command.issuedAt, finding: observation.finding,
+        evidence: observation.evidence, proposedGeneralization: observation.proposedGeneralization, learning: observation.learning, legacySections: [],
+        affectedScope: [{ uri: identity.scope.kind === 'project' ? `factory:project/${encodeURIComponent(command.projectId)}` : `factory:feature/${encodeURIComponent(identity.scope.featureId)}` }],
+        consolidationState: identity.inputKind === 'standing_instruction' ? 'consolidated' : 'pending' };
+      if (commandDigest(command) !== commandDigest({ ...command, payload: { action: 'capture', observation: expectedObservation, supersedes: command.payload.supersedes ?? [] } })) {
+        throw new StoreError('validation', 'learning_capture_must_preserve_canonical_scope_and_state');
+      }
+      return captureLearning(store, { projectId: command.projectId, id: observation.id, idempotencyKey: command.idempotencyKey,
+        issuedAt: command.issuedAt, identity: { scope: observation.learning.scope, topic: observation.learning.topic },
+        finding: observation.finding, evidence: observation.evidence, inputKind: observation.learning.inputKind,
+        captureReason: observation.learning.captureReason, proposedGeneralization: observation.proposedGeneralization,
+        supersedes: command.payload.supersedes ?? [] });
+    }
     if (observation.id !== command.targetId || command.payload.feature || command.payload.supersedes?.length) {
       throw new StoreError('validation', 'use_learning_capture_operation');
     }

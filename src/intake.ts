@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { reusableAnswer } from './decision-context.js';
 import { z } from 'zod';
 import { CaptureRequestCommandSchema, RecordDecisionSuggestionCommandSchema } from './commands.js';
 import { IdSchema, RefSchema, TextSchema, TimestampSchema, type Ref } from './primitives.js';
@@ -201,5 +202,22 @@ export function recordDecisionSuggestion(store: ProjectStore, input: unknown) {
       throw new StoreError('validation', 'decision_must_name_written_revision');
     }
   }
-  return store.mutate(command, () => [decision, ...intakeRecords]);
+  return store.mutate(command, () => {
+    if (decision.answer) {
+      const previous = store.get(command.projectId, decision.id);
+      if (previous?.kind !== 'decision_change' || previous.choice?.kind !== 'product' || previous.choice.state !== 'open' ||
+        decision.choice?.kind !== 'product' || decision.choice.state !== 'resolved' || decision.disposition !== 'selected' ||
+        decision.questionOrChange !== previous.questionOrChange || JSON.stringify(decision.affectedRecords) !== JSON.stringify(previous.affectedRecords)) {
+        throw new StoreError('validation', 'answer_requires_open_product_question');
+      }
+      if (decision.answer.reusedFrom) {
+        const source = store.get(command.projectId, decision.answer.reusedFrom.id);
+        if (source?.kind !== 'decision_change' || source.revision !== decision.answer.reusedFrom.revision ||
+          !reusableAnswer(previous, source) || decision.answer.text !== (source.answer?.text ?? source.rationale)) {
+          throw new StoreError('conflict', 'reusable_answer_changed');
+        }
+      }
+    }
+    return [decision, ...intakeRecords];
+  });
 }

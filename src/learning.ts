@@ -79,7 +79,7 @@ export function captureLearning(store: ProjectStore, input: unknown) {
       const overlapping = activeGuidance(records).filter((record) => record.learning && (learningKey(record.learning) === learningKey(data.identity) ||
         data.identity.scope.kind === 'project' && record.learning.topic === data.identity.topic && record.learning.authority !== 'explicit'));
       if (!overlapping.every((record) => data.supersedes.some((r) => same(r, record))) ||
-        !data.supersedes.every((r) => overlapping.some((record) => same(r, record)))) fail('standing_instruction_requires_exact_supersession');
+        !data.supersedes.every((r) => overlapping.some((record) => same(r, record)))) throw new StoreError('conflict', 'standing_instruction_requires_exact_supersession');
       writes.push({ kind: 'guidance_revision', ...meta(data.projectId, `${data.id}:guidance`, data.issuedAt),
         scope: [source], text: data.finding, supportingObservations: [ref(observation)], supersededGuidance: data.supersedes,
         applicability: 'Explicit standing instruction in the stated scope', unresolvedConflicts: [],

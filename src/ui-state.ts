@@ -7,8 +7,10 @@ import { ProjectStore, StoreError } from './store.js';
 import { currentAssignmentAttempts } from './task-readiness.js';
 import { outstandingTaskCorrections } from './correction-state.js';
 import { bundleUrl, type BundleRefs } from './ui-bundle.js';
+import { reusableAnswer } from './decision-context.js';
+import { learningView } from './ui-learning-state.js';
 
-export interface UiOptions { bundle?: { featureId: string; refs: BundleRefs }; projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string; readSnapshot?: () => unknown }
+export interface UiOptions { bundle?: { featureId: string; refs: BundleRefs }; projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string; readSnapshot?: () => unknown; learningSchedule?: unknown }
 export const uiStaleAfterMs = (value?: number) => value !== undefined && Number.isFinite(value) && value > 0 ? value : 60000;
 export const sameRef = (a: Ref | null | undefined, b: Ref | null | undefined) => !!a && !!b && a.id === b.id && a.revision === b.revision;
 /** Last validated BUILD-08 observation; reads never query or mutate FirstMate. */
@@ -140,7 +142,18 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
   });
   const suggestions = records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && record.disposition === 'proposed' && record.choice?.state !== 'open');
   const input = records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && record.choice?.state === 'open');
-  return { project, options, history, records, features: featureViews, suggestions, input,
+  const questions = input.filter((decision) => decision.choice?.kind === 'product').map((decision) => {
+    const affected = decision.affectedRecords.flatMap((target) => { const record = lookup(target); return record ? [record] : []; });
+    const context = featureViews.filter((item) => affected.some((record) => record.id === item.feature.id ||
+      record.kind === 'criterion' && record.featureId === item.feature.id || 'feature' in record && record.feature?.id === item.feature.id));
+    const requestRefs = [...context.flatMap((item) => item.feature.sourceRequests), ...decision.sourceRefs.flatMap((source) => source.record ? [source.record] : []), ...decision.affectedRecords];
+    const requests = [...new Map(requestRefs.flatMap((target) => { const record = lookup(target); return record?.kind === 'request' ? [[`${record.id}@${record.revision}`, record] as const] : []; })).values()];
+    const answers = records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && reusableAnswer(decision, record));
+    const texts = new Set(answers.map((answer) => answer.answer?.text ?? answer.rationale));
+    return { decision, affected, context, requests, answers: texts.size === 1 ? answers : [], answerConflict: texts.size > 1 };
+  });
+  return { project, options, history, records, features: featureViews, suggestions, input, questions,
+    learning: learningView(store, options.projectId, options.learningSchedule, new Date(now).toISOString()),
     unclassified: unclassifiedRequests(store, options.projectId), readAt: new Date(now).toISOString() };
 }
 export type ProjectView = ReturnType<typeof projectView>;

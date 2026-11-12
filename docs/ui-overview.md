@@ -33,12 +33,14 @@ the single TypeScript request handler; it contains no independent stub server.
 | --- | --- |
 | `GET /` | Feature overview and focused feature/task editors |
 | `GET /projects/:project/features/:feature[?bundle=encoded-ref-JSON]` | Selected or explicitly named bundle, original request, revisions, plan tasks, briefs, criteria/evidence and corrections |
+| `GET /projects/:project/decisions` | Contextual product questions, answer editors and existing answers |
+| `GET /projects/:project/learning` | Observation inbox, scoped guidance/history, conflicts, last consolidation diff and next window |
 | `GET /projects/:project/overview` | Read model, records and freshness metadata as JSON |
 | `GET /projects/:project/work`, `/dependencies`, `/work/:mapping` | BUILD-13 [work, dependency and focused task views](ui-work.md) |
 | `GET /projects/:project/inspect/:id?revision=N` | Readable record, revision history and related links |
 | `GET /projects/:project/records/:id?revision=N` | Existing read-only canonical record JSON |
 | `GET /canonical` | Command contract and field ownership |
-| `POST /canonical` | Existing revision-checked command envelope |
+| `POST /canonical` | Existing revision-checked command envelope, including model-free learning capture |
 | `POST /scotty-edit` | Refuses projected edits with owner and canonical operation link |
 | `GET /assets/ui.css`, `ui-client.js`, `ui-edit.js` | Fixed local assets; no arbitrary file serving |
 
@@ -155,7 +157,58 @@ checks, escaping and CLI/HTTP parity. Existing BUILD-05 adapter tests still run.
 Per the task boundary, the local start command and optional Docker/Beads demo are
 prepared but not launched. Browser end-to-end testing, real project integration
 and review by a separate agent remain later gates. Work/dependency screens,
-decision/learning editors, model/profile configuration and recovery are outside
-BUILD-12. [BUILD-13](ui-work.md) now provides the work/dependency screens on this same server.
+model/profile configuration and recovery are outside BUILD-12/14.
+[BUILD-13](ui-work.md) provides the work/dependency screens on this same server.
 Existing per-step agent configuration remains owned by BUILD-06/10/11;
 this UI runs no agent and invents no substitute review policy.
+
+
+## BUILD-14 decisions and learning
+
+BUILD-14 adds the needs-input and learning routes to this same server and client.
+Only open product questions have answer controls. Each question retains affected
+record revisions, original request text, related features, criteria and work.
+Technical questions remain readable work context and have no approval control.
+An answer creates a new revision of the existing decision through
+`recordDecisionSuggestion`, preserving the question, sources and affected refs.
+The answer text is separate from its rationale. Expected revision and idempotency
+key use the same store receipts as the other editors.
+
+Existing selected, resolved product answers are offered for explicit reuse only
+when question wording and the complete set of affected revisions match exactly.
+Reuse records `answer.reusedFrom`; the canonical operation validates the current
+source revision and matching context. Conflicting matching answers are labeled
+and withheld from reuse controls. Reading a page never resolves a question or
+runs work. This makes no semantic claim about differently worded questions or
+changed product scope.
+
+The learning view shows pending observations with evidence and scope, current
+guidance and all retained revisions, superseded text with replacement links,
+and unresolved observation/guidance conflicts. Rule inspection also labels
+supersession and links to the replacement. Explicit standing instructions use
+BUILD-11 `captureLearning`, including its exact supersession checks; inferred
+rules are never promoted by this UI. The instruction editor captures evidence,
+scope and topic and uses the guidance revisions visible when the form loaded.
+A concurrent change to that topic produces a conflict. It creates canonical
+observations and guidance, without writing or reading external memory files.
+
+The last consolidation view shows the saved verdict, before guidance and exact
+written revisions from the mutation receipt, plus recorded legacy section diffs.
+An imported run without a receipt shows its saved verdict and labels its written
+revision list Unknown. No displayed diff applies itself to a file. The optional
+`UiOptions.learningSchedule` supplies a read-only next-window preview using the
+existing schedule schema and timezone rules. Missing/mismatched schedules stay
+Unknown; displaying configured windows does not claim a scheduler is installed.
+The fixture launcher supplies `fixtures/learning-schedule.json` for illustration.
+The view offers no consolidation trigger or schedule installation.
+
+The fixture includes a pending lesson, a conflict, superseded/current guidance
+and an illustrative saved run. HTTP stream tests extract the actual rendered
+forms and exercise decision answers/reuse and standing instructions, checking
+immutable history, replay, stale revisions, scope validation and absence of
+execution mutations. A fake agent performs consolidation in a temporary store
+to verify the last-run diff comes from canonical receipts. No test starts a real
+model, browser, listener or network connection. The existing responsive layout
+stacks forms at 760px; navigation keeps feature review and needs-input accessible
+before execution graph links. Browser visual verification and independent-agent
+review remain integration gates for firstmate, consistent with the worker brief.

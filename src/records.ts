@@ -253,6 +253,7 @@ export const DecisionChangeSchema = record('decision_change', {
   sourceRefs: z.array(SourceRefSchema).min(1), scopeChanges: z.array(ScopeChangeSchema),
   requestMapping: RequestMappingSchema.optional(),
   choice: z.strictObject({ kind: z.enum(['product', 'technical']), state: z.enum(['resolved', 'open']) }).optional(),
+  answer: z.strictObject({ text: TextSchema, reusedFrom: RefSchema.optional() }).optional(),
 });
 
 export const CorrectionFactsSchema = z.array(z.strictObject({

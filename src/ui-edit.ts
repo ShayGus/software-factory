@@ -1,11 +1,14 @@
 // Browser-safe command construction. Imports are types only; no second write path.
 import type { CommandEnvelope } from './commands.js';
 import type { Ref } from './primitives.js';
-import type { Criterion, DesignRevision, DetailedPlanTask, FeatureRevision, ImplementationPlanRevision, TaskMapping } from './records.js';
+import type { Criterion, DecisionChange, DesignRevision, DetailedPlanTask, FeatureRevision, GuidanceRevision, ImplementationPlanRevision, TaskMapping } from './records.js';
+import type { LearningIdentity } from './learning-contracts.js';
 
 type ProductContext = { feature: FeatureRevision; design: DesignRevision; plan: ImplementationPlanRevision; tasks: DetailedPlanTask[];
   expectedRevisions?: Ref[]; criterionMap?: { existing: Ref; current: Ref }[] };
 export type EditContext =
+  | { kind: 'answer'; decision: DecisionChange; reuse?: DecisionChange }
+  | { kind: 'standing-instruction'; projectId: string; identities: LearningIdentity[]; guidance: GuidanceRevision[] }
   | { kind: 'feature'; feature: FeatureRevision }
   | { kind: 'criterion'; feature: FeatureRevision; criterion: Criterion }
   | { kind: 'task'; mapping: TaskMapping; action: 'set_priority' | 'edit_dependencies' | 'pause' | 'resume' | 'cancel' }
@@ -20,8 +23,36 @@ const integer = (value: string | undefined) => {
 export function buildEditCommand(context: EditContext, values: EditValues, key: string, at: string): CommandEnvelope {
   if (!values.reason?.trim()) throw new Error('Explain the reason for this change.');
   const reason = values.reason.trim();
-  const envelope = { schemaVersion: 1 as const, id: `ui-${key}`, projectId: context.kind === 'task' ? context.mapping.projectId : context.feature.projectId,
+  const envelope = { schemaVersion: 1 as const, id: `ui-${key}`, projectId: context.kind === 'answer' ? context.decision.projectId :
+    context.kind === 'standing-instruction' ? context.projectId : context.kind === 'task' ? context.mapping.projectId : context.feature.projectId,
     issuedAt: at, idempotencyKey: key };
+  if (context.kind === 'answer') {
+    const decision = context.decision;
+    if (decision.choice?.kind !== 'product' || decision.choice.state !== 'open') throw new Error('Only an open product question needs an answer.');
+    const answer = context.reuse ? context.reuse.answer?.text ?? context.reuse.rationale : values.answer?.trim();
+    if (!answer) throw new Error('Enter an answer to the product question.');
+    return { ...envelope, command: 'record_decision_suggestion', targetId: decision.id, expectedRevision: decision.revision,
+      payload: { decision: { ...decision, revision: decision.revision + 1, updatedAt: at, rationale: reason,
+        disposition: 'selected', choice: { kind: 'product', state: 'resolved' },
+        answer: { text: answer, ...(context.reuse ? { reusedFrom: ref(context.reuse) } : {}) } } } };
+  }
+  if (context.kind === 'standing-instruction') {
+    const selected = context.identities.find((candidate) => JSON.stringify(candidate) === values.identity);
+    const identity = selected && { scope: selected.scope, topic: values.topic?.trim() || selected.topic };
+    const finding = values.instruction?.trim();
+    if (!identity || !finding) throw new Error('Select a scope and topic and enter the standing instruction.');
+    if (!values.evidenceUri?.trim() || !values.evidenceRevision?.trim()) throw new Error('Provide evidence with a stable revision or digest.');
+    const supersedes = context.guidance.filter((guidance) => guidance.learning && guidance.learning.topic === identity.topic &&
+      (JSON.stringify(guidance.learning.scope) === JSON.stringify(identity.scope) ||
+        identity.scope.kind === 'project' && guidance.learning.authority !== 'explicit')).map(ref);
+    return { ...envelope, command: 'capture_consolidate_learning', targetId: envelope.id, expectedRevision: 0,
+      payload: { action: 'capture', supersedes, observation: { schemaVersion: 1, projectId: context.projectId, id: envelope.id, kind: 'observation',
+        revision: 1, createdAt: at, updatedAt: at, finding, proposedGeneralization: null, consolidationState: 'consolidated',
+        learning: { ...identity, inputKind: 'standing_instruction', captureReason: 'direct' },
+        affectedScope: [{ uri: identity.scope.kind === 'project' ? `factory:project/${encodeURIComponent(context.projectId)}` : `factory:feature/${encodeURIComponent(identity.scope.featureId)}` }],
+        evidence: [{ artifact: { uri: values.evidenceUri.trim(), revision: values.evidenceRevision.trim() }, description: reason, observedAt: at }],
+        legacySections: [] } } };
+  }
   if (context.kind === 'task') {
     const mapping = context.mapping;
     const priority = context.action === 'set_priority' ? integer(values.priority) : undefined;

@@ -35,13 +35,14 @@ try {
   }
   const scottyUrl = process.env.SF_SCOTTY_URL;
   if (scottyUrl && !/^http:\/\/127\.0\.0\.1:\d+\/?$/u.test(scottyUrl)) throw new Error('SF_SCOTTY_URL must be a loopback HTTP origin');
+  const learningSchedule = JSON.parse(readFileSync(new URL('../fixtures/learning-schedule.json', import.meta.url), 'utf8'));
   const staleAfterMs = Number(process.env.SF_UI_STALE_AFTER_MS ?? 60000);
   if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) throw new Error('SF_UI_STALE_AFTER_MS must be a positive number');
   const snapshot = JSON.parse(readFileSync(new URL('../fixtures/ui-work-snapshot.json', import.meta.url), 'utf8'));
   // Keep the sample ready age meaningful without claiming an actual runtime read.
   snapshot.observedAt = new Date().toISOString();
   snapshot.tasks[0].ready[0].readySince = new Date(Date.now() - 30 * 60000).toISOString();
-  const api = new ToolkitApi(store, adapter, { projectId: 'project-1', fixture: true, staleAfterMs,
+  const api = new ToolkitApi(store, adapter, { projectId: 'project-1', fixture: true, learningSchedule, staleAfterMs,
     readSnapshot: () => snapshot, ...(scottyUrl ? { scottyUrl } : {}) });
   server = createServer(createToolkitRequestHandler(api, { port }));
   server.once('error', (error) => { cleanup(); console.error(error.message); process.exitCode = 1; });

@@ -1,5 +1,6 @@
 import { correctionTargetsAttempt, outstandingTaskCorrections, unresolvedTaskCorrections, correctionOrder, type TrackedCorrection } from './correction-state.js';
 import { activeGuidance, learningKey } from './learning-context.js';
+import { reusableAnswer } from './decision-context.js';
 import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { expectedReviewCriteria } from './review-contracts.js';
@@ -643,6 +644,17 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       if (record.correctionOf) ctx.get(record, record.correctionOf, 'measurement_claim', 'correctionOf');
       break;
     case 'decision_change':
+      if (record.answer) {
+        if (record.choice?.kind !== 'product' || record.choice.state !== 'resolved' || record.disposition !== 'selected') {
+          ctx.add(record, 'invalid_product_answer', 'answer', 'An answer requires a selected, resolved product decision');
+        }
+        if (record.answer.reusedFrom) {
+          const source = ctx.get(record, record.answer.reusedFrom, 'decision_change', 'answer.reusedFrom');
+          if (source && (!reusableAnswer(record, source) || record.answer.text !== (source.answer?.text ?? source.rationale))) {
+            ctx.add(record, 'invalid_answer_reuse', 'answer.reusedFrom', 'Reused answer must match the question, affected revisions and source text');
+          }
+        }
+      }
       if (record.choice?.state === 'resolved' && !['selected', 'rejected'].includes(record.disposition)) {
         ctx.add(record, 'unsettled_decision', 'choice', 'Resolved decisions must have a selected or rejected disposition');
       }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Readable } from 'node:stream';
@@ -12,8 +12,11 @@ import {
   type EditContext, type EditValues, type FactoryRecord, captureRequest, validateAssignmentForDispatch, checkPlanReadiness,
   workView, WorkSnapshotSchema, type UiOptions,
   queueCorrection, deliverCorrection,
+  consolidateLearning, nextLearningWindow,
+  validateRecords,
 } from '../src/index.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
+import { fakeJudge } from './judge-helper.js';
 
 const fixture = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
 function setup(t: test.TestContext, history: FactoryRecord[] = fixture, options: Partial<UiOptions> = {}) {
@@ -917,4 +920,164 @@ test('review 1377 finding 5: standalone maintenance keeps its objective and exac
     for (const id of ['request-1', 'design-1', 'plan-1', 'task-1', 'assignment-1']) assert.ok(page.body.includes(`/inspect/${id}?revision=1`), `Missing exact ${id} context`);
     assert.doesNotMatch(page.body, /Unknown — feature context unavailable|Feature: Unknown|Original requests: Unknown/u);
   }
+});
+
+for (const route of ['/', '/projects/project-1/decisions']) test(`BUILD-14 answers a material question through the rendered form at ${route}`, async (t) => {
+  const flow = setup(t);
+  const page = await flow.http('GET', route);
+  assert.equal(page.status, 200);
+  assert.match(page.body, /Which second connected system/);
+  assert.match(page.body, /Original request/);
+  assert.match(page.body, /Criteria:/);
+  assert.match(page.body, /Related work:/);
+  const before = flow.store.exportProject('project-1');
+  const editor = findEditor(page.body, 'answer');
+  const answer = 'Use the second CRM with independent authentication.';
+  await sendEdit(flow, editor, { answer }, 'answer-material');
+  const decision = flow.store.get('project-1', 'decision-open'); assert.ok(decision?.kind === 'decision_change');
+  assert.equal(decision.answer?.text, answer);
+  assert.equal(decision.choice?.state, 'resolved');
+  assert.equal(decision.revision, 2);
+  assert.deepEqual(flow.store.get('project-1', 'decision-open', 1), before.history.find((record) => record.id === 'decision-open'));
+  for (const record of before.history.filter((record) => record.kind !== 'decision_change')) {
+    assert.deepEqual(flow.store.get('project-1', record.id, record.revision), record);
+  }
+  assert.equal(flow.backend.read().calls.length, 0);
+  const refreshed = await flow.http('GET', '/projects/project-1/decisions');
+  assert.match(refreshed.body, /No material product questions need input/);
+  assert.match(refreshed.body, new RegExp(answer));
+});
+
+test('BUILD-14 existing answers reuse exact product context with provenance and reject stale or conflicting sources', async (t) => {
+  const history = structuredClone(fixture);
+  const question = history.find((record) => record.id === 'decision-open'); assert.ok(question?.kind === 'decision_change');
+  const answered = { ...question, id: 'existing-answer', choice: { kind: 'product' as const, state: 'resolved' as const }, disposition: 'selected' as const,
+    answer: { text: 'Use CRM B.' } };
+  history.push(answered, { ...answered, id: 'other-scope', affectedRecords: [{ id: 'request-1', revision: 1 }], answer: { text: 'Wrong scope.' } });
+  const flow = setup(t, history);
+  const page = await flow.http('GET', '/projects/project-1/decisions');
+  assert.match(page.body, /Existing answer available/);
+  const editor = editors(page.body).find(({ context }) => context.kind === 'answer' && context.reuse); assert.ok(editor);
+  await sendEdit(flow, editor, {}, 'reuse-answer');
+  const saved = flow.store.get('project-1', question.id); assert.ok(saved?.kind === 'decision_change');
+  assert.deepEqual(saved.answer, { text: 'Use CRM B.', reusedFrom: { id: answered.id, revision: 1 } });
+  assert.equal(flow.backend.read().calls.length, 0);
+  const conflictFlow = setup(t, [...history, { ...answered, id: 'disagreeing-answer', answer: { text: 'Use CRM C.' } }]);
+  const conflict = await conflictFlow.http('GET', '/projects/project-1/decisions');
+  assert.match(conflict.body, /matching previous answers disagree/);
+  assert.equal(editors(conflict.body).filter(({ context }) => context.kind === 'answer' && context.reuse).length, 0);
+  const forged = buildEditCommand({ kind: 'answer', decision: question, reuse: history.find((record) => record.id === 'other-scope') as typeof answered }, { reason: 'Attempt mismatched reuse' }, 'wrong-context', new Date().toISOString());
+  const rejected = await conflictFlow.http('POST', '/canonical', forged);
+  assert.equal(rejected.status, 409);
+  const staleFlow = setup(t, history);
+  const { answer: _answer, ...source } = answered;
+  const updated = await staleFlow.http('POST', '/canonical', { schemaVersion: 1, id: 'source-update', projectId: 'project-1',
+    issuedAt: new Date().toISOString(), idempotencyKey: 'source-update', command: 'record_decision_suggestion', targetId: source.id, expectedRevision: 1,
+    payload: { decision: { ...source, revision: 2, rationale: 'Use a different representative system.' } } });
+  assert.equal(updated.status, 200, updated.body);
+  const staleReuse = buildEditCommand(editor.context, { reason: 'Reuse displayed answer' }, 'stale-source', new Date().toISOString());
+  assert.equal((await staleFlow.http('POST', '/canonical', staleReuse)).status, 409);
+});
+
+test('BUILD-14 technical questions have no answer or approval controls and reads never mutate', async (t) => {
+  const history = structuredClone(fixture);
+  const product = history.find((record) => record.id === 'decision-open'); assert.ok(product?.kind === 'decision_change');
+  history.push({ ...product, id: 'technical-open', questionOrChange: 'Choose an internal implementation helper', choice: { kind: 'technical', state: 'open' } });
+  const flow = setup(t, history);
+  const before = flow.store.exportProject('project-1');
+  const page = await flow.http('GET', '/projects/project-1/decisions');
+  const contexts = editors(page.body).map((editor) => editor.context);
+  assert.ok(contexts.every((context) => context.kind === 'answer' && context.decision.choice?.kind === 'product'));
+  assert.doesNotMatch(page.body, /<button[^>]*>[^<]*(approve|dispatch|run implementation)/iu);
+  assert.match(page.body, /implementation question, handled with its work/);
+  await flow.http('GET', '/projects/project-1/learning');
+  assert.deepEqual(flow.store.exportProject('project-1'), before);
+  const technical = history.find((record) => record.id === 'technical-open'); assert.ok(technical?.kind === 'decision_change');
+  assert.throws(() => buildEditCommand({ kind: 'answer', decision: technical }, { reason: 'Routine work', answer: 'Approved' }, 'approve', new Date().toISOString()), /Only an open product question/);
+});
+
+test('BUILD-14 learning shows evidence, scope, replacement history and unresolved conflicts', async (t) => {
+  const flow = setup(t);
+  const page = await flow.http('GET', '/projects/project-1/learning');
+  assert.equal(page.status, 200);
+  assert.match(page.body, /Observation inbox/);
+  assert.match(page.body, /Synthetic correction captured/);
+  assert.match(page.body, /Project · topic/);
+  assert.match(page.body, /Two sources disagree/);
+  assert.match(page.body, /Superseded/);
+  assert.match(page.body, /Replaced by: <a href="\/projects\/project-1\/inspect\/guidance-current\?revision=1/);
+  assert.match(page.body, /no consolidation schedule supplied/);
+  assert.match(page.body, /fixture-learning-window/);
+  assert.match(page.body, /Before: <a href="\/projects\/project-1\/inspect\/guidance-old/);
+  const historical = await flow.http('GET', '/projects/project-1/inspect/guidance-old?revision=1');
+  assert.equal(historical.status, 200);
+  assert.match(historical.body, /Write a new general rule after every correction/);
+  assert.match(historical.body, /Superseded guidance/);
+  assert.match(historical.body, /Replaced by: <a href="\/projects\/project-1\/inspect\/guidance-current/);
+});
+
+test('BUILD-14 explicit standing instruction updates canonical guidance through BUILD-11 with replay and stale-scope conflict', async (t) => {
+  const flow = setup(t);
+  const page = await flow.http('GET', '/projects/project-1/learning');
+  const editor = findEditor(page.body, 'standing-instruction'); assert.ok(editor.context.kind === 'standing-instruction');
+  const identity = editor.context.identities.find((identity) => identity.scope.kind === 'project' && identity.topic === 'rule-writing'); assert.ok(identity);
+  const values = { identity: JSON.stringify(identity), instruction: 'Consolidate inferred lessons once daily.', evidenceUri: 'fixture:explicit-user-instruction', evidenceRevision: 'transcript-2', reason: 'Explicit user standing instruction' };
+  const command = buildEditCommand(editor.context, values, 'standing', new Date().toISOString());
+  const first = await flow.http('POST', '/canonical', command); assert.equal(first.status, 200, first.body);
+  const snapshot = flow.store.exportProject('project-1');
+  assert.deepEqual((await flow.http('POST', '/canonical', command)).json(), first.json());
+  assert.deepEqual(flow.store.exportProject('project-1'), snapshot);
+  const guidance = flow.store.get('project-1', 'ui-standing:guidance'); assert.ok(guidance?.kind === 'guidance_revision');
+  assert.equal(guidance.text, values.instruction);
+  assert.deepEqual(guidance.supersededGuidance, [{ id: 'guidance-current', revision: 1 }]);
+  assert.equal(guidance.learning?.authority, 'explicit');
+  const stale = await flow.http('POST', '/canonical', buildEditCommand(editor.context, values, 'stale-standing', new Date().toISOString()));
+  assert.equal(stale.status, 409, stale.body);
+  const changed = structuredClone(command); assert.ok(changed.command === 'capture_consolidate_learning' && changed.payload.action === 'capture');
+  changed.payload.observation.finding = 'Different standing instruction';
+  assert.equal((await flow.http('POST', '/canonical', changed)).status, 400);
+  changed.payload.observation.legacySections = [{ uri: '/must-not-be-read', heading: '## Rules', before: 'x', digest: 'x' }];
+  assert.equal((await flow.http('POST', '/canonical', changed)).status, 400);
+  assert.equal(flow.backend.read().calls.length, 0);
+  const current = (await flow.http('GET', '/projects/project-1/learning')).body;
+  assert.match(current, /ui-standing%3Aguidance\?revision=1/);
+});
+
+test('BUILD-14 last-run diff comes from real consolidation receipts with a fake agent; schedule preview never runs it', async (t) => {
+  const flow = setup(t);
+  const executable = join(flow.directory, 'fake-learning.mjs');
+  const fake = new URL('../../fixtures/fake-learning-agent.mjs', import.meta.url);
+  writeFileSync(executable, `#!/usr/bin/env node\nawait import(${JSON.stringify(fake.href)});\n`, { mode: 0o755 });
+  const config = { ...structuredClone(fakeJudge), executables: { codex: executable, claude: executable } };
+  consolidateLearning(flow.store, { projectId: 'project-1', id: 'ui-consolidation-run', idempotencyKey: 'ui-consolidation-run',
+    issuedAt: '2026-11-12T10:00:00Z', scheduledWindowId: 'fixture-window', scheduledFor: '2026-11-12T07:00:00Z', scheduleDigest: 'fixture-schedule', timezone: 'Asia/Jerusalem' }, config);
+  const page = await flow.http('GET', '/projects/project-1/learning');
+  assert.match(page.body, /fixture-window/);
+  assert.match(page.body, /Guidance written by this run/);
+  assert.match(page.body, /After: <a href="\/projects\/project-1\/inspect\/ui-consolidation-run/);
+  assert.doesNotMatch(page.body, /this imported run has no mutation receipt/);
+  const schedule = { id: 'daily', projectId: 'project-1', timezone: 'Asia/Jerusalem', hours: [9, 21], startsAt: '2026-11-01T00:00:00Z' };
+  assert.equal(nextLearningWindow(schedule, '2026-11-12T08:30:00Z')?.scheduledFor, '2026-11-12T19:00:00.000Z');
+  const api = new ToolkitApi(flow.store, undefined, { projectId: 'project-1', learningSchedule: schedule });
+  const before = flow.store.exportProject('project-1');
+  assert.match(String(api.handle('GET', '/projects/project-1/learning').body), /Configured windows/);
+  assert.deepEqual(flow.store.exportProject('project-1'), before);
+});
+
+test('BUILD-14 imported answer provenance and product classification remain validated', () => {
+  const history = structuredClone(fixture);
+  const question = history.find((record) => record.id === 'decision-open'); assert.ok(question?.kind === 'decision_change');
+  question.choice = { kind: 'product', state: 'resolved' }; question.disposition = 'selected';
+  question.answer = { text: 'Use CRM B.', reusedFrom: { id: 'missing-answer', revision: 1 } };
+  const missing = validateRecords(history); assert.equal(missing.ok, false); assert.ok(!missing.ok && missing.issues.some((issue) => issue.path === 'answer.reusedFrom'));
+  delete question.answer.reusedFrom;
+  question.choice.kind = 'technical';
+  const technical = validateRecords(history); assert.equal(technical.ok, false); assert.ok(!technical.ok && technical.issues.some((issue) => issue.code === 'invalid_product_answer'));
+});
+
+test('BUILD-14 next consolidation preview respects future start seconds and DST duplicate windows', () => {
+  const base = { id: 'next', projectId: 'project-1', timezone: 'UTC', hours: [9], startsAt: '2027-01-01T09:00:30Z' };
+  assert.equal(nextLearningWindow(base, '2026-11-12T08:30:00Z')?.scheduledFor, '2027-01-02T09:00:00.000Z');
+  const fold = { ...base, timezone: 'America/New_York', hours: [1], startsAt: '2026-01-01T00:00:00Z' };
+  assert.equal(nextLearningWindow(fold, '2026-11-01T05:30:00Z')?.scheduledFor, '2026-11-02T06:00:00.000Z');
 });

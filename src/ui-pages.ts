@@ -38,6 +38,7 @@ function shell(view: ProjectView, title: string, body: string) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${h(title)} · Software Factory</title><link rel="stylesheet" href="/assets/ui.css"><script type="module" src="/assets/ui-client.js"></script></head>
     <body><a class="skip" href="#main">Skip to content</a><header><a class="brand" href="/">Software Factory</a><nav aria-label="Main"><a href="/">Features</a>
+    <a href="/projects/${enc(view.options.projectId)}/decisions">Needs input (${view.questions.length})</a><a href="/projects/${enc(view.options.projectId)}/learning">Learning</a>
     <a href="/projects/${enc(view.options.projectId)}/work">Work</a><a href="/projects/${enc(view.options.projectId)}/dependencies">Dependencies</a>
     ${view.options.scottyUrl && /^https?:\/\//u.test(view.options.scottyUrl) ? `<a href="${h(view.options.scottyUrl)}" rel="noreferrer">Scotty execution list (read-only)</a>` : '<span>Scotty link not configured</span>'}</nav></header>
     <main id="main" data-stale-after-ms="${uiStaleAfterMs(view.options.staleAfterMs)}"><div class="notice">${view.options.fixture ? 'Fixture mode — all requests, task observations and evidence are synthetic.' : 'Local project records'}
@@ -94,7 +95,7 @@ export function renderOverview(view: ProjectView) {
       <h4>Unmapped ranges</h4>${items(request.coverage.unmapped.map((range) => range.text))}</article>`).join('') || empty('No unmapped request text.')}</section>
     <section aria-labelledby="requested"><h2 id="requested">Requested features</h2>${view.features.sort((a, b) => a.feature.priority - b.feature.priority).map((item) => featureRow(view, item)).join('') || empty('No requested features recorded.')}</section>
     <section aria-labelledby="suggestions"><h2 id="suggestions">Suggestions · outside current scope</h2>${view.suggestions.map((suggestion) => `<article><h3>${recordLink(view.options.projectId, suggestion, suggestion.questionOrChange)}</h3>${text(suggestion.rationale)}<p>Proposed — not selected. Related records: ${links(view.options.projectId, suggestion.affectedRecords)}</p></article>`).join('') || empty('No suggestions recorded.')}</section>
-    <section><h2>Decisions needing input</h2>${view.input.map((decision) => `<p>${recordLink(view.options.projectId, decision, decision.questionOrChange)} — Open ${h(decision.choice?.kind)} question. ${h(decision.rationale)}</p>`).join('') || empty('No open decisions recorded.')}</section>
+    <section><h2>Decisions needing input</h2>${decisionRows(view)}</section>
     <section><h2>Work and input needed</h2>${view.features.map((feature) => `<h3><a href="${featureUrl(view.options.projectId, feature.feature.id)}">${h(feature.feature.outcome)}</a></h3>${taskRows(feature)}`).join('')}</section>`);
 }
 const workUrl = (projectId: string, id: string) => `/projects/${enc(projectId)}/work/${enc(id)}`;
@@ -244,6 +245,7 @@ export function renderFeature(view: ProjectView, item: FeatureView) {
 }
 export function renderRecord(view: ProjectView, record: FactoryRecord) {
   const related = relatedRefs(record);
+  const guidance = record.kind === 'guidance_revision' ? view.learning.guidance.find((item) => sameRef(item.record, record)) : undefined;
   const contexts = view.features.filter((item) => {
     const records = [item.feature, ...item.designs, ...item.plans, ...item.assignments, ...item.decisions, ...item.corrections,
       ...item.tasks.map((task) => task.mapping), ...item.tasks.flatMap((task) => task.operation ? [task.operation] : []),
@@ -251,8 +253,75 @@ export function renderRecord(view: ProjectView, record: FactoryRecord) {
     return record.kind === 'project' || records.some((entry) => entry.id === record.id || related.some((target) => target.id === entry.id));
   });
   return shell(view, record.id, `<a href="/">All features</a><h1>${h(record.id)} <span class="revision">r${record.revision}</span></h1>
-    <p>${h(record.kind)} · Recorded ${h(record.updatedAt)}</p><h2>Original requests & related features</h2>
+    <p>${h(record.kind)} · Recorded ${h(record.updatedAt)}</p>
+    ${guidance ? `<p class="state">${guidance.active ? 'Current guidance' : guidance.replacements.length ? 'Superseded guidance' : 'Inactive guidance'}</p>
+      ${guidance.replacements.length ? `<p>Replaced by: ${links(view.options.projectId, guidance.replacements)}</p>` : ''}<p><a href="/projects/${enc(view.options.projectId)}/learning#guidance">Guidance scope and history</a></p>` : ''}
+    ${record.kind === 'decision_change' && record.choice?.kind === 'product' && record.choice.state === 'open' ? `<p><a href="/projects/${enc(view.options.projectId)}/decisions#question-${enc(record.id)}">Answer in context</a></p>` : ''}
+    <h2>Original requests & related features</h2>
     ${contexts.map((item) => `<p><a href="${featureUrl(view.options.projectId, item.feature.id)}">${h(item.feature.outcome)}</a> · ${links(view.options.projectId, item.feature.sourceRequests)}</p>`).join('') || empty('Unknown — no related feature has been linked.')}
     <h2>Related work, sources & evidence records</h2><p>${links(view.options.projectId, relatedRefs(record))}</p><h2>Revision history</h2>
     <p>${links(view.options.projectId, view.history.filter((entry) => entry.id === record.id))}</p><h2>Canonical record</h2><p><a href="${recordUrl(view.options.projectId, record, false)}">Read JSON</a></p><pre>${h(JSON.stringify(record, null, 2))}</pre>`);
+}
+
+function decisionRows(view: ProjectView) {
+  const projectId = view.options.projectId;
+  return view.questions.map(({ decision, affected, context, requests, answers, answerConflict }) => `<article class="question" id="question-${h(decision.id)}">
+    <h3>${recordLink(projectId, decision, decision.questionOrChange)}</h3><p class="state">Open product question</p>${text(decision.rationale)}
+    <p>Affects: ${links(projectId, decision.affectedRecords)}</p>
+    ${requests.map((request) => `<details><summary>Original request · ${h(request.id)} r${request.revision}</summary><blockquote>${h(request.originalText)}</blockquote>${recordLink(projectId, request)}</details>`).join('') || empty('Unknown — no original request link resolves.')}
+    ${context.map((item) => `<p>Feature: <a href="${featureUrl(projectId, item.feature.id)}">${h(item.feature.outcome)}</a></p>
+      <p>Criteria: ${links(projectId, item.feature.criteria)} · Related work: ${links(projectId, item.tasks.map((task) => task.mapping))}</p>`).join('')}
+    ${affected.map((record) => record.kind === 'criterion' ? text(record.expectedBehavior) : '').join('')}
+    ${answerConflict ? '<p class="state">Unresolved conflict — matching previous answers disagree. Inspect decision history before answering.</p>' : ''}
+    ${answers.length ? `<p>Existing answer available for the same question and affected revisions:</p>${text(answers[0]!.answer?.text ?? answers[0]!.rationale)}
+      <p>Source: ${links(projectId, answers)}</p>${edit({ kind: 'answer', decision, reuse: answers[0]! }, 'Use existing answer', empty('Reuse records the source answer in this decision revision.'))}` : ''}
+    ${edit({ kind: 'answer', decision }, 'Answer product question', field('answer', 'Product answer', ''))}
+    </article>`).join('') || empty('No material product questions need input.');
+}
+export function renderDecisions(view: ProjectView) {
+  const projectId = view.options.projectId;
+  const resolved = view.records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && record.choice?.kind === 'product' && record.choice.state === 'resolved');
+  return shell(view, 'Needs input', `<h1>Product questions needing input</h1>
+    ${text('Answer choices that affect the requested product outcome. Routine implementation continues through the existing work process.')}
+    <section><h2>Open questions</h2>${decisionRows(view)}</section>
+    <section><h2>Existing answers</h2>${resolved.map((decision) => `<article><h3>${recordLink(projectId, decision, decision.questionOrChange)}</h3>${text(decision.answer?.text ?? decision.rationale)}
+      <p>Affected revisions: ${links(projectId, decision.affectedRecords)}</p>${decision.answer?.reusedFrom ? `<p>Reused from: ${recordLink(projectId, decision.answer.reusedFrom)}</p>` : ''}</article>`).join('') || empty('No resolved product answers recorded.')}</section>
+    <section><h2>Technical questions · work context</h2>${view.input.filter((decision) => decision.choice?.kind === 'technical').map((decision) => `<p>${recordLink(projectId, decision, decision.questionOrChange)} — implementation question, handled with its work.</p>`).join('') || empty('No open technical questions recorded.')}</section>`);
+}
+export function renderLearning(view: ProjectView) {
+  const projectId = view.options.projectId;
+  const learning = view.learning;
+  const sources = (values: { uri: string; record?: Ref | undefined }[]) => values.map((source) => source.record ? recordLink(projectId, source.record) : external(source.uri)).join(' · ');
+  const scope = (record: Extract<FactoryRecord, { kind: 'guidance_revision' | 'observation' }>) => record.learning ?
+    `${record.learning.scope.kind === 'project' ? 'Project' : `Feature ${record.learning.scope.featureId}`} · topic ${record.learning.topic}` : 'Unclassified legacy scope';
+  const observation = (record: Extract<FactoryRecord, { kind: 'observation' }>) => `<article><h3>${recordLink(projectId, record, record.finding)}</h3>
+    <p>${h(record.consolidationState)} · ${h(scope(record))}</p><p>Scope sources: ${sources(record.affectedScope)}</p>
+    ${record.proposedGeneralization ? text(`Possible lesson: ${record.proposedGeneralization}`) : ''}
+    ${record.evidence.map((entry) => `<p>Evidence: ${h(entry.description)} · ${h(entry.observedAt)} · ${external(entry.artifact.uri)} @ ${h(entry.artifact.revision ?? entry.artifact.digest)}</p>`).join('') || empty('Missing evidence — no evidence recorded.')}</article>`;
+  const identities = [...new Map([{ scope: { kind: 'project' as const }, topic: 'general' },
+    ...view.features.map((item) => ({ scope: { kind: 'feature' as const, featureId: item.feature.id }, topic: 'general' })),
+    ...learning.identities].map((identity) => [JSON.stringify(identity), identity])).values()];
+  const standing = edit({ kind: 'standing-instruction', projectId, identities, guidance: learning.active }, 'Record explicit standing instruction',
+    '<p>This instruction applies immediately in the selected scope. It replaces current guidance with the same topic in that scope; project instructions also replace inferred feature rules for that topic. Explicit feature overrides remain.</p>' +
+    `<label>Scope and existing topic<select name="identity">${identities.map((identity) => `<option value="${h(JSON.stringify(identity))}">${h(identity.scope.kind === 'project' ? 'Project' : `Feature ${identity.scope.featureId}`)} · ${h(identity.topic)}</option>`).join('')}</select></label>` +
+    field('topic', 'New topic (optional; otherwise use selected topic)', '', 'text') + field('instruction', 'Explicit standing instruction', '') +
+    field('evidenceUri', 'Evidence source', '', 'text') + field('evidenceRevision', 'Evidence revision or digest', '', 'text'));
+  const run = learning.lastRun;
+  return shell(view, 'Learning', `<h1>Observations and guidance</h1>
+    <nav class="section-nav" aria-label="Learning sections"><a href="#inbox">Observation inbox</a><a href="#conflicts">Conflicts</a><a href="#guidance">Guidance and history</a><a href="#consolidation">Last consolidation</a></nav>
+    <p>${h(learning.scheduleState)}</p><p>Next consolidation window: ${learning.nextWindow ? `${h(learning.nextWindow.scheduledFor)} · ${h(learning.nextWindow.id)}` : 'Unknown'}</p>
+    <section id="inbox"><h2>Observation inbox</h2>${learning.pending.map(observation).join('') || empty('No pending observations.')}<p>Inferred lessons stay pending until consolidation evaluates their evidence and scope.</p></section>
+    <section id="conflicts"><h2>Unresolved conflicts</h2>${learning.conflicts.map(observation).join('')}
+    ${learning.guidanceConflicts.map((record) => `<article><h3>${recordLink(projectId, record, record.text)}</h3><p>${h(scope(record))}</p>${items(record.unresolvedConflicts)}</article>`).join('')}
+    ${!learning.conflicts.length && !learning.guidanceConflicts.length ? empty('No unresolved learning conflicts recorded.') : ''}</section>
+    <section id="guidance"><h2>Current guidance</h2>${learning.active.map((record) => `<article><h3>${recordLink(projectId, record, record.text)}</h3><p>Current · ${h(scope(record))} · ${h(record.learning?.authority ?? 'legacy authority')}</p>
+      ${text(record.applicability)}<p>Scope sources: ${sources(record.scope)}</p><p>Supporting observations: ${links(projectId, record.supportingObservations)}</p></article>`).join('') || empty('No active guidance recorded.')}
+      ${standing}<h3>Revision and supersession history</h3>
+      ${learning.guidance.map(({ record, replacements, active }) => `<article><h4>${recordLink(projectId, record, record.text)}</h4><p>${active ? 'Current' : replacements.length ? 'Superseded' : 'Inactive — unresolved conflict or unclassified state'} · ${h(scope(record))}</p>
+      ${replacements.length ? `<p>Replaced by: ${links(projectId, replacements)}</p>` : ''}<p>Supersedes: ${links(projectId, record.supersededGuidance)}</p><p>Supporting observations: ${links(projectId, record.supportingObservations)}</p></article>`).join('') || empty('No guidance history recorded.')}</section>
+    <section id="consolidation"><h2>Last consolidation diff</h2>${run ? `<p>${recordLink(projectId, run)} · Window ${h(run.scheduledWindowId)} · ${h(run.scheduledFor)} · ${h(run.timezone)}</p>
+      ${run.verdict.decisions.map((decision) => `<article><h3>${h(decision.outcome)} · ${h(decision.groupId)}</h3>${text(decision.rationale)}<p>Observations: ${links(projectId, decision.observationRefs)}</p><p>Replaced guidance: ${links(projectId, decision.guidanceRefs)}</p>${decision.text ? text(`After: ${decision.text}`) : ''}</article>`).join('')}
+      <h3>Guidance before this run</h3>${learning.before?.map((record) => `<p>Before: ${recordLink(projectId, record, record.text)}</p>`).join('') || empty('No active guidance before this run.')}
+      <h3>Guidance written by this run</h3>${learning.after === undefined ? empty('Unknown — this imported run has no mutation receipt; consult the saved verdict above.') : learning.after.map((record) => `<p>After: ${recordLink(projectId, record, record.text)}</p>`).join('') || empty('No guidance changes.')}
+      ${run.sectionDiffs.map((diff) => `<h3>${h(diff.source.heading)}</h3><pre>${h(diff.diff)}</pre>`).join('')}` : empty('Unknown — no successful consolidation run recorded.')}</section>`);
 }

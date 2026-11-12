@@ -5,7 +5,7 @@ import { IdSchema } from './primitives.js';
 import { type TaskAdapterOptions } from './tasks.js';
 import { applyCommand } from './application.js';
 import { projectView, featureView, type UiOptions } from './ui-state.js';
-import { renderOverview, renderFeature, renderRecord, renderWork } from './ui-pages.js';
+import { renderOverview, renderFeature, renderRecord, renderWork, renderDecisions, renderLearning } from './ui-pages.js';
 import { ProjectStore, StoreError } from './store.js';
 
 /** BUILD-05 field ownership retained by the focused toolkit editors. */
@@ -41,7 +41,7 @@ export class ToolkitApi {
       const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       if (method === 'GET' && url.pathname === '/canonical') {
         return { status: 200, body: { fields: scottyFields, method: 'POST', path: '/canonical',
-          contract: 'CommandEnvelopeSchema', operations: ['record_decision_suggestion', 'design_plan_feature', 'map_manage_execution_task'],
+          contract: 'CommandEnvelopeSchema', operations: ['record_decision_suggestion', 'design_plan_feature', 'map_manage_execution_task', 'capture_consolidate_learning (capture only)'],
           lifecycle: 'Existing FirstMate lifecycle; toolkit task edits use BUILD-08.' } };
       }
       if (method === 'GET' && url.pathname === '/') {
@@ -49,6 +49,10 @@ export class ToolkitApi {
       }
       if (method === 'GET' && parts[0] === 'projects' && parts[1]) {
         const options = { ...this.options, projectId: parts[1] };
+        if (parts.length === 3 && (parts[2] === 'decisions' || parts[2] === 'learning')) {
+          const view = projectView(this.store, options);
+          return { status: 200, body: parts[2] === 'decisions' ? renderDecisions(view) : renderLearning(view), contentType: 'text/html; charset=utf-8' };
+        }
         if (parts.length === 3 && parts[2] === 'overview') return { status: 200, body: projectView(this.store, options) };
         if ((parts.length === 3 && ['work', 'dependencies'].includes(parts[2]!)) || (parts.length === 4 && parts[2] === 'work')) {
           return { status: 200, body: renderWork(projectView(this.store, options), parts[2] === 'dependencies', parts[3]), contentType: 'text/html; charset=utf-8' };
