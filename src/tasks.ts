@@ -129,7 +129,15 @@ function queueTaskIntent(store: ProjectStore, command: TaskCommand, inheritedAtt
           { nativeDependencies: previous.management.nativeDependencies } : {}),
         holdReason: `Software Factory ${stableId('hold', command.projectId, command.targetId)}` },
     });
-    return [decision, mapping, { ...pendingOperation(command, operationId), taskMutationAttempted: inheritedAttempt !== undefined,
+    // An explicit edit supersedes observations of this task's outgoing edges,
+    // including copies retained by downstream consumers after native cleanup.
+    const invalidated = payload.action === 'edit_dependencies' ? currentTaskMappings(records).flatMap((consumer) => {
+      if (consumer.id === mapping.id || !consumer.management?.nativeDependencies?.some((edge) => edge.taskId === mapping.firstMateTaskId)) return [];
+      return [{ ...consumer, revision: consumer.revision + 1, updatedAt: command.issuedAt,
+        management: { ...consumer.management,
+          nativeDependencies: consumer.management.nativeDependencies.filter((edge) => edge.taskId !== mapping.firstMateTaskId) } }];
+    }) : [];
+    return [decision, mapping, ...invalidated, { ...pendingOperation(command, operationId), taskMutationAttempted: inheritedAttempt !== undefined,
       ...(inheritedAttempt ? { externalAttempt: inheritedAttempt } : {}) }];
   });
   const mappingRef = result.records.find((entry) => entry.id === command.targetId)!;
@@ -221,9 +229,15 @@ function inspectDependencies(wrapper: TaskWrapper, taskId: string, ids: string[]
   return dependencies;
 }
 
-function withNativeDependencies(mapping: TaskMapping, dependencies: Map<string, FirstMateTask | undefined>): TaskMapping {
+function withNativeDependencies(records: FactoryRecord[], mapping: TaskMapping, dependencies: Map<string, FirstMateTask | undefined>): TaskMapping {
   const native = new Map((mapping.management!.nativeDependencies ?? []).map((edge) => [edge.taskId, new Set(edge.dependencies)]));
   for (const [id, task] of dependencies) if (task) native.set(id, new Set([...(native.get(id) ?? []), ...taskIds(task)]));
+  // Toolkit-owned direct edges follow canonical requirements, not retained
+  // native history. Keep only foreign edges as evidence across native cleanup.
+  for (const owner of currentTaskMappings(records)) if (owner.management) {
+    const edges = native.get(owner.firstMateTaskId);
+    for (const id of [...owner.management.managedDependencies, ...taskDependencyIds(records, owner)]) edges?.delete(id);
+  }
   const nativeDependencies = [...native].map(([taskId, ids]) => ({ taskId, dependencies: [...ids] }));
   return JSON.stringify(nativeDependencies) === JSON.stringify(mapping.management!.nativeDependencies ?? []) ? mapping :
     { ...mapping, management: { ...mapping.management!, nativeDependencies } };
@@ -383,7 +397,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
           const dependencies = inspectDependencies(wrapper, consumer.firstMateTaskId,
             [...new Set([...taskDependencyIds(records, consumer), ...taskIds(task)])], observationError);
           dependencies.set(consumer.firstMateTaskId, task);
-          const updated = withNativeDependencies(consumer, dependencies);
+          const updated = withNativeDependencies(records, consumer, dependencies);
           if (updated !== consumer) {
             operation = recordOutcome(store, operation, operation.state, 'Observed consumer native dependency graph', mapping,
               undefined, undefined, [updated]);
@@ -403,7 +417,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
       mapping.disposition.state === 'cancelled' ? observationError : undefined);
     if (observationErrors.length) return recordOutcome(store, operation, 'unknown',
       JSON.stringify({ task: observed, observationErrors, events: wrapper.events }), mapping, mapping.management!.managedDependencies);
-    const observedMapping = withNativeDependencies(mapping, dependencies);
+    const observedMapping = withNativeDependencies(records, mapping, dependencies);
     if (observedMapping !== mapping) {
       operation = recordOutcome(store, operation, operation.state, 'Observed native dependency graph', observedMapping,
         observedMapping.management!.managedDependencies);

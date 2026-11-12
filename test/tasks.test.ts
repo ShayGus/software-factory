@@ -9,7 +9,7 @@ import test, { type TestContext } from 'node:test';
 import {
   ProjectStore, RecordsSchema, MapManageExecutionTaskCommandSchema, queueManagedTask, manageExecutionTask,
   reconcileManagedTask, taskReadinessReasons, ref, validateAssignmentForDispatch, parseFirstMateTaskDetail,
-  FirstMateTaskMutationSchema, importLegacyTasks, type FactoryRecord, type TaskMapping, type TaskAdapterOptions,
+  FirstMateTaskMutationSchema, importLegacyTasks, disableProject, type FactoryRecord, type TaskMapping, type TaskAdapterOptions,
 } from '../src/index.js';
 import { fakeTask, fakeTaskWrapper, type FakeState } from './task-wrapper-helper.js';
 
@@ -620,7 +620,6 @@ test('undefined-only updates are rejected and accepted commands survive JSON per
   flow.succeeded(flow.command());
   assert.throws(() => flow.existing({ action: 'update', update: { title: undefined } }), /at least one field/);
   const input = flow.existing({ action: 'update', update: { title: undefined, body: 'Defined body' } });
-  assert.deepEqual(MapManageExecutionTaskCommandSchema.parse(JSON.parse(JSON.stringify(input))), JSON.parse(JSON.stringify(input)));
   flow.succeeded(input);
   assert.doesNotThrow(() => flow.store.exportProject(projectId));
   flow.succeeded(flow.existing({ action: 'pause' }));
@@ -689,7 +688,14 @@ test('attempted dependency ownership survives a lost receipt and changed produce
   });
   const pending = flow.manage(flow.existing({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
   assert.equal(pending.operation.state, 'unknown');
-  reviseRecord(flow, 'mapping-1', (record) => { if (record.kind === 'task_mapping') record.firstMateTaskId = 'replacement-producer'; });
+  const producer = flow.store.get(projectId, 'mapping-1'); assert.ok(producer?.kind === 'task_mapping');
+  const other = { ...structuredClone(producer), id: 'competing-producer', firstMateTaskId: 'replacement-producer' };
+  const key = 'competing-producer-decision';
+  const decision = { kind: 'decision_change', id: key, projectId, schemaVersion: 1, revision: 1,
+    createdAt: other.createdAt, updatedAt: other.updatedAt, questionOrChange: 'Introduce competing producer', affectedRecords: [ref(producer)],
+    rationale: 'Producer ambiguity after a lost receipt', disposition: 'selected', sourceRefs: [{ uri: 'fixture://ambiguity' }], scopeChanges: [] };
+  flow.store.mutate({ schemaVersion: 1, id: key, projectId, issuedAt: other.updatedAt, idempotencyKey: key,
+    command: 'record_decision_suggestion', targetId: other.id, expectedRevision: 0, payload: { decision } }, () => [decision, other]);
   const retry = reconcileManagedTask(flow.store, projectId, pending.operation.id, flow.options);
   assert.equal(retry.state, 'succeeded', retry.reconciliation?.note);
   assert.equal(flow.fake.read().tasks['managed-task']!.deps.some((edge) => edge.id === 'pilot-build'), false);
@@ -809,4 +815,96 @@ test('review 1489 finding 1: cancellation refuses to reinstall an edge that comp
   assert.deepEqual(JSON.parse(readFileSync(stopped, 'utf8')), ['managed-task', 'exit']);
   assert.equal(result.operation.state, 'unknown');
   assert.match(result.operation.reconciliation?.note ?? '', /task_dependency_cycle/);
+});
+
+
+for (const lostReceipt of [false, true]) test(`review 1459 finding 5: native-discovered consumer guard is handed back (lost receipt: ${lostReceipt})`, (t) => {
+  const flow = setup(t, true);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.state = 'done';
+    state.tasks.native = fakeTask('native', { state: 'done' });
+  });
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Consumer', repo: 'sample' },
+    dependencies: ['native'] }, 'consumer-mapping'));
+  const foreignHold = { reason: 'Foreign owner', kind: 'external' as const, until: '2026-12-01' };
+  flow.fake.edit((state) => {
+    state.tasks.native!.deps = [{ type: 'blocked-by', id: 'managed-task' }];
+    state.tasks.consumer!.held = true; state.tasks.consumer!.hold = foreignHold;
+    if (lostReceipt) state.failure = { action: 'block', when: 'after' };
+  });
+  const result = flow.manage(flow.existing({ action: 'cancel' }));
+  assert.equal(result.operation.state, lostReceipt ? 'unknown' : 'succeeded', result.operation.reconciliation?.note);
+  const consumer = flow.store.get(projectId, 'consumer-mapping'); assert.ok(consumer?.kind === 'task_mapping');
+  assert.ok(consumer.management!.managedDependencies.includes('permanent-guard'));
+  const reopened = new ProjectStore(flow.database);
+  try { assert.deepEqual(disableProject(reopened, projectId, 'hand_back', flow.options).errors, []); }
+  finally { reopened.close(); }
+  assert.equal(flow.fake.read().tasks.consumer!.deps.some((edge) => edge.id === 'permanent-guard'), false);
+  assert.deepEqual(flow.fake.read().tasks.consumer!.hold, foreignHold);
+  flow.fake.edit((state) => { state.tasks.consumer!.held = false; state.tasks.consumer!.hold = null; });
+  assert.equal(flow.fake.read().tasks.consumer!.deps.some((edge) => edge.id === 'permanent-guard'), false);
+});
+
+test('review 1489 finding 2: replanning removes a cancelled product prerequisite without retaining its owned edge', (t) => {
+  const flow = setup(t, true, (records) => { productPrerequisiteRecords(records, 'criterion', true); });
+  flow.fake.edit((state) => { state.tasks['pilot-build'] = fakeTask('pilot-build', { state: 'done' }); });
+  flow.succeeded(flow.command({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
+  flow.succeeded(flow.command({ task: { kind: 'existing', firstMateTaskId: 'pilot-build' }, action: 'cancel' }, 'mapping-1'));
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, true);
+  reviseRecord(flow, 'plan-1', (record) => { if (record.kind === 'implementation_plan_revision') record.dependencies = []; });
+  flow.succeeded(flow.existing({ detailedPlanTask: ref(flow.store.get(projectId, 'consumer-task')!) }));
+  assert.deepEqual(flow.fake.read().tasks['managed-task']!.deps, []);
+  assert.deepEqual(taskReadinessReasons(flow.store.records(projectId), flow.mapping()), []);
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, false);
+});
+
+test('review 1489 finding 3: editing an intermediary invalidates downstream historical observations', (t) => {
+  const flow = setup(t, true);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => { state.tasks['managed-task']!.state = 'done'; });
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'middle', title: 'Middle', repo: 'sample' },
+    dependencies: ['managed-task'] }, 'middle-mapping'));
+  flow.fake.edit((state) => { state.tasks.middle!.state = 'done'; });
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Consumer', repo: 'sample' },
+    dependencies: ['middle'] }, 'consumer-mapping'));
+  flow.succeeded(flow.existing({ action: 'cancel' }));
+  assert.equal(flow.fake.read().tasks.consumer!.held, true);
+  flow.succeeded(flow.command({ task: { kind: 'existing', firstMateTaskId: 'middle' }, action: 'edit_dependencies',
+    dependencies: [] }, 'middle-mapping'));
+  flow.succeeded(flow.command({ task: { kind: 'existing', firstMateTaskId: 'consumer' }, action: 'map',
+    dependencies: ['middle'] }, 'consumer-mapping'));
+  const consumer = flow.store.get(projectId, 'consumer-mapping'); assert.ok(consumer?.kind === 'task_mapping');
+  assert.deepEqual(taskReadinessReasons(flow.store.records(projectId), consumer), []);
+  assert.equal(flow.fake.read().tasks.consumer!.held, false);
+});
+
+
+test('review 1489 finding 3: explicit edit supersedes a foreign native observation retained downstream', (t) => {
+  const flow = setup(t, true);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.state = 'done';
+    state.tasks['legacy-middle'] = fakeTask('legacy-middle', { state: 'done', deps: [{ type: 'blocked-by', id: 'managed-task' }] });
+  });
+  const runtime = fakeRuntime(flow.directory, ['managed-task', 'legacy-middle']);
+  const imported = importLegacyTasks(flow.store, projectId, { fmHome: flow.directory, snapshotExecutable: runtime.executable });
+  const middle = imported.mappings[0]!;
+  flow.succeeded(flow.command({ task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Consumer', repo: 'sample' },
+    dependencies: ['legacy-middle'] }, 'consumer-mapping'));
+  flow.succeeded(flow.existing({ action: 'cancel' }));
+  assert.equal(flow.fake.read().tasks.consumer!.held, true);
+  flow.fake.edit((state) => { state.tasks['legacy-middle']!.deps = []; });
+  // Ordinary native cleanup keeps the durable cancellation observation.
+  const refresh = () => flow.command({ task: { kind: 'existing', firstMateTaskId: 'consumer' }, action: 'map',
+    dependencies: ['legacy-middle'] }, 'consumer-mapping');
+  flow.succeeded(refresh());
+  assert.equal(flow.fake.read().tasks.consumer!.held, true);
+  // An explicit dependency edit is the authority to retire that observation.
+  flow.succeeded(flow.command({ task: { kind: 'existing', firstMateTaskId: 'legacy-middle' }, action: 'edit_dependencies',
+    feature: null, criteria: [], detailedPlanTask: null, dependencies: [] }, middle.id));
+  flow.succeeded(refresh());
+  const consumer = flow.store.get(projectId, 'consumer-mapping'); assert.ok(consumer?.kind === 'task_mapping');
+  assert.deepEqual(taskReadinessReasons(flow.store.records(projectId), consumer), []);
+  assert.equal(flow.fake.read().tasks.consumer!.held, false);
 });

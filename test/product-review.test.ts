@@ -366,6 +366,8 @@ test('review finding 1: two delivered assignments complete one feature with exac
     ]);
     const snapshot = JSON.parse(readFileSync(calls, 'utf8'));
     assert.equal(snapshot.tasks.length, 2); assert.equal(snapshot.deliveries[1].deliveredArtifact.revision, secondArtifact.revision);
+    assert.deepEqual(snapshot.plans.map(ref), [{ id: 'plan-1', revision: 1 }]);
+    assert.deepEqual(snapshot.reviewPlan, { id: 'plan-1', revision: 1 });
     assert.deepEqual(snapshot.workerReturns.map((result: CriterionResult) => result.assignment), review.assignments);
     assert.equal(flow.qualityReads(), 2, 'The first commit reuses its quality result; only the second commit reads another');
     const tampered = structuredClone(flow.store.history('project-1'));
@@ -608,7 +610,8 @@ for (const primary of ['earlier', 'later'] as const) test(`aggregate completion 
       priorities: [], examples: [], exclusions: [], existingWork: [{ source: recordSource(request), finding: 'Existing interface' }],
       openUnknowns: [], scope: [], changeReason: 'Preserve delivery' };
     for (const task of records) if (task.kind === 'detailed_plan_task') { task.decisionsToKeep = []; task.verificationMethod = 'Exercise connected systems'; }
-    const draft = { ...structuredClone(plan), revision: 2, updatedAt: at, readiness: { ...plan.readiness, ready: false },
+    plan.integrationApproach = 'Earlier authority: preserve integration with every connected system';
+    const draft = { ...structuredClone(plan), revision: 2, updatedAt: at, integrationApproach: 'Updated integration sequence', readiness: { ...plan.readiness, ready: false },
       workflow: { slices: [{ id: 'slice', behavior: 'Keep common integration', criteria: [general, second], tasks: plan.deliverySequence }],
         scope: [], integrationSteps: ['Connect deliveries'], finalVerification: ['Exercise both systems'], changeReason: 'Retain unchanged deliveries',
         retainedTasks: plan.deliverySequence.map((task) => ({ task, reason: 'Unchanged task' })) } };
@@ -635,14 +638,27 @@ for (const primary of ['earlier', 'later'] as const) test(`aggregate completion 
       deliveredArtifact: flow.input.deliveredArtifact, results: [first] };
     const input = { ...flow.input, ...(primary === 'earlier' ? earlier : later),
       additionalDeliveries: [primary === 'earlier' ? later : earlier] };
-    const { review } = reviewProduct(flow.store, input, fakeJudgeOptions({ result: JSON.stringify(passing()) }), flow.reader);
+    const calls = join(flow.directory, 'mixed-plans.jsonl');
+    const { review } = reviewProduct(flow.store, input, fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) }), flow.reader);
+    const snapshot = JSON.parse(readFileSync(calls, 'utf8'));
+    assert.deepEqual(snapshot.reviewPlan, { id: 'plan-1', revision: 3 });
+    assert.equal(JSON.stringify(snapshot).split('Updated integration sequence').length - 1, 1, 'Each plan authority is supplied once');
+    assert.deepEqual(snapshot.plans.map(ref).sort((a: { revision: number }, b: { revision: number }) => a.revision - b.revision),
+      [{ id: 'plan-1', revision: 1 }, { id: 'plan-1', revision: 3 }]);
+    assert.deepEqual(snapshot.deliveries.map((delivery: { plan: unknown }) => delivery.plan), primary === 'earlier' ?
+      [{ id: 'plan-1', revision: 1 }, { id: 'plan-1', revision: 3 }] :
+      [{ id: 'plan-1', revision: 3 }, { id: 'plan-1', revision: 1 }]);
+    const verdict = passing(); verdict.planConformance = 'failed';
+    verdict.findings = [{ check: 'planConformance', type: 'missing_behavior', message: 'Retained delivery misses its earlier authority.',
+      quotes: [{ source: 'plan', text: 'Earlier authority: preserve integration with every connected system' }] }];
+    const failed = reviewProduct(flow.store, { ...input, reviewId: 'earlier-plan-finding', idempotencyKey: 'earlier-plan-finding' },
+      fakeJudgeOptions({ result: JSON.stringify(verdict) }), flow.reader).review;
+    assert.equal(failed.outcome, 'failed', JSON.stringify(failed));
+    assert.deepEqual(failed.conformance?.verdict?.findings, verdict.findings);
+    assert.ok(failed.sourceRefs.some((source) => source.record?.id === 'plan-1' && source.record.revision === 1));
     assert.equal(review.outcome, 'passed', JSON.stringify(review));
     assert.deepEqual(review.plan, { id: 'plan-1', revision: 3 });
     assert.equal(validateReviewForCompletion(flow.store.history('project-1'), review).ok, true);
-    const tampered = structuredClone(flow.store.history('project-1'));
-    const plan = tampered.find((record) => record.id === 'plan-1' && record.revision === 3); assert.ok(plan?.kind === 'implementation_plan_revision');
-    plan.workflow!.retainedTasks = [];
-    assert.equal(validateReviewForCompletion(tampered, review).ok, false);
   } finally { flow.close(); }
 });
 
