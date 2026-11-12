@@ -1,3 +1,4 @@
+import { learningContext, projectLegacyContext, activeGuidance } from './learning-context.js';
 import { createHash } from 'node:crypto';
 import type { Artifact, Ref } from './primitives.js';
 import type { Assignment, CriterionResult, FactoryRecord, ImplementationPlanRevision } from './records.js';
@@ -107,6 +108,10 @@ export function requiredAssignmentContext(records: FactoryRecord[], assignment: 
       sources.push({ uri: `factory:criterion-output/${encodeURIComponent(dependency.prerequisiteTaskId)}/${encodeURIComponent(criterion.id)}@${criterion.revision}` });
     }
   }
+  const learning = learningContext(records, assignment.feature?.id);
+  for (const record of [...learning.guidance, ...learning.corrections, ...learning.conflicts]) {
+    selectedRecords.push(record); sources.push(recordSource(record));
+  }
   // Collect source-linked record originals before finalizing sidecar coverage.
   // Follow source references at exact revisions, including reused designs that
   // are not a primary assignment/design/plan pointer.
@@ -144,7 +149,11 @@ export function selectAssignmentContext(records: FactoryRecord[], assignment: Pa
     const versions = unique(required.artifacts.filter((candidate) => candidate.uri === source.uri), sameArtifactIdentity);
     if (!loaded || (artifact && ((loaded.identity && !sameArtifactIdentity(loaded.identity, artifact)) ||
       (versions.length > 1 && !loaded.identity)))) { missing.push(missingContext(requirement)); continue; }
-    const { text, uri } = loaded;
+    if (record?.kind === 'guidance_revision' && !activeGuidance(records).some((current) => samePlanningRef(current, record))) {
+      missing.push(missingContext(requirement)); continue;
+    }
+    const { uri } = loaded;
+    const text = projectLegacyContext(records, source.uri, loaded.text);
     const start = loaded.start ?? (source.excerpt ? text.indexOf(source.excerpt) : 0);
     const requestedEnd = loaded.end ?? (source.excerpt ? start + source.excerpt.length : text.length);
     const splitsPair = (offset: number) => offset > 0 && offset < text.length &&

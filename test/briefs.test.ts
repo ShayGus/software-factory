@@ -8,7 +8,7 @@ import { fakeJudge, fakeVerdict } from './judge-helper.js';
 import {
   ProjectStore, RecordsSchema, prepareWorkerBrief, checkWorkerBrief, requiredAssignmentContext,
   scaffoldParts, validateAssignmentForDispatch, validateRecords, ref,
-  selectAssignmentContext, digestText, type Artifact, type Assignment, type FactoryRecord, type PrepareWorkerBriefInput,
+  captureLearning, consolidateLearning, readLegacySection, selectAssignmentContext, digestText, type Artifact, type Assignment, type FactoryRecord, type PrepareWorkerBriefInput,
 } from '../src/index.js';
 
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
@@ -441,4 +441,38 @@ for (const labelled of [false, true]) test(`review 1102-3: excerpt context is in
     assert.equal(wrongExcerpt.ok, false);
     assert.ok(wrongExcerpt.findings.some((finding) => finding.code === 'missing_required_context' && finding.message.includes(source.excerpt)));
   } finally { flow.close(); }
+});
+
+test('adopted legacy sections survive real brief preparation and fidelity checks without retired text', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-adopted-memory-'));
+  const memoryPath = join(directory, 'memory.md');
+  const memory = '# Memory\n\n## Guidance\nRetired guidance text.\n\n## Continuity\nRetain current operational context.\n';
+  writeFileSync(memoryPath, memory);
+  const flow = setup({ editRecords: (records) => {
+    const design = records.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+    design.sourceRefs.push({ uri: memoryPath });
+  } });
+  try {
+    const sourceFile = flow.sourceFiles.find((source) => source.source.uri === memoryPath); assert.ok(sourceFile);
+    writeFileSync(sourceFile.path, memory);
+    const at = '2026-11-12T08:30:00.000Z';
+    captureLearning(flow.store, { projectId, id: 'legacy-observation', idempotencyKey: 'legacy-capture', issuedAt: at,
+      identity: { scope: { kind: 'project' }, topic: 'legacy-adoption' }, inputKind: 'inferred', captureReason: 'stow',
+      finding: 'The legacy guidance is obsolete.', proposedGeneralization: 'Use current consolidated guidance.',
+      evidence: [{ artifact: { uri: memoryPath, digest: digestText(memory) }, description: 'Legacy guidance source', observedAt: at }],
+      legacySections: [readLegacySection(memoryPath, '## Guidance')] });
+    const agent = structuredClone(fakeJudge);
+    agent.executables.codex = new URL('../../fixtures/fake-learning-agent.mjs', import.meta.url).pathname;
+    consolidateLearning(flow.store, { projectId, id: 'legacy-pass', idempotencyKey: 'legacy-pass', issuedAt: at,
+      scheduledWindowId: 'legacy-window', scheduledFor: at, scheduleDigest: 'test-schedule', timezone: 'Asia/Jerusalem' }, agent);
+    flow.input.issuedAt = at;
+    const result = flow.prepare(); assert.equal(result.ok, true, JSON.stringify(result));
+    const brief = readFileSync(flow.briefPath, 'utf8'); const sidecar = readFileSync(result.sidecarPath, 'utf8');
+    assert.ok(brief.includes('Use current consolidated guidance.'));
+    assert.ok(sidecar.includes('Retain current operational context.'));
+    assert.ok(!brief.includes('Retired guidance text.') && !sidecar.includes('Retired guidance text.'));
+    const check = flow.check(); assert.equal(check.ok, true, JSON.stringify(check));
+    assert.equal(readFileSync(memoryPath, 'utf8'), memory);
+    assert.equal(readFileSync(sourceFile.path, 'utf8'), memory);
+  } finally { flow.close(); rmSync(directory, { recursive: true, force: true }); }
 });

@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { captureLearning, consolidateLearning, readLegacySection } from './learning.js';
+import { learningContext } from './learning-context.js';
+import { prepareLearningSchedule, runScheduledLearning } from './learning-schedule.js';
 import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,6 +36,15 @@ All commands print JSON; chat-hook is silent on success. No settings are install
                  --agent-config <ProjectAgentConfig JSON file>
   review-product --db <sqlite> --input <ReviewProductInput JSON file>
                  --agent-config <ProjectAgentConfig JSON file>
+  learning-capture --db <sqlite> --input <CaptureLearningInput JSON file>
+  learning-consolidate --db <sqlite> --input <ConsolidateLearningInput JSON file>
+                 --agent-config <ProjectAgentConfig JSON file>
+  learning-context --db <sqlite> --project <id> [--feature <id>]
+  learning-legacy --db <sqlite> --source <path or file URI> --heading <Markdown heading>
+  learning-schedule --db <sqlite> --schedule <LearningSchedule JSON file>
+                 --agent-config <ProjectAgentConfig JSON file>
+  learning-tick  --db <sqlite> --schedule <LearningSchedule JSON file>
+                 --agent-config <ProjectAgentConfig JSON file> [--now <ISO timestamp>]
   findings       --db <sqlite> --project <id> --plan <plan ID>
   stages         --db <sqlite> --project <id> --feature <feature ID>
   unclassified   --db <sqlite> --project <id>
@@ -55,6 +67,12 @@ See README.md for project/mapping examples, correction, and announcement recover
 `;
 const valueOption = { type: 'string' as const };
 const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple?: boolean }>> = {
+  'learning-capture': { db: valueOption, input: valueOption },
+  'learning-consolidate': { db: valueOption, input: valueOption, 'agent-config': valueOption },
+  'learning-context': { db: valueOption, project: valueOption, feature: valueOption },
+  'learning-legacy': { db: valueOption, source: valueOption, heading: valueOption },
+  'learning-schedule': { db: valueOption, schedule: valueOption, 'agent-config': valueOption },
+  'learning-tick': { db: valueOption, schedule: valueOption, 'agent-config': valueOption, now: valueOption },
   init: { db: valueOption, input: valueOption },
   capture: { db: valueOption, project: valueOption, 'client-request-id': valueOption,
     channel: valueOption, source: valueOption, 'text-file': valueOption, 'captured-at': valueOption },
@@ -106,6 +124,14 @@ export function runCli(args: string[]): number {
     const store = new ProjectStore(database);
     try {
       switch (verb) {
+        case 'learning-capture': output(captureLearning(store, jsonFile('input'))); break;
+        case 'learning-consolidate': output(consolidateLearning(store, jsonFile('input'), jsonFile('agent-config'))); break;
+        case 'learning-context': output(learningContext(store.history(required('project')), optional('feature'))); break;
+        case 'learning-legacy': output(readLegacySection(required('source'), required('heading'))); break;
+        case 'learning-schedule': output(prepareLearningSchedule(jsonFile('schedule'), {
+          node: process.execPath, cli: fileURLToPath(import.meta.url), db: database,
+          schedule: resolve(required('schedule')), agentConfig: resolve(required('agent-config')) })); break;
+        case 'learning-tick': output(runScheduledLearning(store, jsonFile('schedule'), optional('now') ?? new Date().toISOString(), jsonFile('agent-config'))); break;
         case 'init': output(initializeProject(store, jsonFile('input'))); break;
         case 'capture': {
           const textFile = required('text-file');

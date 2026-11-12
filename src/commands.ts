@@ -107,9 +107,13 @@ export const RecordReviewResultCommandSchema = z.strictObject({
 export const CaptureConsolidateLearningCommandSchema = z.strictObject({
   ...mutation, command: z.literal('capture_consolidate_learning'),
   payload: z.discriminatedUnion('action', [
-    z.strictObject({ action: z.literal('capture'), observation: ObservationSchema }),
+    z.strictObject({ action: z.literal('capture'), observation: ObservationSchema,
+      feature: FeatureRevisionSchema.optional(),
+      supersedes: z.array(RefSchema).optional() }),
     z.strictObject({ action: z.literal('consolidate'), scheduledWindowId: IdSchema,
-      observationRefs: z.array(RefSchema), guidanceRefs: z.array(RefSchema), timezone: TextSchema }),
+      observationRefs: z.array(RefSchema), guidanceRefs: z.array(RefSchema), timezone: TextSchema,
+      snapshotDigest: TextSchema.optional(), agentConfigDigest: TextSchema.optional(),
+      scheduleDigest: TextSchema.optional(), scheduledFor: TimestampSchema.optional() }),
   ]),
 });
 export const ReadProjectStateExportCommandSchema = z.strictObject({

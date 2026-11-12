@@ -1,3 +1,4 @@
+import { projectLegacyContext } from './learning-context.js';
 import { randomUUID } from 'node:crypto';
 import { isUtf8 } from 'node:buffer';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
@@ -53,8 +54,9 @@ function fileFindings(records: FactoryRecord[], assignment: Assignment): Instruc
   const findings: InstructionFinding[] = [];
   for (const context of assignment.selectedContext) {
     const record = context.source.record && planningRecord(records, context.source.record);
-    const text = record ? record.kind === 'request' ? record.originalText : JSON.stringify(record, null, 2) :
+    const originalText = record ? record.kind === 'request' ? record.originalText : JSON.stringify(record, null, 2) :
       context.artifact && localText(context.artifact.uri);
+    const text = originalText && projectLegacyContext(records, context.source.uri, originalText);
     if (!text || !context.artifact || context.artifact.digest !== digestText(text) || !context.extract ||
       !text.includes(context.extract) || context.truncated !== (context.extract !== text)) {
       findings.push({ code: 'missing_required_context', path: 'selectedContext',

@@ -1,3 +1,4 @@
+import { learningContext } from './learning-context.js';
 import { isDeepStrictEqual } from 'node:util';
 import { parseStrictJson } from './strict-json.js';
 import type { Assignment, FactoryRecord } from './records.js';
@@ -96,6 +97,7 @@ export function instructionBodies(records: FactoryRecord[], assignment: Assignme
     return request.originalText;
   }).join('\n\n');
   if (!intent) throw new Error('original_request_required');
+  const learning = learningContext(records, assignment.feature?.id);
   const blocks = [
     ['Goal and task behavior', `${feature?.kind === 'feature_revision' ? `${feature.outcome}\n\n` : ''}${task.expectedBehavior ?? ''}`],
     ['Design to preserve', [design.productBehavior, design.technicalDesign, design.dataFlow,
@@ -105,6 +107,9 @@ export function instructionBodies(records: FactoryRecord[], assignment: Assignme
     ['Boundaries and exclusions', lines([...(task.boundaries ?? []), ...design.exclusions,
       ...(feature?.kind === 'feature_revision' ? feature.exclusions : []),
       ...(task.maintenanceObjective ? [`Maintenance objective: ${task.maintenanceObjective}`] : [])])],
+    ['Current scoped guidance', lines(learning.guidance.map((guidance) => guidance.text))],
+    ['Current corrections and operational context', lines(learning.corrections.map((observation) => observation.finding))],
+    ['Open learning conflicts', lines(learning.conflicts.map((observation) => observation.finding))],
     ['Inputs', lines(task.inputs ?? [])], ['Outputs', lines(task.outputs ?? [])],
     ['Criteria and acceptance cases', lines([...assignment.criteria.map((ref) => {
       const criterion = planningRecord(records, ref);

@@ -8,7 +8,7 @@ const root = mkdtempSync(join(tmpdir(), 'sf-fake-agent-'));
 process.on('exit', () => rmSync(root, { recursive: true, force: true }));
 const profile = { harness: 'codex', provider: 'codex', model: 'gpt-6.1-sol', effort: 'high' as const };
 export const fakeJudge: ProjectAgentConfig = { schemaVersion: 1, projectId: 'project-1',
-  steps: { understand: profile, design: profile, plan: profile, detail: profile, instruction_check: profile, product_review: profile },
+  steps: { understand: profile, design: profile, plan: profile, detail: profile, instruction_check: profile, product_review: profile, learning_consolidation: profile },
   executables: { codex: fixture.pathname, claude: fixture.pathname },
 };
 export function fakeJudgeOptions(options: { result?: string; case?: string; record?: string; exit?: string; sleep?: string; rewrite?: string }): ProjectAgentConfig {

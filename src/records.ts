@@ -1,3 +1,4 @@
+import { LearningIdentitySchema, LearningInputKindSchema, LearningCaptureReasonSchema, LegacySectionSchema, LegacyReplacementSchema, LearningVerdictSchema } from './learning-contracts.js';
 import { z } from 'zod';
 import { ProductConformanceSchema } from './review-contracts.js';
 import {
@@ -247,12 +248,27 @@ export const ObservationSchema = record('observation', {
   finding: TextSchema, affectedScope: z.array(SourceRefSchema).min(1), evidence: z.array(EvidenceSchema),
   proposedGeneralization: TextSchema.nullable(), consolidationState: ConsolidationStateSchema,
   correction: CorrectionSchema.optional(),
+  learning: LearningIdentitySchema.extend({
+    inputKind: LearningInputKindSchema,
+    captureReason: LearningCaptureReasonSchema,
+  }).optional(),
+  legacySections: z.array(LegacySectionSchema).optional(),
 });
 
 export const GuidanceRevisionSchema = record('guidance_revision', {
   scope: z.array(SourceRefSchema).min(1), text: TextSchema, supportingObservations: z.array(RefSchema).min(1),
   supersededGuidance: z.array(RefSchema), applicability: TextSchema, unresolvedConflicts: z.array(TextSchema),
+  learning: LearningIdentitySchema.extend({ authority: z.enum(['inferred', 'explicit', 'legacy']) }).optional(),
+  legacyReplacements: z.array(LegacyReplacementSchema).optional(),
 });
+
+export const LearningRunSchema = record('learning_run', {
+  scheduledWindowId: IdSchema, scheduledFor: TimestampSchema, scheduleDigest: TextSchema,
+  timezone: TextSchema, agentConfigDigest: TextSchema, snapshotDigest: TextSchema,
+  observations: z.array(RefSchema), guidance: z.array(RefSchema), verdict: LearningVerdictSchema,
+  sectionDiffs: z.array(z.strictObject({ source: LegacySectionSchema, replacement: TextSchema, diff: TextSchema })),
+});
+export type LearningRun = z.infer<typeof LearningRunSchema>;
 
 export const PayloadDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const OperationSchema = record('operation', {
@@ -270,7 +286,7 @@ export const RecordSchema = z.discriminatedUnion('kind', [
   ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, TaskMappingSchema, AssignmentSchema,
   CriterionResultSchema, ProductReviewSchema, MeasurementClaimSchema, DecisionChangeSchema,
   ObservationSchema, GuidanceRevisionSchema, OperationSchema, UnderstandingRevisionSchema,
-  StageRevisionSchema, PlanReadinessRevisionSchema,
+  StageRevisionSchema, PlanReadinessRevisionSchema, LearningRunSchema,
 ]);
 export const RecordsSchema = z.array(RecordSchema);
 

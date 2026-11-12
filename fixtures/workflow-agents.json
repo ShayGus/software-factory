@@ -7,7 +7,8 @@
     "plan": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
     "detail": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "medium" },
     "instruction_check": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
-    "product_review": { "harness": "claude", "provider": "claude", "model": "claude-opus-5-5", "effort": "high" }
+    "product_review": { "harness": "claude", "provider": "claude", "model": "claude-opus-5-5", "effort": "high" },
+    "learning_consolidation": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" }
   },
   "executables": { "codex": "/absolute/path/to/codex", "claude": "/absolute/path/to/claude" },
   "cwd": "/absolute/review-directory",

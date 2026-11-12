@@ -874,7 +874,7 @@ Configure agents once per project in `software-factory.agents.json`; start with
 `fixtures/workflow-agents.json`. `ProjectAgentConfigSchema` maps each step directly
 to a FirstMate crew-dispatch profile object with the same field names and values:
 `harness`, `provider`, `model`, `effort`. Harness is required; the other fields are
-optional as in FirstMate. All six step entries are required, including reserved
+optional as in FirstMate. All seven step entries are required, including reserved
 steps that do not run agents in this build. Missing entries and cross-project
 configuration are refused rather than inherited from another step or session.
 
@@ -888,7 +888,8 @@ configuration are refused rather than inherited from another step or session.
     "plan": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
     "detail": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "medium" },
     "instruction_check": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" },
-    "product_review": { "harness": "claude", "provider": "claude", "model": "claude-opus-5-5", "effort": "high" }
+    "product_review": { "harness": "claude", "provider": "claude", "model": "claude-opus-5-5", "effort": "high" },
+    "learning_consolidation": { "harness": "codex", "provider": "codex", "model": "gpt-6.1-sol", "effort": "high" }
   },
   "executables": { "codex": "/absolute/path/to/codex", "claude": "/absolute/path/to/claude" },
   "cwd": "/absolute/review-directory",
@@ -897,7 +898,7 @@ configuration are refused rather than inherited from another step or session.
 ```
 
 `resolveStepAgentProfile` is the shared resolver for later understand/design/plan/
-detail executors and the implemented `instruction_check` and `product_review` steps.
+detail executors and the implemented `instruction_check`, `product_review`, and `learning_consolidation` steps.
 Each review step selects its own profile, never the worker's or the main session's.
 The executable map names installed harness binaries, not arbitrary command argv.
 The adapter constructs the command itself:
@@ -1155,3 +1156,94 @@ These records remain evidence of the supplied snapshot and reviewer judgment, no
 
 `test/product-review.test.ts` exercises the decisive ERPNext-only case with passing technical checks, missing behavior, wrong implementation, an original-request omission, bounded immutable delivery snapshots, quality-result reuse, per-step isolated profiles, strict output rejection, persistence, replay and CLI status.
 Tests use fake agent executables and fake quality results and make no real model calls.
+
+## Learning capture and consolidation
+
+`captureLearning` and `captureStowObservation` write to the existing project store.
+An observation retains evidence, a topic, project or feature scope, its original finding, and its capture reason.
+The stow adapter always captures an inferred observation; pass `compaction: true` for reset-time capture.
+It commits synchronously and needs neither an agent nor a scheduled pass to preserve continuity.
+The CLI equivalent is `learning-capture --db <sqlite> --input <CaptureLearningInput JSON file>`.
+The existing FirstMate stow skill remains an external caller; this project does not modify its skill, memory, settings, or hooks.
+
+A capture input has this form:
+
+```json
+{
+  "projectId": "project-1",
+  "id": "observation-example",
+  "idempotencyKey": "stow-example",
+  "issuedAt": "2026-11-12T08:30:00.000Z",
+  "identity": { "scope": { "kind": "project" }, "topic": "instruction-scope" },
+  "finding": "The task treated an example as the full requirement.",
+  "proposedGeneralization": "Preserve examples as examples.",
+  "inputKind": "inferred",
+  "captureReason": "compaction",
+  "evidence": [{
+    "artifact": { "uri": "file:///project/transcript.txt", "digest": "sha256:<actual digest>" },
+    "description": "The original request and the narrowed task instructions",
+    "observedAt": "2026-11-12T08:30:00.000Z"
+  }]
+}
+```
+
+Use `inputKind: "local_correction"`, `captureReason: "correction"`, feature scope (`{ "kind": "feature", "featureId": "..." }`), and the next complete `feature` revision to correct a feature immediately.
+Its `changeReason` must preserve the correction text exactly.
+The feature revision and corrections to current assignment records commit atomically.
+Assignments retain their frozen design/plan/feature references, receive the correction in their instructions and selected context, and require a fresh fidelity check before dispatch.
+Delivery to an already running FirstMate worker remains the correction-delivery operation's responsibility.
+Only the possible broader lesson waits for consolidation.
+
+Use `inputKind: "standing_instruction"` for an explicit instruction that applies immediately in its stated scope.
+When replacing existing guidance in that scope/topic, include every current guidance reference in `supersedes`; an omitted or stale reference refuses the mutation.
+An explicit feature instruction overrides the project default for that topic in that feature's context.
+Operational observations are immediately available as continuity context; a consolidation result of `no_rule` retires that operational context.
+
+`consolidateLearning` runs one fresh bounded agent process using the required `learning_consolidation` step in the shared project agent config.
+All seven step profiles are required; update existing configs from `fixtures/workflow-agents.json`.
+The pass receives pending/conflicting observations grouped by topic and scope, their evidence, and active guidance across the project.
+It records update, supersede, add, unresolved conflict, or no-rule decisions, with exact observation and replaced-guidance links.
+Updates retain the guidance ID and advance its revision; supersession creates a replacement with links to retired guidance.
+An inference cannot replace an explicit instruction.
+Overlapping guidance for a topic cannot both remain active, except for the explicit feature override selected by context assembly.
+Natural-language relatedness and contradictions across topic labels are judgments for the consolidation agent, whose prompt requires comparison with all active guidance.
+Ambiguity remains visible as conflicting observations, without promoting competing rules.
+Malformed output, incomplete coverage, or a changed observation/guidance snapshot aborts the entire pass and leaves the window unsuccessful.
+
+`learning-consolidate --db <sqlite> --input <ConsolidateLearningInput JSON file> --agent-config <file>` invokes a pass directly.
+Its input includes project/idempotency IDs, issue time, scheduled-window ID/time, schedule digest, and project timezone.
+`learning-context --db <sqlite> --project <id> [--feature <id>]` shows applicable guidance, immediate corrections/operational context, and open conflicts.
+New worker briefs and sidecars use the same scoped guidance selection.
+Historical records remain available through the normal store history/export APIs.
+
+### Legacy sections
+
+`readLegacySection(pathOrFileUri, markdownHeading)` reads exactly one named section, including nested subsections, with its digest.
+The CLI is `learning-legacy --db <sqlite> --source <path> --heading '## Section'`.
+Include the returned object in the capture's `legacySections`, with evidence identifying that source.
+The consolidation agent decides whether to adopt it; explicit standing instructions can adopt their sections immediately.
+Each adopted section links to its original observation, and the learning run records a section-level before/after diff.
+An immediate standing-instruction adoption returns the same section diff in its capture result.
+Duplicate sections produce one diff.
+No operation writes or overwrites a legacy memory file.
+Context assembly projects adopted sections out of loaded memory and includes current applicable guidance instead.
+The replacement record carries source pointers rather than the superseded text; full source text and diffs stay in observation/run history.
+A changed adopted section fails context assembly until its source is reconciled.
+
+### Prepared schedule
+
+`fixtures/learning-schedule.json` is an example twice-daily schedule in the project's configured timezone.
+Set `hours` to one or two distinct local hours and `startsAt` to the earliest eligible instant.
+Use the existing Cronie cron mechanism:
+
+```sh
+node dist/src/cli.js learning-schedule --db /absolute/project.sqlite --schedule /absolute/learning-schedule.json --agent-config /absolute/software-factory.agents.json
+```
+
+The command prints the argument array and disabled cron entry, including `CRON_TZ`; it never installs or enables it.
+The prepared command calls `learning-tick` with those same paths.
+`runScheduledLearning`/`learning-tick` chooses only the most recent due local window and coalesces every missed window into that one catch-up.
+Successful learning runs persist the last good window with schedule/config/snapshot identity in the normal project store and survive export/restore.
+Failures leave the window eligible for a later invocation.
+Repeated DST hours share one local window ID; skipped hours catch up at the next configured slot.
+There is no resident learning agent or additional scheduling service.

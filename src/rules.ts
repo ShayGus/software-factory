@@ -1,3 +1,4 @@
+import { activeGuidance, learningKey } from './learning-context.js';
 import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { expectedReviewCriteria } from './review-contracts.js';
@@ -686,6 +687,18 @@ export function validateRecords(input: unknown): ValidationResult<FactoryRecord[
     code: 'schema', recordId: String(issue.path[0] ?? ''), path: issue.path.join('.'), message: issue.message,
   })) };
   const ctx = new Context(parsed.data);
+  const activeLearning = activeGuidance(parsed.data).filter((record) => record.learning);
+  for (const guidance of activeLearning) {
+    const identity = guidance.learning!;
+    for (const other of activeLearning) {
+      if (other.projectId !== guidance.projectId || other.id === guidance.id || other.learning!.topic !== identity.topic) continue;
+      const scope = identity.scope, otherScope = other.learning!.scope;
+      const overlap = scope.kind === 'project' || otherScope.kind === 'project' || learningKey(identity) === learningKey(other.learning!);
+      const override = scope.kind === 'feature' && otherScope.kind === 'project' && identity.authority === 'explicit' ||
+        scope.kind === 'project' && otherScope.kind === 'feature' && other.learning!.authority === 'explicit';
+      if (overlap && !override) ctx.add(guidance, 'contradictory_active_guidance', 'learning', 'Overlapping guidance must be consolidated or remain an open conflict');
+    }
+  }
   const mappings = [...ctx.current.values()].filter((record) => record.kind === 'task_mapping');
   for (const mapping of mappings) {
     if (mappings.some((other) => other.id !== mapping.id && other.firstMateTaskId === mapping.firstMateTaskId)) {

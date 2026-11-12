@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { stepAgentCommand } from './agent-profiles.js';
 
 /** A new process per call, with no worker/main session or lifecycle identity. */
-export function runStepAgent(config: unknown, projectId: string, step: 'instruction_check' | 'product_review', prompt: string) {
+export function runStepAgent(config: unknown, projectId: string, step: 'instruction_check' | 'product_review' | 'learning_consolidation', prompt: string) {
   const command = stepAgentCommand(config, projectId, step);
   const markers = new Set(['CLAUDECODE', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID']);
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>

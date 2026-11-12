@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { IdSchema, TextSchema } from './primitives.js';
 
-export const WorkflowAgentStepSchema = z.enum(['understand', 'design', 'plan', 'detail', 'instruction_check', 'product_review']);
+export const WorkflowAgentStepSchema = z.enum(['understand', 'design', 'plan', 'detail', 'instruction_check', 'product_review', 'learning_consolidation']);
 export type WorkflowAgentStep = z.infer<typeof WorkflowAgentStepSchema>;
 // The profile object is FirstMate's crew-dispatch profile subshape. Provider is
 // its account/quota family, not a new API endpoint or a provider SDK selection.
@@ -29,10 +29,10 @@ export function resolveStepAgentProfile(input: unknown, projectId: string, step:
   return { config, profile: config.steps[WorkflowAgentStepSchema.parse(step)] };
 }
 
-/** Review steps execute an agent. Each call starts a fresh
+/** Review and consolidation steps execute an agent. Each call starts a fresh
  * one-shot session; neither adapter can resume or reuse the worker/main session.
  * Effort values follow the inspected FirstMate adapter's native mappings. */
-export function stepAgentCommand(input: unknown, projectId: string, step: 'instruction_check' | 'product_review') {
+export function stepAgentCommand(input: unknown, projectId: string, step: 'instruction_check' | 'product_review' | 'learning_consolidation') {
   const { config, profile } = resolveStepAgentProfile(input, projectId, step);
   const { harness, model, effort, provider } = profile;
   if (harness !== 'codex' && harness !== 'claude') throw new Error(`unsupported_${step}_harness: ${harness}`);
@@ -43,7 +43,7 @@ export function stepAgentCommand(input: unknown, projectId: string, step: 'instr
   const executable = config.executables[harness];
   if (!executable) throw new Error(`agent_executable_not_configured: ${harness}`);
   const args = harness === 'codex' ? ['exec', '--sandbox', 'read-only', '--ephemeral', '--ignore-user-config', '--color', 'never',
-    '--skip-git-repo-check', '--output-schema', fileURLToPath(new URL(`../../fixtures/${step === 'instruction_check' ? 'instruction-judge' : 'product-review'}.schema.json`, import.meta.url)),
+    '--skip-git-repo-check', '--output-schema', fileURLToPath(new URL(`../../fixtures/${step === 'instruction_check' ? 'instruction-judge' : step === 'product_review' ? 'product-review' : 'learning-consolidation'}.schema.json`, import.meta.url)),
     ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []), '-'] :
     ['--print', '--safe-mode', '--strict-mcp-config', '--output-format', 'text', '--tools', '', '--disable-slash-commands', '--no-session-persistence',
       ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])];
