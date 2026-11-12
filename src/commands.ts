@@ -89,7 +89,7 @@ export const DeliverCorrectionCommandSchema = z.strictObject({
     action: CorrectionActionSchema, sequence: z.number().int().positive(), supersedes: z.array(RefSchema),
     sourceRefs: z.array(SourceRefSchema).min(1).optional(), urgentStop: z.boolean().optional(),
     compatibilityKey: TextSchema.optional(),
-    changedOutcome: TextSchema.optional(),
+    changedOutcome: TextSchema.optional(), carriedFrom: RefSchema.optional(),
     taskCommand: MapManageExecutionTaskCommandSchema.optional(),
   }),
 });

@@ -1319,7 +1319,9 @@ from the integrating runtime read model, each with `assignment`, `attemptId`,
 `maxObservationAgeMs` defaults to 30 seconds; `timeoutMs` defaults to 10 seconds.
 A task ID alone does not establish which attempt currently owns its inbox. Missing,
 ambiguous, stale or mismatched bindings leave delivery pending with an unresolved
-reason. A replacement attempt cannot receive steering intended for its predecessor.
+reason. Fresh observations that bind the same runtime task to different assignments,
+attempts or states also leave delivery unresolved. A replacement attempt cannot
+inherit steering receipts intended for its predecessor.
 The adapter consumer is responsible for supplying truthful current observations.
 
 An `amended_scope` command requires `changedOutcome` on its affected feature.
@@ -1336,9 +1338,10 @@ Pending scope amendments can consolidate only when they share an explicit
 `compatibilityKey` and no intervening distinct instruction forms an ordering
 barrier. Consolidation recursively sends every original correction and source in
 sequence, marks superseded instructions, and leaves their delivery facts untouched.
-Delivered messages and urgent stops never consolidate. A failed or unknown earlier
-correction blocks later ordinary steering. Urgent cancellation and interruption
-bypass that queue. Durable steering can be delivered to a freshly observed stopped
+Delivered messages and urgent stops never consolidate. Delivered payloads identify
+each entry as active or superseded and include both supersession relationships.
+A failed or unknown earlier correction blocks later ordinary steering and ordinary
+task-backed cancellation. Urgent cancellation and interruption bypass that queue. Durable steering can be delivered to a freshly observed stopped
 attempt. Drain earlier messages in sequence while it is stopped, then deliver the
 explicit resume; relaunch continues to wait until those deliveries are confirmed.
 
@@ -1365,6 +1368,24 @@ State-only feature revisions can use evidence for the unchanged active scope;
 actual scope changes, inactive dispositions and changed-and-reverted scope still
 require current evidence. Existing explicit retention rules continue to govern
 recording feature completion. Historical returns and reviews remain stored.
+
+Outstanding corrections belong to the runtime task across assignment replacement.
+Replacement briefs include their original records in mandatory context. When the
+replacement changes the attempt, preparation queues a separate source-linked
+correction intent and returns it in `correctionDeliveries`. Each `carriedFrom`
+link preserves the original source and original transport history. These intents
+remain ordered within the source assignment and use fresh recipient observations
+for the replacement; preparation never invokes a steering/lifecycle wrapper.
+A carried scope amendment uses clarification delivery because its changed scope
+already has a checked plan; it does not increment the outcome again. Urgent stops,
+rewinds and cancellations retain their lifecycle meaning and cannot be bypassed
+by preparing another assignment.
+
+Dispatch requires outstanding source corrections in the replacement's checked
+instructions. Completion and prerequisite readiness additionally require verified
+incorporation on its own delivered correction record. A predecessor's receipt or
+acknowledgement cannot supply that fact. The original correction remains historical;
+its source-linked replacement evidence establishes incorporation for current work.
 
 External delivery and its recipient are marked unconfirmed durably before invoking
 a wrapper. The outcome transaction rechecks the attempt; a concurrent replacement

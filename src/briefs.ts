@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { queueReplacementCorrections } from './corrections.js';
+import { outstandingTaskCorrections } from './correction-state.js';
 import { PrepareAssignmentCommandSchema } from './commands.js';
 import { ref } from './intake.js';
 import { ArtifactSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
@@ -111,14 +113,15 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   scaffoldParts(scaffold); // Reject ambiguous templates before persisting anything.
   const sourceFiles = data.sourceFiles.map((entry) => ({ ...entry, path: resolve(entry.path) }));
   const sameAttempt = previous?.attemptId === data.attemptId && previous.firstMateTaskId === data.firstMateTaskId;
-  const pendingCorrections = sameAttempt ? [...new Map(records.map((record) => [record.id, record])).values()].filter((record) => {
-    if (record.kind !== 'observation' || !record.correction || record.correction.supersededBy ||
-      !['clarification', 'amended_scope'].includes(record.correction.action) || record.correction.assignment.id !== previous.id) return false;
-    const intended = planningRecord(records, record.correction.assignment);
-    return intended?.kind === 'assignment' && intended.attemptId === previous.attemptId;
-  }).map((record) => ({ id: record.id, revision: 1 })) : [];
+  const pendingCorrections = outstandingTaskCorrections(records, data.firstMateTaskId);
   const retainedCorrections = [...new Map([...(sameAttempt ? previous?.correctionContext?.corrections ?? [] : []),
-    ...pendingCorrections].map((record) => [record.id, record])).values()];
+    ...pendingCorrections.map((record) => ({ id: record.id, revision: 1 }))].map((record) => [record.id, record])).values()];
+  const pendingScope = pendingCorrections.filter((record) => record.correction.impact?.requiresReplan)
+    .map((record) => record.correction.affectedRevision).sort((a, b) => b.revision - a.revision)[0];
+  const correctionFeature = pendingScope ?? (sameAttempt ? previous?.correctionContext?.feature : null) ?? plan.feature;
+  const requiresReplan = (!!pendingScope || !!(sameAttempt && previous?.correctionContext?.requiresReplan)) &&
+    !(correctionFeature && plan.feature && hasUnchangedFeatureScope(records, correctionFeature, plan.feature) &&
+      design?.kind === 'design_revision' && design.sourceComparison.result === 'passed');
   let assignment = AssignmentSchema.parse({ kind: 'assignment', id: data.assignmentId, projectId: data.projectId,
     schemaVersion: 1, revision: data.expectedRevision + 1, createdAt: previous?.createdAt ?? data.issuedAt, updatedAt: data.issuedAt,
     attemptId: data.attemptId, feature: plan.feature, design: plan.design, plan: ref(plan), detailedPlanTask: ref(task),
@@ -126,11 +129,7 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
     selectedContext: [{ source: recordSource(task), truncated: false }],
     criteria: assignmentCriteria(records, plan, task), prerequisiteArtifacts: [], returnLocation: data.returnLocation,
     ...(retainedCorrections.length ? {
-      correctionContext: { feature: previous?.correctionContext?.feature ?? plan.feature, corrections: retainedCorrections,
-        requiresReplan: !!previous?.correctionContext?.requiresReplan &&
-          !(previous.correctionContext.feature && plan.feature &&
-            hasUnchangedFeatureScope(records, previous.correctionContext.feature, plan.feature) &&
-            design?.kind === 'design_revision' && design.sourceComparison.result === 'passed') },
+      correctionContext: { feature: correctionFeature, corrections: retainedCorrections, requiresReplan },
     } : {}),
     instructionText: 'Preparation in progress', instructionFidelity: { result: 'untested', sourceRefs: [recordSource(task)],
       findings: [], reviewerSession: 'factory:structural-instruction-checks', comparedAt: data.issuedAt },
@@ -185,7 +184,8 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   // Use the committed record on replay, including its original comparison time.
   atomicWrite(sidecarPath, sidecar(records, saved));
   atomicWrite(briefPath, renderWorkerBrief(records, saved, saved.brief.scaffold));
-  return { assignment: ref(saved), briefPath, sidecarPath, ok: findings.length === 0, findings,
+  const correctionDeliveries = findings.length === 0 && !saved.correctionContext?.requiresReplan ? queueReplacementCorrections(store, saved) : [];
+  return { assignment: ref(saved), briefPath, sidecarPath, correctionDeliveries, ok: findings.length === 0, findings,
     instructionFidelity: saved.instructionFidelity.result, dispatchReady: false as const };
 }
 

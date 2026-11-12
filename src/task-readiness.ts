@@ -1,3 +1,4 @@
+import { outstandingTaskCorrections } from './correction-state.js';
 import type { Assignment, FactoryRecord, TaskMapping } from './records.js';
 
 export const currentTaskMappings = (records: FactoryRecord[]) =>
@@ -85,10 +86,7 @@ export function taskReadinessReasons(records: FactoryRecord[], mapping: TaskMapp
       record.feature?.id === producer.feature?.id && record.feature?.revision === producer.feature?.revision &&
       record.criteria.length === producer.criteria.length && record.criteria.every((criterion) =>
         producer.criteria.some((entry) => entry.id === criterion.id && entry.revision === criterion.revision)));
-    const correctionPending = records.some((record) => record.kind === 'observation' && record.correction &&
-      !record.correction.supersededBy && latest.some((assignment) => assignment.id === record.correction!.assignment.id) &&
-      ['clarification', 'amended_scope', 'rewind', 'cancellation'].includes(record.correction.action) &&
-      !record.correction.facts.some((fact) => fact.fact === 'incorporated'));
+    const correctionPending = latest.some((assignment) => outstandingTaskCorrections(records, assignment.firstMateTaskId).length > 0);
     const available = !correctionPending && !latest.some((assignment) => assignment.correctionContext?.requiresReplan) && records.some((result) => result.kind === 'criterion_result' && result.artifact &&
       result.evidence.length > 0 && latest.length === 1 && latest.some((assignment) =>
         assignment.id === result.assignment.id && assignment.revision === result.assignment.revision) &&

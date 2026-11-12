@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
+import { earlierCorrectionPending, intendedCorrectionRecipient, correctionTargetsAttempt, carriesCorrection, currentCorrections, outstandingTaskCorrections } from './correction-state.js';
 import { DeliverCorrectionCommandSchema } from './commands.js';
 import { executionStateToken } from './firstmate.js';
 import { ref, stableId } from './intake.js';
@@ -77,6 +78,16 @@ export function queueCorrection(store: ProjectStore, input: unknown): { correcti
         throw new StoreError('validation', 'correction_requires_current_linked_request_or_feature');
       }
       const action = payload.action;
+      if (payload.carriedFrom) {
+        const source = history.find((item) => item.kind === 'observation' && same(item, payload.carriedFrom!));
+        if (source?.kind !== 'observation' || !source.correction || source.correction.supersededBy ||
+          source.correction.originalText !== payload.originalCorrection || action !== 'clarification' ||
+          !['clarification', 'amended_scope'].includes(source.correction.action) || source.correction.urgentStop ||
+          intendedCorrectionRecipient(history, source as Correction)?.firstMateTaskId !== assignment.firstMateTaskId ||
+          (source.id === command.targetId) || !assignment.correctionContext?.corrections.some((item) => item.id === source.id)) {
+          throw new StoreError('validation', 'carried_correction_requires_same_task_and_preserved_source');
+        }
+      }
       if (payload.changedOutcome !== undefined && (action !== 'amended_scope' || affected.kind !== 'feature_revision')) {
         throw new StoreError('validation', 'changed_outcome_requires_feature_scope_amendment');
       }
@@ -148,7 +159,9 @@ export function queueCorrection(store: ProjectStore, input: unknown): { correcti
           action, originalText: payload.originalCorrection, assignment: amendmentRefs.get(assignment.id) ?? ref(assignment),
           affectedRevision: revisedFeature && changed ? revisedFeature : ref(affected), sequence: payload.sequence,
           supersedes, sourceRefs, urgentStop: payload.urgentStop ?? false, compatibilityKey: payload.compatibilityKey,
-          operationId, impact: { assignments: impacted.map((target) => amendmentRefs.get(target.id) ?? ref(target)),
+          operationId, carriedFrom: payload.carriedFrom,
+          intendedRecipient: { assignment: amendmentRefs.get(assignment.id) ?? ref(assignment), attemptId: assignment.attemptId, firstMateTaskId: assignment.firstMateTaskId },
+          impact: { assignments: impacted.map((target) => amendmentRefs.get(target.id) ?? ref(target)),
             dependencies: dependencies.map(ref), completedEvidence: completedEvidence.map(ref), requiresReplan: changed },
           facts: [{ fact: 'recorded', at: command.issuedAt, evidence: evidence(command.targetId, payload.originalCorrection, command.issuedAt) }],
         } });
@@ -285,11 +298,16 @@ function recipientProblem(store: ProjectStore, projectId: string, record: Correc
   const attempt = currentAttempt(store.records(projectId), assignment.firstMateTaskId);
   const original = store.get(projectId, record.correction.assignment.id, record.correction.assignment.revision);
   if (!attempt || attempt.id !== assignment.id || original?.kind !== 'assignment' || (original.attemptId !== assignment.attemptId || original.firstMateTaskId !== assignment.firstMateTaskId)) return 'Unresolved recipient: attempt superseded or ambiguous';
-  const bindings = options.recipients.filter((entry) => same(entry.assignment, assignment) &&
-    entry.attemptId === assignment.attemptId && entry.firstMateTaskId === assignment.firstMateTaskId);
-  if (bindings.length !== 1) return 'Unresolved recipient: exact observed attempt binding required';
-  const binding = bindings[0]!; const age = Date.now() - Date.parse(binding.observedAt);
-  if (age < -1000 || age > options.maxObservationAgeMs || binding.state === 'unknown') return 'Unresolved recipient: unknown or stale runtime state';
+  const observations = options.recipients.filter((entry) => {
+    const age = Date.now() - Date.parse(entry.observedAt);
+    return entry.firstMateTaskId === assignment.firstMateTaskId && age >= -1000 && age <= options.maxObservationAgeMs;
+  });
+  if (observations.some((entry) => !same(entry.assignment, assignment) || entry.attemptId !== assignment.attemptId ||
+    entry.state === 'unknown' || entry.state !== observations[0]!.state)) {
+    return 'Unresolved recipient: conflicting fresh runtime-task bindings';
+  }
+  if (observations.length !== 1) return 'Unresolved recipient: exact fresh observed attempt binding required';
+  const binding = observations[0]!;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(binding.firstMateTaskId)) return 'Unresolved recipient: unsafe runtime task ID';
   return { assignment, binding };
 }
@@ -302,9 +320,7 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
   const problem = recipientProblem(store, projectId, record, options);
   if (typeof problem === 'string') return unresolved(store, projectId, record, operation, 'pending', problem);
   const { assignment, binding } = problem;
-  const all = corrections(store.records(projectId));
-  if (!record.correction.urgentStop && record.correction.action !== 'status' && all.some((prior) => prior.correction.assignment.id === assignment.id &&
-    prior.correction.sequence < record.correction.sequence && !prior.correction.supersededBy && !fact(prior, 'delivered'))) {
+  if (!record.correction.urgentStop && record.correction.action !== 'status' && earlierCorrectionPending(store.records(projectId), record)) {
     return unresolved(store, projectId, record, operation, 'pending', 'Waiting for earlier correction delivery');
   }
   const action = correctionOperation(record.correction.action, record.correction.urgentStop);
@@ -320,6 +336,8 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
   const text = JSON.stringify({ assignment: ref(assignment), attemptId: assignment.attemptId,
     corrections: [...sources.values()].sort((a, b) => a.correction.sequence - b.correction.sequence).map((item) => ({
       id: item.id, sequence: item.correction.sequence, action: item.correction.action, originalText: item.correction.originalText,
+      active: !item.correction.supersededBy, supersedes: item.correction.supersedes, supersededBy: item.correction.supersededBy ?? null,
+      carriedFrom: item.correction.carriedFrom ?? null,
       sources: item.correction.sourceRefs ?? item.affectedScope, affectedRevision: item.correction.affectedRevision })) });
   if (action === 'read_status' && !options.stateExecutable) return unresolved(store, projectId, record, operation, 'pending', 'Configured fm-crew-state wrapper required for status');
   // Durable in-flight marker prevents retry after an ambiguous call or interruption.
@@ -346,6 +364,9 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
 function deliverTaskCorrection(store: ProjectStore, projectId: string, record: Correction, options: z.output<typeof CorrectionAdapterOptionsSchema>): Operation {
   const { operation, command } = deliveryIntent(store, projectId, record);
   if (operation.state === 'succeeded' || operation.state === 'failed') return operation;
+  if (!record.correction.urgentStop && earlierCorrectionPending(store.records(projectId), record)) {
+    return unresolved(store, projectId, record, operation, 'pending', 'Waiting for earlier correction delivery');
+  }
   const task = command.payload.taskCommand;
   if (!task || !options.taskAdapter) return unresolved(store, projectId, record, operation, 'pending', 'BUILD-08 task adapter required');
   let recipient: DeliveryRecipient | undefined;
@@ -361,4 +382,35 @@ function deliverTaskCorrection(store: ProjectStore, projectId: string, record: C
   const result = manageExecutionTask(store, task, options.taskAdapter);
   return unresolved(store, projectId, observation(store, projectId, record.id), store.get(projectId, operation.id) as Operation,
     result.operation.state, `BUILD-08 operation ${result.operation.id}: ${result.operation.state}`, result.operation.state === 'succeeded', recipient);
+}
+
+
+/** A replacement receives a new source-linked intent. Never move its predecessor's
+ * delivered/acknowledged facts or turn an unresolved lifecycle action into a launch. */
+export function queueReplacementCorrections(store: ProjectStore, assignment: Assignment): Ref[] {
+  const deliveries: Ref[] = [];
+  for (const source of outstandingTaskCorrections(store.history(assignment.projectId), assignment.firstMateTaskId)) {
+    const history = store.history(assignment.projectId);
+    if (correctionTargetsAttempt(history, source, assignment) || source.correction.urgentStop ||
+      !['clarification', 'amended_scope'].includes(source.correction.action)) continue;
+    const existing = currentCorrections(history).find((item) => correctionTargetsAttempt(history, item, assignment) &&
+      carriesCorrection(history, item, source.id));
+    if (existing) { deliveries.push(ref(existing)); continue; }
+    const affected = assignment.feature ? store.get(assignment.projectId, assignment.feature.id) :
+      store.get(assignment.projectId, source.correction.affectedRevision.id);
+    if (!affected) throw new StoreError('not_found', 'replacement_correction_source_missing');
+    const id = stableId('carried-correction', source.id, assignment.id, assignment.attemptId);
+    const at = new Date().toISOString();
+    const result = queueCorrection(store, { schemaVersion: 1, id, projectId: assignment.projectId, issuedAt: at,
+      idempotencyKey: id, command: 'deliver_correction', targetId: id, expectedRevision: 0, payload: {
+        affectedRevision: ref(affected), assignment: ref(assignment), action: 'clarification',
+        originalCorrection: source.correction.originalText, carriedFrom: ref(source), supersedes: [],
+        sequence: Math.max(0, ...currentCorrections(history).filter((item) => item.correction.assignment.id === assignment.id)
+          .map((item) => item.correction.sequence)) + 1,
+        sourceRefs: [...(source.correction.sourceRefs ?? source.affectedScope), {
+          uri: `factory:correction/${source.id}`, record: ref(source), excerpt: source.correction.originalText }],
+      } });
+    deliveries.push(ref(result.correction));
+  }
+  return deliveries;
 }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { ProjectStore, RecordsSchema, queueCorrection, deliverCorrection, recordCorrectionFact,
-  validateReviewForCompletion, validateRecords, ref, correctionOperation, taskReadinessReasons, assertRevisionTransition, requiredAssignmentContext, type CorrectionAdapterOptions,
+  validateReviewForCompletion, validateAssignmentForDispatch, validateRecords, ref, correctionOperation, taskReadinessReasons, assertRevisionTransition, requiredAssignmentContext, type CorrectionAdapterOptions,
   prepareWorkerBrief, checkWorkerBrief, type Assignment, type Observation, type FactoryRecord, type CorrectionAction } from '../src/index.js';
 import { fakeJudge } from './judge-helper.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
@@ -495,4 +495,177 @@ store.close(); process.stdout.write('accepted');
   assert.deepEqual(correction.assignment, ref(original));
   assert.deepEqual(correction.deliveryRecipient, { assignment: ref(original), attemptId: original.attemptId, firstMateTaskId: original.firstMateTaskId });
   assert.ok(correction.facts.some(item => item.fact === 'delivered'));
+});
+
+function replacementAssignment(flow: ReturnType<typeof setup>) {
+  const at = new Date(Date.now() + 1).toISOString();
+  const replacement = { ...flow.assignment(), id: 'review-1245-replacement', attemptId: 'replacement-attempt',
+    revision: 1, createdAt: at, updatedAt: at };
+  commitReviewFixture(flow, [replacement], 'review-1245-replace');
+  return replacement;
+}
+
+test('review 1245-4: replacement dispatch requires outstanding task corrections in its context', t => {
+  const flow = setup(t); flow.queue(); const replacement = replacementAssignment(flow);
+  const result = validateAssignmentForDispatch(flow.store.history(projectId), ref(replacement));
+  assert.equal(result.ok, false, 'An unchanged mapping does not excuse missing outstanding task corrections');
+});
+
+test('review 1245-4: replacement results cannot bypass outstanding task corrections at completion or readiness', t => {
+  const flow = setup(t); flow.queue(); const replacement = replacementAssignment(flow);
+  const review = recordSuccessorEvidence(flow, replacement);
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), ref(review)).ok, false);
+  const producer = flow.store.get(projectId, 'mapping-1'); assert.ok(producer?.kind === 'task_mapping');
+  const consumer = { ...producer, id: 'replacement-consumer', firstMateTaskId: 'replacement-consumer', management: {
+    operationId: '', requirements: [{ prerequisiteTaskId: 'task-1', consumerTaskId: 'consumer-task', reason: 'Need corrected output',
+      needs: { kind: 'criterion' as const, criterion: replacement.criteria[0]! } }],
+    readiness: [], paused: false, managedDependencies: [], holdReason: 'Corrected prerequisite' } };
+  assert.match(taskReadinessReasons(flow.store.records(projectId), consumer).join('\n'), /Product prerequisite not met/);
+});
+
+function prepareReplacement(flow: ReturnType<typeof setup>, assignmentId = 'prepared-replacement', expectedRevision = 0) {
+  const assignment = flow.assignment(); const request = flow.store.get(projectId, 'request-1'); assert.ok(request?.kind === 'request');
+  const sources = requiredAssignmentContext(flow.store.history(projectId), assignment).sources.filter(source => !source.record);
+  const sourceFiles = sources.map((source, index) => {
+    const path = join(flow.directory, `replacement-source-${index}.txt`);
+    writeFileSync(path, source.uri === request.source.uri ? request.originalText : 'Existing common connected-system interface.');
+    return { source, path };
+  });
+  const briefPath = join(flow.directory, 'replacement-brief.md');
+  writeFileSync(briefPath, readFileSync(new URL('../../fixtures/firstmate-brief.md', import.meta.url), 'utf8'));
+  const prepared = prepareWorkerBrief(flow.store, { projectId, assignmentId, attemptId: 'replacement-attempt',
+    expectedRevision, idempotencyKey: 'prepare-replacement', issuedAt: new Date(Date.now() + 2).toISOString(),
+    detailedPlanTask: assignment.detailedPlanTask, plan: assignment.plan, firstMateTaskId: assignment.firstMateTaskId,
+    returnLocation: assignment.returnLocation, briefPath, sourceFiles });
+  const replacement = flow.store.get(projectId, prepared.assignment.id); assert.ok(replacement?.kind === 'assignment');
+  return { prepared, replacement, briefPath };
+}
+
+test('review 1245-4: replacement briefs preserve the outstanding correction from the previous assignment', t => {
+  const flow = setup(t); const source = flow.queue();
+  const { replacement } = prepareReplacement(flow);
+  assert.ok(replacement.selectedContext.some(item => item.source.record?.id === source.correction.id));
+});
+
+function queuedCancellation(flow: ReturnType<typeof setup>, urgentStop: boolean) {
+  const fake = fakeTaskWrapper(flow.directory, false, flow.database);
+  fake.edit(state => { state.tasks['pilot-build'] = fakeTask('pilot-build', { state: 'in_flight' }); });
+  const command = flow.command('cancellation', { urgentStop, taskCommand: {
+    schemaVersion: 1, id: 'ordered-cancel', projectId, issuedAt: new Date().toISOString(), idempotencyKey: 'ordered-cancel',
+    command: 'map_manage_execution_task', targetId: 'mapping-1', expectedRevision: 1,
+    payload: { task: { kind: 'existing', firstMateTaskId: 'pilot-build' }, action: 'cancel', feature: { id: 'feature-1', revision: 1 },
+      criteria: flow.assignment().criteria, detailedPlanTask: flow.assignment().detailedPlanTask, dependencies: [], reason: 'Explicit cancellation' } } });
+  const correction = queueCorrection(flow.store, command);
+  const options = flow.options(); options.taskAdapter = { fmHome: flow.directory, tasksExecutable: fake.executable,
+    controlExecutable: options.controlExecutable };
+  return { fake, correction, options };
+}
+
+test('review 1245-6: ordinary task cancellation waits for earlier steering before calling BUILD-08', t => {
+  const flow = setup(t); const earlier = flow.queue(); const cancel = queuedCancellation(flow, false);
+  assert.equal(flow.deliver(cancel.correction.correction.id, cancel.options).state, 'pending');
+  assert.equal(cancel.fake.read().calls.length, 0); assert.equal(flow.calls().length, 0);
+  assert.equal(flow.deliver(earlier.correction.id).state, 'succeeded');
+  assert.equal(flow.deliver(cancel.correction.correction.id, cancel.options).state, 'succeeded');
+  assert.deepEqual(flow.calls()[1]!.args, ['pilot-build', 'exit']);
+});
+
+test('review 1245-7: competing fresh runtime-task bindings make the recipient unresolved', t => {
+  const flow = setup(t); const correction = flow.queue(); const options = flow.options();
+  options.recipients.push({ ...options.recipients[0]!, assignment: { id: 'competing-assignment', revision: 1 }, attemptId: 'competing-attempt' });
+  assert.equal(flow.deliver(correction.correction.id, options).state, 'pending');
+  assert.equal(flow.calls().length, 0);
+});
+
+test('review 1245-9: consolidated payload labels active and superseded amendments explicitly', t => {
+  const flow = setup(t); const ids = [1, 2, 3].map(n => flow.queue('amended_scope', {
+    changedOutcome: `Outcome ${n}`, compatibilityKey: 'same-outcome-edit' }).correction.id);
+  assert.equal(flow.deliver(ids[2]!).state, 'succeeded');
+  const delivered = JSON.parse(flow.calls()[0]!.args[1]!).corrections;
+  assert.deepEqual(delivered.map((item: { active: boolean }) => item.active), [false, false, true]);
+  assert.deepEqual(delivered[0].supersededBy, { id: ids[1], revision: 1 });
+  assert.deepEqual(delivered[1].supersededBy, { id: ids[2], revision: 1 });
+  assert.deepEqual(delivered[2].supersedes.map((item: { id: string }) => item.id), [ids[1]]);
+  assert.equal(delivered[2].supersededBy, null);
+});
+
+for (const deliveredBeforeReplacement of [false, true]) test(`review 1245-4: replacement independently receives and incorporates a ${deliveredBeforeReplacement ? 'previously delivered' : 'pending'} correction`, t => {
+  const flow = setup(t); const source = flow.queue();
+  if (deliveredBeforeReplacement) { flow.deliver(source.correction.id); flow.fact(source.correction.id, 'acknowledged'); }
+  const original = structuredClone(flow.observation(source.correction.id));
+  const { prepared, replacement, briefPath } = prepareReplacement(flow);
+  assert.equal(prepared.correctionDeliveries.length, 1);
+  const carried = flow.store.get(projectId, prepared.correctionDeliveries[0]!.id); assert.ok(carried?.kind === 'observation' && carried.correction);
+  assert.equal(carried.correction.carriedFrom?.id, source.correction.id);
+  assert.deepEqual(carried.correction.facts.map(item => item.fact), ['recorded']);
+  assert.equal(checkWorkerBrief(flow.store, projectId, ref(replacement), briefPath, fakeJudge).ok, true);
+  const options = flow.options('stopped'); options.recipients = [{ assignment: ref(replacement), attemptId: replacement.attemptId,
+    firstMateTaskId: replacement.firstMateTaskId, state: 'stopped', observedAt: new Date().toISOString() }];
+  assert.equal(flow.deliver(carried.id, options).state, 'succeeded');
+  const receipt = flow.observation(carried.id).correction!.deliveryRecipient!;
+  assert.deepEqual(receipt.assignment, ref(replacement));
+  assert.equal(receipt.attemptId, replacement.attemptId);
+  const review = recordSuccessorEvidence(flow, replacement);
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), ref(review)).ok, false);
+  assert.throws(() => recordCorrectionFact(flow.store, incorporationInput(flow, source.correction.id, replacement)), /delivered|incorporation_requires/);
+  recordCorrectionFact(flow.store, incorporationInput(flow, carried.id, replacement));
+  assert.equal(validateReviewForCompletion(flow.store.history(projectId), ref(review)).ok, true);
+  assert.deepEqual(flow.observation(source.correction.id), original, 'The predecessor keeps its original delivery and acknowledgement history');
+  const producer = flow.store.get(projectId, 'mapping-1'); assert.ok(producer?.kind === 'task_mapping');
+  const consumer = { ...producer, id: 'carried-consumer', firstMateTaskId: 'carried-consumer', management: {
+    operationId: '', requirements: [{ prerequisiteTaskId: 'task-1', consumerTaskId: 'consumer-task', reason: 'Need corrected output',
+      needs: { kind: 'criterion' as const, criterion: replacement.criteria[0]! } }],
+    readiness: [], paused: false, managedDependencies: [], holdReason: 'Corrected prerequisite' } };
+  assert.deepEqual(taskReadinessReasons(flow.store.records(projectId), consumer), []);
+});
+
+test('review 1245-4: replacement of the attempt under the same assignment ID drains carried steering without an ordering cycle', t => {
+  const flow = setup(t); const source = flow.queue(); const previous = flow.assignment();
+  const { prepared, replacement } = prepareReplacement(flow, previous.id, previous.revision);
+  assert.equal(prepared.correctionDeliveries.length, 1);
+  const options = flow.options('stopped');
+  assert.equal(flow.deliver(prepared.correctionDeliveries[0]!.id, options).state, 'succeeded');
+  const next = flow.queue('clarification', { sequence: 3 });
+  assert.equal(flow.deliver(next.correction.id, options).state, 'succeeded');
+  const payloads = flow.calls().map(call => JSON.parse(call.args[1]!));
+  assert.deepEqual(payloads.map(payload => payload.attemptId), [replacement.attemptId, replacement.attemptId]);
+  assert.equal(flow.observation(source.correction.id).correction!.facts.some(item => item.fact === 'delivered'), false);
+});
+
+test('review 1245-6: urgent cancellation bypasses earlier pending steering', t => {
+  const flow = setup(t); flow.queue(); const cancel = queuedCancellation(flow, true);
+  assert.equal(flow.deliver(cancel.correction.correction.id, cancel.options).state, 'succeeded');
+  assert.deepEqual(flow.calls()[0]!.args, ['pilot-build', 'exit']);
+});
+
+for (const conflict of ['unknown-state', 'different-state', 'same-assignment-different-attempt'] as const) test(`review 1245-7: fresh ${conflict} observation prevents delivery`, t => {
+  const flow = setup(t); const correction = flow.queue(); const options = flow.options();
+  options.recipients.push({ ...options.recipients[0]!, ...(conflict === 'same-assignment-different-attempt' ?
+    { attemptId: 'other-attempt' } : { state: conflict === 'unknown-state' ? 'unknown' as const : 'stopped' as const }) });
+  assert.equal(flow.deliver(correction.correction.id, options).state, 'pending');
+  assert.equal(flow.calls().length, 0);
+});
+
+test('review 1245-7: a stale competing observation does not defeat a unique fresh recipient', t => {
+  const flow = setup(t); const correction = flow.queue(); const options = flow.options();
+  options.recipients.push({ ...options.recipients[0]!, assignment: { id: 'old-assignment', revision: 1 }, attemptId: 'old-attempt',
+    observedAt: '2020-01-01T00:00:00Z' });
+  assert.equal(flow.deliver(correction.correction.id, options).state, 'succeeded');
+  assert.equal(flow.calls().length, 1);
+});
+
+test('review 1245-4: replacement carries source corrections in sequence rather than lexical ID order', t => {
+  const flow = setup(t); const sources = Array.from({ length: 12 }, () => flow.queue());
+  const { prepared, replacement } = prepareReplacement(flow);
+  assert.equal(prepared.correctionDeliveries.length, sources.length);
+  const carriedSources = prepared.correctionDeliveries.map(pointer => {
+    const record = flow.observation(pointer.id); const source = flow.observation(record.correction!.carriedFrom!.id);
+    return source.correction!.sequence;
+  });
+  assert.deepEqual(carriedSources, Array.from({ length: 12 }, (_, index) => index + 1));
+  const options = flow.options('stopped'); options.recipients = [{ assignment: ref(replacement), attemptId: replacement.attemptId,
+    firstMateTaskId: replacement.firstMateTaskId, state: 'stopped', observedAt: new Date().toISOString() }];
+  for (const pointer of prepared.correctionDeliveries) assert.equal(flow.deliver(pointer.id, options).state, 'succeeded');
+  assert.deepEqual(flow.calls().map(call => JSON.parse(call.args[1]!).corrections[0].originalText),
+    sources.map(source => source.correction.correction!.originalText));
 });

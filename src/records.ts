@@ -244,6 +244,8 @@ export const CorrectionSchema = z.strictObject({
   sourceRefs: z.array(SourceRefSchema).optional(),
   urgentStop: z.boolean().optional(), compatibilityKey: TextSchema.optional(),
   supersededBy: RefSchema.optional(), operationId: IdSchema.optional(),
+  carriedFrom: RefSchema.optional(),
+  intendedRecipient: z.strictObject({ assignment: RefSchema, attemptId: IdSchema, firstMateTaskId: IdSchema }).optional(),
   deliveryRecipient: z.strictObject({ assignment: RefSchema, attemptId: IdSchema, firstMateTaskId: IdSchema }).optional(),
   incorporationAssignment: RefSchema.optional(),
   impact: z.strictObject({ assignments: z.array(RefSchema), dependencies: z.array(RefSchema),

@@ -1,3 +1,4 @@
+import { correctionTargetsAttempt, outstandingTaskCorrections, intendedCorrectionRecipient, carriesCorrection, type TrackedCorrection } from './correction-state.js';
 import { activeGuidance, learningKey } from './learning-context.js';
 import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
@@ -673,6 +674,19 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
     case 'observation':
       if (record.correction) {
         const intended = ctx.get(record, record.correction.assignment, 'assignment', 'correction.assignment');
+        if (record.correction.intendedRecipient) {
+          const target = record.correction.intendedRecipient;
+          if (!sameRef(target.assignment, record.correction.assignment) || target.attemptId !== intended?.attemptId ||
+            target.firstMateTaskId !== intended.firstMateTaskId) ctx.add(record,
+            'correction_recipient_mismatch', 'correction.intendedRecipient', 'Recorded correction intent must pin its original assignment/attempt');
+        }
+        if (record.correction.carriedFrom) {
+          const source = ctx.get(record, record.correction.carriedFrom, 'observation', 'correction.carriedFrom');
+          if (!source?.correction || source.id === record.id || record.correction.originalText !== source.correction.originalText ||
+            intendedCorrectionRecipient(ctx.records, source as TrackedCorrection)?.firstMateTaskId !== intended?.firstMateTaskId ||
+            carriesCorrection(ctx.records, source as TrackedCorrection, record.id)) ctx.add(record,
+            'invalid_carried_correction', 'correction.carriedFrom', 'A replacement must retain an acyclic source link for the same runtime task');
+        }
         const captured = record.correction.deliveryRecipient;
         const recipient = captured && ctx.get(record, captured.assignment, 'assignment', 'correction.deliveryRecipient');
         if (captured && recipient && (recipient.id !== intended?.id || recipient.attemptId !== intended.attemptId || recipient.firstMateTaskId !== intended.firstMateTaskId ||
@@ -793,6 +807,14 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
     path: 'assignment', message: 'Assignment revision is absent' }] };
   if (ctx.current.get(owner.id)?.revision !== owner.revision) ctx.add(owner,
     'superseded_assignment', 'assignment', 'A newer revision of this assignment exists');
+  for (const correction of outstandingTaskCorrections(validated.data, owner.firstMateTaskId)) {
+    if (correctionTargetsAttempt(validated.data, correction, owner)) continue;
+    if (!owner.correctionContext?.corrections.some((item) => item.id === correction.id) ||
+      !owner.selectedContext.some((item) => item.source.record?.id === correction.id)) ctx.add(owner,
+      'missing_correction_context', 'selectedContext', 'Replacement instructions must retain outstanding task corrections');
+    if (!['clarification', 'amended_scope'].includes(correction.correction.action) || correction.correction.urgentStop) ctx.add(owner,
+      'unresolved_lifecycle_correction', 'assignment', 'Replacement cannot bypass an outstanding lifecycle correction');
+  }
   if (owner.correctionContext?.requiresReplan) ctx.add(owner, 'correction_requires_replan', 'assignment', 'Amended outcome needs checked replanning');
   if (owner.instructionFidelity.result !== 'passed') ctx.add(owner, 'instruction_fidelity', 'instructionFidelity',
     'Instruction comparison with original request, design and task has not passed');
@@ -859,11 +881,8 @@ export function validateReviewForCompletion(input: unknown, reviewRef: Ref): Val
     if (mapping?.kind === 'task_mapping' && mapping.disposition.state !== 'active') ctx.add(owner,
       'inactive_mapping', 'assignments', 'Cancelled or deferred work cannot establish current completion');
     if (target.correctionContext?.requiresReplan) ctx.add(owner, 'correction_requires_replan', 'assignments', 'Changed outcome requires checked design and plan');
-    for (const record of ctx.current.values()) if (record.kind === 'observation' && record.correction &&
-      record.correction.assignment.id === assignment.id && !record.correction.supersededBy &&
-      ['clarification', 'amended_scope', 'rewind', 'cancellation'].includes(record.correction.action) &&
-      !record.correction.facts.some((fact) => fact.fact === 'incorporated')) ctx.add(owner,
-      'correction_not_incorporated', 'assignments', 'Pending correction cannot be closed by acknowledgement or worker completion');
+    for (const record of outstandingTaskCorrections(ctx.records, target.firstMateTaskId)) ctx.add(owner,
+      'correction_not_incorporated', 'assignments', `Outstanding correction ${record.id} cannot be closed by a replacement or acknowledgement`);
   }
   if (owner.conformance) for (const assignment of owner.assignments) {
     if (ctx.current.get(assignment.id)?.revision !== assignment.revision) ctx.add(owner, 'superseded_assignment', 'assignments', 'Completion names an old assignment');
@@ -887,8 +906,8 @@ export function assertRevisionTransition(previousInput: unknown, nextInput: unkn
     Date.parse(next.updatedAt) < Date.parse(previous.updatedAt)) throw new Error('invalid_revision_transition');
   if (previous.kind === 'observation' && next.kind === 'observation' && previous.correction) {
     const old = previous.correction; const correction = next.correction;
-    if (!correction || canonical([old.action, old.originalText, old.sequence, old.affectedRevision, old.supersedes, old.sourceRefs, old.operationId, old.urgentStop, old.compatibilityKey, old.impact]) !==
-      canonical([correction.action, correction.originalText, correction.sequence, correction.affectedRevision, correction.supersedes, correction.sourceRefs, correction.operationId, correction.urgentStop, correction.compatibilityKey, correction.impact]) ||
+    if (!correction || canonical([old.action, old.originalText, old.sequence, old.affectedRevision, old.supersedes, old.sourceRefs, old.operationId, old.urgentStop, old.compatibilityKey, old.impact, old.carriedFrom, old.intendedRecipient]) !==
+      canonical([correction.action, correction.originalText, correction.sequence, correction.affectedRevision, correction.supersedes, correction.sourceRefs, correction.operationId, correction.urgentStop, correction.compatibilityKey, correction.impact, correction.carriedFrom, correction.intendedRecipient]) ||
       old.facts.some((fact) => !correction.facts.some((item) => canonical(fact) === canonical(item))) ||
       !sameRef(old.assignment, correction.assignment) ||
       (old.deliveryRecipient && canonical(old.deliveryRecipient) !== canonical(correction.deliveryRecipient)) ||
