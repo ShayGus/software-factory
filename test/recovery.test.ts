@@ -838,3 +838,72 @@ test('review 1342-5: directory exclusion cannot discard a retained file digest',
     assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'reconciling');
   } finally { restored.close(); }
 });
+
+test('review 1356: restore verifies two adopted memory sections independently of the whole file', t => {
+  const flow = setup(t, true); const reference = 'memory.md'; const path = join(flow.home, reference);
+  const original = '# Project memory\n\nUnrelated introduction.\n\n## First adopted rule\nFirst retained rule.\n\n### Detail\nRetained nested detail.\n\n## Second adopted rule\nSecond retained rule.\n\n## Other content\nUnrelated notes.\n';
+  writeFileSync(path, original);
+  // Capture actual standing-instruction adoptions in a scratch source context;
+  // the persisted section URIs remain relative, with no recorded artifact base.
+  const seeded = spawnSync(process.execPath, ['--input-type=module', '-e', `
+import { ProjectStore, captureLearning, readLegacySection } from ${JSON.stringify(fileURLToPath(new URL('../src/index.js', import.meta.url)))};
+const store = new ProjectStore(${JSON.stringify(flow.database)});
+try {
+  for (const [index, heading] of ['## First adopted rule', '## Second adopted rule'].entries()) {
+    const at = new Date().toISOString();
+    captureLearning(store, { projectId: 'project-1', id: 'memory-adoption-' + index, idempotencyKey: 'memory-adoption-' + index, issuedAt: at,
+      identity: { scope: { kind: 'project' }, topic: 'memory-rule-' + index }, finding: 'Adopt this retained instruction ' + index,
+      inputKind: 'standing_instruction', captureReason: 'direct', legacySections: [readLegacySection('memory.md', heading)],
+      evidence: [{ artifact: { uri: 'memory.md', revision: 'source-v1' }, description: 'Existing memory section', observedAt: at }] });
+  }
+} finally { store.close(); }
+`], { cwd: flow.home, encoding: 'utf8' });
+  assert.equal(seeded.status, 0, seeded.stderr);
+  const bundle = backupProject(flow.store, projectId);
+  assert.equal(bundle.project.history.filter((record) => record.kind === 'guidance_revision').flatMap((record) =>
+    record.kind === 'guidance_revision' ? record.legacyReplacements ?? [] : []).length, 2);
+  rmSync(path);
+  for (const [name, text, valid] of [
+    ['intact', original, true],
+    ['unrelated', original.replace('Unrelated notes.', 'Updated unrelated notes.'), true],
+    ['first-changed', original.replace('First retained rule.', 'Wrong first rule.'), false],
+    ['second-changed', original.replace('Second retained rule.', 'Wrong second rule.'), false],
+    ['heading-missing', original.replace('## Second adopted rule', '## Different heading'), false],
+  ] as const) {
+    const restored = new ProjectStore(join(flow.home, `${name}-memory-restore.sqlite`));
+    try {
+      restoreProjectBackup(restored, bundle, flow.home); writeFileSync(path, text);
+      const digest = digestText(text);
+      const input = { projectId, reference, base: flow.home, digest,
+        evidence: [{ artifact: { uri: path, digest }, description: 'Recovered whole memory file', observedAt: new Date().toISOString() }] };
+      if (!valid) {
+        assert.throws(() => resolveRestoredReference(restored, input), /section_digest_mismatch/);
+        assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'reconciling');
+      } else {
+        resolveRestoredReference(restored, input);
+        for (const other of bundle.unresolvedReferences.filter((entry) => entry !== reference)) {
+          const otherPath = join(flow.home, other); const otherDigest = digestText(readFileSync(otherPath, 'utf8'));
+          resolveRestoredReference(restored, { projectId, reference: other, base: flow.home, digest: otherDigest,
+            evidence: [{ artifact: { uri: otherPath, digest: otherDigest }, description: 'Verified remaining source', observedAt: new Date().toISOString() }] });
+        }
+        assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
+      }
+    } finally { restored.close(); }
+  }
+  writeFileSync(path, original);
+  const based = backupProject(flow.store, projectId, flow.home);
+  assert.equal(based.artifacts.find((artifact) => artifact.path === path)?.issue, undefined);
+  const basedRestore = new ProjectStore(join(flow.home, 'based-memory-restore.sqlite'));
+  try {
+    restoreProjectBackup(basedRestore, based, flow.home);
+    assert.equal(reconcileProject(basedRestore, projectId, flow.adapter).state, 'enabled');
+  } finally { basedRestore.close(); }
+  writeFileSync(path, original.replace('First retained rule.', 'Wrong first rule.'));
+  const changed = backupProject(flow.store, projectId, flow.home);
+  assert.ok(changed.artifacts.some((artifact) => artifact.path === path && artifact.issue === 'changed'));
+  const changedRestore = new ProjectStore(join(flow.home, 'changed-memory-restore.sqlite'));
+  try {
+    assert.ok(restoreProjectBackup(changedRestore, changed, flow.home).artifacts.some((artifact) => artifact.path === path && artifact.issue === 'changed'));
+    assert.equal(reconcileProject(changedRestore, projectId, flow.adapter).state, 'reconciling');
+  } finally { changedRestore.close(); }
+});

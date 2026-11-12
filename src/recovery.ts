@@ -1,3 +1,4 @@
+import { markdownSectionRange } from './markdown-sections.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -81,7 +82,8 @@ export function reconcileProject(store: ProjectStore, projectId: string, input: 
     project = saveProject(store, project, { ...project.integration, state: 'reconciling',
       outstandingConditions: project.integration?.outstandingConditions ?? [] });
     const artifacts = project.integration?.restoredArtifacts ?? [];
-    const issues = [...inspectArtifacts(artifacts), ...(project.integration?.restoredUnresolvedReferences ?? []).map((path) => ({ path, issue: 'unresolved_reference' as const }))];
+    const identities = artifactIdentities(store.exportProject(projectId), project.integration?.artifactBase);
+    const issues = [...inspectArtifacts(artifacts, identities.sections), ...(project.integration?.restoredUnresolvedReferences ?? []).map((path) => ({ path, issue: 'unresolved_reference' as const }))];
     if (issues.length) return { state: 'reconciling' as const, artifacts: issues };
     const snapshot = readFleetSnapshot(runtime);
     const wrapper = new TaskWrapper(options);
@@ -123,16 +125,22 @@ const localPath = (uri: string, base?: string, unresolved?: Set<string>) => {
   if (base) return resolve(base, uri);
   unresolved?.add(uri); return undefined;
 };
-function referencedArtifacts(value: unknown, found = new Map<string, string[]>(), base?: string, unresolved?: Set<string>) {
-  if (Array.isArray(value)) for (const item of value) referencedArtifacts(item, found, base, unresolved);
+type SectionIdentity = { heading: string; digest: string };
+function referencedArtifacts(value: unknown, found = new Map<string, string[]>(), base?: string, unresolved?: Set<string>, sections = new Map<string, SectionIdentity[]>()) {
+  if (Array.isArray(value)) for (const item of value) referencedArtifacts(item, found, base, unresolved, sections);
   else if (value && typeof value === 'object') {
     const object = value as Record<string, unknown>;
     if (typeof object.uri === 'string') {
       const path = localPath(object.uri, base, unresolved);
       if (path) {
         const digest = typeof object.digest === 'string' ? object.digest : undefined;
+        const section = digest && typeof object.heading === 'string' ? { heading: object.heading, digest } : undefined;
+        if (section) {
+          const retained = sections.get(path) ?? [];
+          if (!retained.some((entry) => entry.heading === section.heading && entry.digest === section.digest)) sections.set(path, [...retained, section]);
+        }
         const prior = found.get(path) ?? [];
-        found.set(path, [...new Set([...prior, ...(digest ? [digest] : [])])]);
+        found.set(path, [...new Set([...prior, ...(digest && !section ? [digest] : [])])]);
       }
     }
     // Saved brief and return locations are local artifacts too.
@@ -141,10 +149,21 @@ function referencedArtifacts(value: unknown, found = new Map<string, string[]>()
         const expected = key === 'sidecarPath' && typeof object.sidecarDigest === 'string' && object.sidecarDigest.startsWith('sha256:') ? [object.sidecarDigest] : [];
         found.set(item, [...new Set([...(found.get(item) ?? []), ...expected])]);
       }
-      referencedArtifacts(item, found, base, unresolved);
+      referencedArtifacts(item, found, base, unresolved, sections);
     }
   }
   return found;
+}
+function artifactIdentities(value: unknown, base?: string, unresolved?: Set<string>) {
+  const sections = new Map<string, SectionIdentity[]>();
+  return { files: referencedArtifacts(value, undefined, base, unresolved, sections), sections };
+}
+function mismatchingSection(content: Buffer, sections: SectionIdentity[] = []) {
+  const text = content.toString('utf8');
+  return sections.find((section) => {
+    try { return sha(markdownSectionRange(text, section.heading).before) !== section.digest; }
+    catch { return true; }
+  });
 }
 const BackupArtifactSchema = z.strictObject({ path: z.string().refine(isAbsolute), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).nullable(),
   expectedDigests: z.array(z.string()).optional(), content: z.string().nullable(), issue: z.enum(['missing', 'changed']).optional() });
@@ -159,9 +178,10 @@ export function backupProject(store: ProjectStore, projectId: string, artifactBa
     if (base && !isAbsolute(base)) throw new Error('absolute_artifact_base_required');
     const unresolved = new Set<string>();
     const excludedDirectories: string[] = [];
-    const artifacts = [...referencedArtifacts(project, undefined, base, unresolved)].filter(([path, expectedDigests]) => {
+    const identities = artifactIdentities(project, base, unresolved);
+    const artifacts = [...identities.files].filter(([path, expectedDigests]) => {
       try {
-        if (statSync(path).isDirectory() && !expectedDigests.length) { excludedDirectories.push(path); return false; }
+        if (statSync(path).isDirectory() && !expectedDigests.length && !identities.sections.get(path)?.length) { excludedDirectories.push(path); return false; }
         return true;
       }
       catch { return true; }
@@ -169,7 +189,7 @@ export function backupProject(store: ProjectStore, projectId: string, artifactBa
       try {
         const content = readFileSync(path); const digest = sha(content);
         return { path, digest, content: content.toString('base64'), ...(expectedDigests.length ? { expectedDigests } : {}),
-          ...(expectedDigests.some((expected) => expected !== digest) ? { issue: 'changed' as const } : {}) };
+          ...((expectedDigests.some((expected) => expected !== digest) || mismatchingSection(content, identities.sections.get(path))) ? { issue: 'changed' as const } : {}) };
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
         return { path, digest: null, content: null, ...(expectedDigests.length ? { expectedDigests } : {}), issue: 'missing' as const };
@@ -180,10 +200,12 @@ export function backupProject(store: ProjectStore, projectId: string, artifactBa
       projectDigest: sha(JSON.stringify(project)), ...(base ? { artifactBase: base } : {}), unresolvedReferences: [...unresolved], excludedDirectories, artifacts });
   });
 }
-function inspectArtifacts(artifacts: { path: string; digest: string | null }[]) {
+function inspectArtifacts(artifacts: { path: string; digest: string | null }[], sections: Map<string, SectionIdentity[]>) {
   return artifacts.flatMap<{ path: string; issue: 'missing' | 'changed' | 'verification_required' }>(({ path, digest }) => {
     try {
-      const actual = sha(readFileSync(path));
+      const content = readFileSync(path);
+      if (mismatchingSection(content, sections.get(path))) return [{ path, issue: 'changed' as const }];
+      const actual = sha(content);
       return digest === null ? [{ path, issue: 'verification_required' as const }] : actual === digest ? [] : [{ path, issue: 'changed' as const }];
     }
     catch { return [{ path, issue: 'missing' as const }]; }
@@ -196,7 +218,10 @@ export function verifyRestoredArtifact(store: ProjectStore, input: unknown) {
     const project = projectRecord(store, data.projectId);
     const artifact = project.integration?.restoredArtifacts?.find((entry) => entry.path === data.path);
     if (project.integration?.state !== 'reconciling' || !artifact || artifact.digest !== null) throw new Error('artifact_not_awaiting_verification');
-    if (sha(readFileSync(data.path)) !== data.digest) throw new Error('supplied_artifact_digest_mismatch');
+    const content = readFileSync(data.path);
+    if (sha(content) !== data.digest) throw new Error('supplied_artifact_digest_mismatch');
+    const sections = artifactIdentities(store.exportProject(data.projectId), project.integration.artifactBase).sections.get(data.path);
+    if (mismatchingSection(content, sections)) throw new Error(`supplied_artifact_section_digest_mismatch: ${data.path}`);
     const next = saveProject(store, project, { ...project.integration,
       restoredArtifacts: project.integration.restoredArtifacts!.map((entry) => entry.path === data.path ? { ...entry, digest: data.digest } : entry),
       observation: JSON.stringify({ verifiedSuppliedArtifact: data }) });
@@ -220,7 +245,8 @@ export function resolveRestoredReference(store: ProjectStore, input: unknown) {
     if (!path) throw new Error(`resolved_reference_path_required: ${data.reference}`);
     // History and original receipts are both authoritative identity sources.
     // Operator evidence cannot replace a digest already retained in either one.
-    const expected = referencedArtifacts(store.exportProject(data.projectId), undefined, data.base).get(path) ?? [];
+    const identities = artifactIdentities(store.exportProject(data.projectId), data.base);
+    const expected = identities.files.get(path) ?? [];
     if (expected.some((digest) => digest !== data.digest)) throw new Error(`resolved_reference_recorded_digest_mismatch: ${data.reference}`);
     const artifacts = integration.restoredArtifacts ?? [];
     const existing = artifacts.find((entry) => entry.path === path);
@@ -230,7 +256,13 @@ export function resolveRestoredReference(store: ProjectStore, input: unknown) {
       // Same rule as backup: directories without a required content identity are
       // excluded workspace references, not file-byte restoration obligations.
       if (data.digest !== undefined) throw new Error(`resolved_directory_has_file_digest: ${data.reference}`);
-    } else if (!data.digest || sha(readFileSync(path)) !== data.digest) throw new Error('resolved_reference_digest_mismatch');
+      if (identities.sections.get(path)?.length) throw new Error(`resolved_directory_has_section_identity: ${data.reference}`);
+    } else {
+      const content = readFileSync(path);
+      if (!data.digest || sha(content) !== data.digest) throw new Error('resolved_reference_digest_mismatch');
+      const mismatch = mismatchingSection(content, identities.sections.get(path));
+      if (mismatch) throw new Error(`resolved_reference_section_digest_mismatch: ${data.reference} ${mismatch.heading}`);
+    }
     const retained = artifacts.filter((entry) => entry.path !== path);
     if (!directory) retained.push({ path, digest: data.digest! });
     const next = saveProject(store, project, { ...integration, artifactBase: resolve(data.base),
@@ -261,11 +293,12 @@ export function restoreProjectBackup(store: ProjectStore, input: unknown, artifa
     }
   }
   const unresolved = new Set<string>();
-  const required = referencedArtifacts(backup.project, undefined, backup.artifactBase, unresolved);
+  const identities = artifactIdentities(backup.project, backup.artifactBase, unresolved);
+  const required = identities.files;
   for (const [path, digests] of required) {
     const artifact = backup.artifacts.find((entry) => entry.path === path);
     if (!artifact) {
-      if (!digests.length && backup.excludedDirectories.includes(path)) continue;
+      if (!digests.length && !identities.sections.get(path)?.length && backup.excludedDirectories.includes(path)) continue;
       throw new Error(`backup_manifest_missing_artifact: ${path}`);
     }
     if (JSON.stringify(artifact.expectedDigests ?? []) !== JSON.stringify(digests)) throw new Error(`backup_artifact_reference_mismatch: ${path}`);

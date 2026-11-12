@@ -122,9 +122,13 @@ absolute source `base`, the expected SHA-256 `digest` for a file, and nonempty v
 
 The operation verifies the file at `base/reference`, records that base and the
 verified file identity, and removes only the resolved reference from the restore
-gate. A digest retained in history or an original command receipt must match;
-operator evidence cannot replace it with a new hash. A new verified identity can
-be recorded only when no digest was retained. The recorded base must remain consistent across resolutions; a wrong digest
+gate. A whole-file digest retained in history or an original command receipt must
+match the supplied whole-file hash; operator evidence cannot replace it with a new
+hash. Retained Markdown section identities are checked separately using their
+heading ranges and section hashes. Two adopted sections can have distinct hashes
+without constraining the surrounding file content to either section's hash. Every
+retained section must still match, and a missing or changed section is rejected. A
+new whole-file identity can be recorded only when no whole-file digest was retained. The recorded base must remain consistent across resolutions; a wrong digest
 cannot release the gate. Historical source URIs remain intact. After every
 reported reference is resolved, use `reconcile-project` with the existing task and
 snapshot adapter to inspect live FirstMate state and lift the gate. This procedure
