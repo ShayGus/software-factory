@@ -37,10 +37,8 @@ export function stageCriteria(records: FactoryRecord[], detail: StageRevision, r
     }
     if (samePlanningRef(cursor, selected)) checkedPlan = selected;
   }
-  const check = checkedPlan.workflow?.readinessCheck && planningRecord(records, checkedPlan.workflow.readinessCheck);
-  const prior = check?.kind === 'plan_readiness_revision' && check.ready &&
-    check.plan.id === checkedPlan.id && check.plan.revision === checkedPlan.revision - 1 && planningRecord(records, check.detailStage);
-  if (prior && prior.kind === 'stage_revision' && checkedPlan.feature && samePlanningRef(prior.artifact, check.plan) &&
+  const prior = checkedPlanDetail(records, checkedPlan);
+  if (prior && checkedPlan.feature &&
     (!sourceFeature || !samePlanningRef(sourceFeature, checkedPlan.feature))) {
     // The ready revision retained task revisions from its predecessor.
     refs = stageCriteria(records, prior, refs, sourceFeature, taskRefs);
@@ -73,6 +71,13 @@ function mapStageCriteria(records: FactoryRecord[], detail: StageRevision, refs:
 
 type Slice = NonNullable<ImplementationPlanRevision['workflow']>['slices'][number];
 
+function checkedPlanDetail(records: FactoryRecord[], plan: ImplementationPlanRevision): StageRevision | undefined {
+  const check = plan.readiness.ready && plan.workflow?.readinessCheck && planningRecord(records, plan.workflow.readinessCheck);
+  const detail = check && check.kind === 'plan_readiness_revision' && check.ready &&
+    check.plan.id === plan.id && check.plan.revision === plan.revision - 1 && planningRecord(records, check.detailStage);
+  return detail && detail.kind === 'stage_revision' && samePlanningRef(detail.artifact, check.plan) ? detail : undefined;
+}
+
 /** The single compatibility boundary for pre-provenance history. Resolve a
  * retained slice independently of its task links, composing each readiness
  * check once. All new writes persist the resulting explicit record. */
@@ -87,17 +92,28 @@ export function sliceCriterionProvenance(records: FactoryRecord[], plan: Impleme
   const provenance = previous && retained ?
     sliceCriterionProvenance(records, previous, old) :
     { feature: slice.criteriaFeature ?? plan.feature, criteria: slice.criteria };
-  const check = plan.readiness.ready && plan.workflow?.readinessCheck && planningRecord(records, plan.workflow.readinessCheck);
-  const detail = check && check.kind === 'plan_readiness_revision' && check.ready &&
-    check.plan.id === plan.id && check.plan.revision === plan.revision - 1 && planningRecord(records, check.detailStage);
-  return detail && detail.kind === 'stage_revision' ?
+  const detail = checkedPlanDetail(records, plan);
+  return detail ?
     { feature: detail.feature, criteria: mapStageCriteria(records, detail, provenance.criteria, provenance.feature) } : provenance;
 }
 
 /** Materialize the selected slice interpretation for readiness and editor reads. */
 export function stageSliceCriteria(records: FactoryRecord[], detail: StageRevision, plan: ImplementationPlanRevision,
   slice: Slice): SliceCriterionProvenance {
-  const provenance = sliceCriterionProvenance(records, plan, slice);
+  let provenance = sliceCriterionProvenance(records, plan, slice);
+  // A named older bundle can predate the selected plan's source snapshot.
+  // Carry its explicit interpretation through each intervening checked reuse
+  // before applying the selected stage's mapping, including criterion splits.
+  const selected = planningRecord(records, detail.artifact);
+  if (selected?.kind === 'implementation_plan_revision' && selected.id === plan.id) {
+    for (let revision = plan.revision + 1; revision <= selected.revision; revision++) {
+      const next = planningRecord(records, { id: plan.id, revision });
+      if (next?.kind !== 'implementation_plan_revision') break;
+      const checked = checkedPlanDetail(records, next);
+      if (checked) provenance = { feature: checked.feature,
+        criteria: mapStageCriteria(records, checked, provenance.criteria, provenance.feature) };
+    }
+  }
   return { feature: detail.feature, criteria: mapStageCriteria(records, detail, provenance.criteria, provenance.feature) };
 }
 
@@ -116,7 +132,7 @@ export function withSliceCriterionProvenance(records: FactoryRecord[], plan: Imp
       (!old || !isDeepStrictEqual(supplied, old.criteriaProvenance));
     const criteriaProvenance = explicit ? supplied : previous && retained ?
       sliceCriterionProvenance(records, previous, old) :
-      { feature: slice.criteriaFeature ?? feature, criteria: slice.criteria };
+      { feature, criteria: slice.criteria };
     const { criteriaFeature: _legacy, ...content } = slice;
     return { ...content, criteria: criteriaProvenance.criteria, criteriaProvenance };
   }) } };

@@ -856,9 +856,10 @@ test('review 1377 finding 3: checked reuse remains selected after priority and w
   } finally { display.close(); flow.store.close(); }
 });
 
-test('artifact editors compose checked reuse through ready-plan lineage for retained tasks and slices', () => {
+for (const named of [false, true]) test(`artifact editors compose checked reuse through ready-plan lineage for ${named ? 'an older named bundle' : 'retained tasks and slices'}`, () => {
   const flow = setup();
   try {
+    flow.detailedPlan.dependencies = [];
     flow.start(); flow.finish();
     const original = flow.criteria;
     const second = original.map(c => ({ ...c, revision: 2 }));
@@ -869,10 +870,11 @@ test('artifact editors compose checked reuse through ready-plan lineage for reta
     const selected = flow.store.get(base.projectId, initial.result.readyPlan.id, initial.result.readyPlan.revision);
     assert.ok(selected?.kind === 'implementation_plan_revision');
     const third = original.map(c => ({ ...c, revision: 3 }));
-    const refined = replan(flow, selected, { criteria: third,
+    const refined = replan(flow, selected, { criteria: third, refineReady: true,
       designMap: splitMap.map(entry => ({ existing: entry.existing, current: { ...entry.current, revision: 3 } })), planMap: second.map((existing, i) => ({ existing, current: third[i]! })) });
     assert.ok(refined.result.readyPlan);
-    const view = projectView(flow.store, { projectId: base.projectId });
+    const view = projectView(flow.store, { projectId: base.projectId, ...(named ? { bundle: { featureId: feature.id,
+      refs: { design: ref(flow.design), plan: ref(flow.detailedPlan), tasks: flow.detailedTasks.map(ref) } } } : {}) });
     const html = renderFeature(view, view.features[0]!);
     const contexts = [...html.matchAll(/name="context" value="([^"]*)"/gu)].map(match => JSON.parse(match[1]!.replace(/&quot;/gu, '"').replace(/&#39;/gu, "'").replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&amp;/gu, '&')) as EditContext);
     const context = contexts.find(c => c.kind === 'plan'); assert.ok(context?.kind === 'plan');
@@ -885,6 +887,14 @@ test('artifact editors compose checked reuse through ready-plan lineage for reta
     const saved = flow.store.get(base.projectId, selected.id);
     assert.ok(saved?.kind === 'implementation_plan_revision');
     assert.deepEqual(saved.workflow!.slices[0]!.criteriaProvenance, { feature: ref(refined.current), criteria: third });
+    const resumed = projectView(flow.store, { projectId: base.projectId, bundle: { featureId: feature.id,
+      refs: { design: saved.design, plan: ref(saved), tasks: saved.deliverySequence } } });
+    assert.equal(resumed.features[0]!.missingBundle, false);
+    const resumeHtml = renderFeature(resumed, resumed.features[0]!);
+    const resumeContexts = [...resumeHtml.matchAll(/name="context" value="([^"]*)"/gu)].map(match => JSON.parse(match[1]!.replace(/&quot;/gu, '"').replace(/&#39;/gu, "'").replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&amp;/gu, '&')) as EditContext);
+    const resumeContext = resumeContexts.find(c => c.kind === 'plan'); assert.ok(resumeContext?.kind === 'plan');
+    assert.deepEqual(resumeContext.tasks[0]!.criteria, third);
+    assert.deepEqual(resumeContext.plan.workflow!.slices[0]!.criteriaProvenance, { feature: ref(refined.current), criteria: third });
   } finally { flow.store.close(); }
 });
 
@@ -1001,5 +1011,64 @@ test('1446-1: validation rejects snapshot ownership tampering and criterion list
       assert.equal(validation.ok, false);
       assert.ok(!validation.ok && validation.issues.some((issue) => issue.code === 'plan_not_ready'));
     }
+  } finally { flow.store.close(); }
+});
+
+test('1496-1: editing legacy slice criteria binds the new snapshot to the current feature', () => {
+  const flow = setup(true);
+  const legacy = new ProjectStore(':memory:');
+  try {
+    flow.start(); flow.finish();
+    const exported = flow.store.exportProject(base.projectId);
+    for (const record of exported.history) if (record.kind === 'implementation_plan_revision') {
+      for (const slice of record.workflow!.slices) {
+        delete slice.criteriaProvenance;
+        slice.criteriaFeature = feature;
+      }
+    }
+    legacy.importProject(exported);
+    const historical = { ...flow, store: legacy, write: (stage: StageRevision, records: FactoryRecord[]) => recordStage(legacy, {
+      idempotencyKey: `${stage.id}-${stage.revision}`, expectedRevision: stage.revision - 1,
+      issuedAt: time, stage, records,
+    }) };
+    const current = reuseForCurrentFeature(historical, { criterionChange: 'amend' });
+    const selected = legacy.get(base.projectId, flow.plan.id);
+    assert.ok(selected?.kind === 'implementation_plan_revision');
+    const edited = { ...selected, revision: 3, feature: ref(current.current), workflow: { ...selected.workflow!,
+      retainedTasks: selected.deliverySequence.map(task => ({ task, reason: 'Task is unchanged' })),
+      slices: selected.workflow!.slices.map(slice => ({ ...slice, criteria: current.current.criteria })) } };
+    historical.write({ ...current.detail, revision: 3, artifact: ref(edited) }, [edited]);
+    const saved = legacy.get(base.projectId, selected.id);
+    assert.ok(saved?.kind === 'implementation_plan_revision');
+    assert.deepEqual(saved.workflow!.slices[0]!.criteriaProvenance,
+      { feature: ref(current.current), criteria: current.current.criteria });
+    assert.equal(saved.workflow!.slices[0]!.criteriaFeature, undefined);
+    assert.equal(validateRecords(legacy.history(base.projectId)).ok, true);
+  } finally { legacy.close(); flow.store.close(); }
+});
+
+test('1496-3: legacy ready slice ownership cannot change the checked criterion interpretation', () => {
+  const flow = setup();
+  try {
+    flow.start(); flow.finish();
+    const [a, b] = flow.criteria as [Ref, Ref];
+    const map = [{ existing: a, current: a }, { existing: a, current: b }, { existing: b, current: b }];
+    const { result } = replan(flow, flow.detailedPlan, { criteria: [a, b], designMap: map, planMap: map });
+    assert.ok(result.readyPlan);
+    const records = flow.store.history(base.projectId);
+    for (const record of records) if (record.kind === 'implementation_plan_revision') {
+      for (const [index, slice] of record.workflow!.slices.entries()) {
+        delete slice.criteriaProvenance;
+        slice.criteria = [flow.criteria[index]!];
+        slice.criteriaFeature = feature;
+      }
+    }
+    assert.equal(validateRecords(records).ok, true, 'Untouched legacy history remains valid');
+    const ready = records.find(record => record.id === result.readyPlan!.id && record.revision === result.readyPlan!.revision);
+    assert.ok(ready?.kind === 'implementation_plan_revision');
+    ready.workflow!.slices[0]!.criteriaFeature = ready.feature!;
+    const validation = validateRecords(records);
+    assert.equal(validation.ok, false);
+    assert.ok(!validation.ok && validation.issues.some(issue => issue.code === 'plan_not_ready'));
   } finally { flow.store.close(); }
 });

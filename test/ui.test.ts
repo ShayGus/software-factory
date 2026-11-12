@@ -1243,6 +1243,40 @@ test(`checked reuse ${mode} survives ${kind} save${mode === 'renamed' ? ' after 
   assert.deepEqual(resumedPlan.dependencies, plan.dependencies);
 });
 
+for (const mode of ['split', 'renamed'] as const) test(`1475: legacy ready ${mode} slice criteria survive save and resume after readiness`, async t => {
+  const authored = reusedEditorHistory(mode);
+  const design = authored.find(r => r.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+  for (const task of authored) if (task.kind === 'detailed_plan_task') {
+    task.verificationMethod = 'Run the listed acceptance cases';
+    task.decisionsToKeep = design.decisions;
+  }
+  const checked = setup(t, authored);
+  const result = checkPlanReadiness(checked.store, { projectId: 'project-1', detailStage: { id: 'stage-detail', revision: 2 },
+    idempotencyKey: `legacy-ready-${mode}`, issuedAt: '2026-11-12T12:00:00Z', expectedPlanRevision: 1 });
+  assert.ok(result.readyPlan, JSON.stringify(result.check));
+  const history = checked.store.history('project-1');
+  const original = history.find(r => r.id === 'plan-1' && r.revision === 1);
+  const ready = history.find(r => r.id === result.readyPlan!.id && r.revision === result.readyPlan!.revision);
+  assert.ok(original?.kind === 'implementation_plan_revision' && ready?.kind === 'implementation_plan_revision');
+  for (const [index, slice] of ready.workflow!.slices.entries()) {
+    delete slice.criteriaFeature;
+    delete slice.criteriaProvenance;
+    slice.criteria = original.workflow!.slices[index]!.criteria;
+  }
+  const flow = setup(t, history);
+  let path = '/projects/project-1/features/feature-1';
+  const expected = mode === 'split' ? [{ id: 'criterion-general', revision: 1 }, { id: 'criterion-reused-target', revision: 1 },
+    { id: 'criterion-second-system', revision: 1 }] : [{ id: 'criterion-reused-target', revision: 1 }, { id: 'criterion-second-system', revision: 1 }];
+  for (const save of ['initial', 'resume']) {
+    const editor = findEditor((await flow.http('GET', path)).body, 'plan'); assert.ok(editor.context.kind === 'plan');
+    assert.deepEqual(editor.context.plan.workflow!.slices[0]!.criteria, expected);
+    const { first } = await sendEdit(flow, editor, {}, `legacy-ready-${mode}-${save}`);
+    const saved = flow.store.get('project-1', 'plan-1'); assert.ok(saved?.kind === 'implementation_plan_revision');
+    assert.deepEqual(saved.workflow!.slices[0]!.criteriaProvenance, { feature: ready.feature, criteria: expected });
+    path = first.json().resumeUrl;
+  }
+});
+
 for (const mode of ['split', 'renamed'] as const) test(`non-ready Detail retains checked ${mode} slice criteria through save and resume`, async t => {
   const history = reusedEditorHistory(mode);
   const plan = history.find(r => r.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');

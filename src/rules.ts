@@ -1,7 +1,7 @@
 import { correctionTargetsAttempt, outstandingTaskCorrections, unresolvedTaskCorrections, correctionOrder, type TrackedCorrection } from './correction-state.js';
 import { activeGuidance, learningKey } from './learning-context.js';
 import { reusableAnswer } from './decision-context.js';
-import { planReadinessFindings, stageCriteria, stageDependencies, stageSliceCriteria } from './planning-checks.js';
+import { planReadinessFindings, sliceCriterionProvenance, stageCriteria, stageDependencies, stageSliceCriteria } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { expectedReviewCriteria } from './review-contracts.js';
 import { missingAssignmentContext } from './instruction-context.js';
@@ -609,7 +609,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
               'plan_not_ready', 'workflow.readinessCheck', 'Ready plan content differs from the checked plan revision');
             if (detail?.kind === 'stage_revision') for (const slice of record.workflow.slices) {
               const old = previous.workflow?.slices.find((item) => item.id === slice.id);
-              if (slice.criteriaProvenance && old && canonical(slice.criteriaProvenance) !==
+              if (old && canonical(sliceCriterionProvenance(ctx.records, record, slice)) !==
                 canonical(stageSliceCriteria(ctx.records, detail, previous, old))) ctx.add(record,
                 'plan_not_ready', 'workflow.slices.criteriaProvenance', 'Slice provenance differs from the checked criterion interpretation');
             }
