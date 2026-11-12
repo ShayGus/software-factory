@@ -240,7 +240,7 @@ The detailed task must require the worker to commit its code, verify each criter
     const store = new ProjectStore(config.database);
     try {
       const operation = startManagedWorker(store, { projectId: project.id, idempotencyKey: `${config.taskId}-start`,
-        assignment: prepared.assignment, repository: config.repository, executable: fm.spawnExecutable,
+        assignment: prepared.assignment, repository: config.repository, executable: fm.spawnExecutable, hookRegistry: config.hookRegistry,
         args: [config.taskId, config.repository, '--mode', fm.mode, '--yolo', fm.yolo,
           '--harness', build.harness, ...(build.model ? ['--model', build.model] : []), ...(build.effort ? ['--effort', build.effort] : [])] },
         { fmHome: fm.home, ...(fm.snapshotExecutable ? { snapshotExecutable: fm.snapshotExecutable } : {}), timeoutMs: fm.timeoutMs });

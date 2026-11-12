@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readFleetSnapshot, runtimeTask } from './runtime.js';
+import { readFleetSnapshot, runtimeTask, endpointAlive, observedEndpointCessation } from './runtime.js';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
@@ -76,9 +76,9 @@ export function currentAttempt(records: FactoryRecord[], taskId: string): Assign
  * Compatibility is explicit; prose is never guessed to be safely mergeable. */
 export function queueCorrection(store: ProjectStore, input: unknown): { correction: Observation; operation: Operation } {
   const command = DeliverCorrectionCommandSchema.parse(input);
-  store.assertExternalOperationsAllowed(command.projectId);
   const operationId = stableId('correction-operation', command.projectId, command.idempotencyKey);
   return store.withTaskLock(command.projectId, () => {
+    store.assertExternalOperationsAllowed(command.projectId);
     const result = store.mutate(command, (history) => {
       const records = current(history); const payload = command.payload;
       if (payload.readdress) {
@@ -95,8 +95,15 @@ export function queueCorrection(store: ProjectStore, input: unknown): { correcti
           value.action, value.originalText, value.affectedRevision, value.sequence, value.supersedes,
           value.sourceRefs, value.urgentStop ?? false, value.compatibilityKey,
         ]);
+        const sameRecipient = correctionTargetsAttempt(history, original, assignment);
+        const previousOperation = records.find((entry) => entry.id === source.correction!.operationId);
+        const replacement = sameRecipient && !['cancellation', 'new_work'].includes(source.correction.action) && previousOperation?.kind === 'operation' && !!previousOperation.suspended &&
+          previousOperation.state === 'pending' && !previousOperation.externalAttempt && !hasCorrectionFact(original, 'delivered');
+        if (sameRecipient && !replacement && previousOperation?.kind === 'operation' && previousOperation.suspended) {
+          throw new StoreError('conflict', 'suspended_delivery_outcome_must_be_resolved_before_replacement');
+        }
         if (source.correction.supersededBy || hasCorrectionFact(original, 'incorporated') || !address ||
-          address.firstMateTaskId !== assignment.firstMateTaskId || correctionTargetsAttempt(history, original, assignment) ||
+          address.firstMateTaskId !== assignment.firstMateTaskId || (sameRecipient && !replacement) ||
           meaning(source.correction) !== meaning({ ...payload, originalText: payload.originalCorrection })) {
           throw new StoreError('validation', 'readdress_must_preserve_pending_correction_order_sources_and_meaning');
         }
@@ -104,7 +111,8 @@ export function queueCorrection(store: ProjectStore, input: unknown): { correcti
         const { deliveryRecipient: _delivery, incorporationAssignment: _incorporation, ...prior } = source.correction;
         const next = { ...source, revision: source.revision + 1, updatedAt: command.issuedAt, correction: { ...prior,
           assignment: ref(assignment), addressedRecipient: { assignment: ref(assignment), attemptId: assignment.attemptId, firstMateTaskId: assignment.firstMateTaskId },
-          operationId, deliveryHistory: [...(prior.deliveryHistory ?? []), correctionDeliverySnapshot(history, original)],
+          operationId, deliveryHistory: [...(prior.deliveryHistory ?? []), { ...correctionDeliverySnapshot(history, original),
+            ...(replacement && previousOperation?.kind === 'operation' ? { suspendedOperation: ref(previousOperation) } : {}) }],
           facts: prior.facts.filter((item) => item.fact === 'recorded'),
         } };
         return [next, pendingOperation(command, operationId)];
@@ -281,11 +289,21 @@ export function deliverCorrection(store: ProjectStore, projectId: string, correc
   // Task management has its own project lock. This outer lock coordinates the
   // steering queue; task calls below execute outside it using their existing lock.
   const initial = observation(store, projectId, correctionId);
-  store.assertExternalOperationsAllowed(projectId, deliveryIntent(store, projectId, initial).operation);
   if (['cancellation', 'new_work'].includes(initial.correction.action)) {
+    store.assertExternalOperationsAllowed(projectId, deliveryIntent(store, projectId, initial).operation);
     return deliverTaskCorrection(store, projectId, initial, options);
   }
-  return store.withTaskLock(projectId, () => deliverSteering(store, projectId, correctionId, options));
+  return store.withTaskLock(projectId, () => {
+    const record = observation(store, projectId, correctionId); const { operation } = deliveryIntent(store, projectId, record);
+    store.assertExternalOperationsAllowed(projectId);
+    if (operation.suspended) {
+      // Retirement forbids another external call, but not an observational recovery.
+      if (operation.externalAttempt && operation.state !== 'succeeded') return recoverCorrectionDelivery(store, projectId, record, operation, options);
+      if (operation.state === 'succeeded') return operation;
+      throw new StoreError('conflict', 'operation_permanently_suspended');
+    }
+    return deliverSteering(store, projectId, correctionId, options);
+  });
 }
 
 function deliveryIntent(store: ProjectStore, projectId: string, record: Correction) {
@@ -378,6 +396,7 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
   // Durable in-flight marker prevents retry after an ambiguous call or interruption.
   const recipient = { assignment: ref(assignment), attemptId: assignment.attemptId, firstMateTaskId: assignment.firstMateTaskId };
   let generation: string | null | undefined;
+  let baselineEndpointAlive = false;
   // Lifecycle recovery needs the pre-action generation. Steering carries its own
   // unique operation identity in the durable message, so old inbox records cannot match.
   if (action !== 'steer' && action !== 'read_status') {
@@ -386,12 +405,13 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
         ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
         ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), maxObservationAgeMs: options.maxObservationAgeMs });
       generation = runtimeTask(snapshot, assignment.firstMateTaskId)?.spawn_gen;
+      baselineEndpointAlive = endpointAlive(snapshot, assignment.firstMateTaskId) === true;
       if (!generation) throw new Error('lifecycle_requires_observed_generation');
     } catch (error) { return unresolved(store, projectId, record, operation, 'pending', String(error)); }
   }
   const started = unresolved(store, projectId, record, operation, 'unknown', 'External delivery started; outcome unconfirmed', false, recipient,
     { action, firstMateTaskId: assignment.firstMateTaskId, assignment: ref(assignment), attemptId: assignment.attemptId,
-      payload: text, ...(generation !== undefined ? { baselineGeneration: generation } : {}), startedAt: new Date().toISOString() });
+      payload: text, ...(generation !== undefined ? { baselineGeneration: generation, baselineEndpointAlive } : {}), startedAt: new Date().toISOString() });
   if (started.reconciliation?.note !== 'External delivery started; outcome unconfirmed') return started;
   try {
     const args = action === 'steer' ? [assignment.firstMateTaskId, text] : action === 'read_status' ? [assignment.firstMateTaskId] : [assignment.firstMateTaskId, action];
@@ -446,9 +466,8 @@ function recoverCorrectionDelivery(store: ProjectStore, projectId: string, recor
       if (matches.length) return unresolved(store, projectId, record, operation, 'succeeded',
         JSON.stringify({ recovered: 'durable_steering', matches, snapshot }), true, recipient);
     } else if (task?.spawn_gen && Date.parse(snapshot.generated) >= Date.parse(attempt.startedAt)) {
-      const stopped = ['stopped', 'exited', 'done', 'failed', 'complete'].includes(task.current_state.state);
       const accepted = attempt.action === 'relaunch' ? task.spawn_gen !== attempt.baselineGeneration :
-        attempt.action === 'interrupt' && task.spawn_gen === attempt.baselineGeneration && stopped;
+        attempt.action === 'interrupt' && observedEndpointCessation(snapshot, attempt);
       if (accepted) return unresolved(store, projectId, record, operation, 'succeeded',
         JSON.stringify({ recovered: 'lifecycle', snapshot }), true, recipient);
     }

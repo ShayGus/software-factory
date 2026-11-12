@@ -31,6 +31,8 @@ export const ProjectSchema = record('project', {
     disableMode: z.enum(['pause', 'hand_back']).optional(),
     outstandingConditions: z.array(TextSchema),
     observation: z.string().optional(),
+    artifactBase: TextSchema.optional(),
+    restoredUnresolvedReferences: z.array(TextSchema).optional(),
     restoredArtifacts: z.array(z.strictObject({ path: TextSchema, digest: TextSchema.nullable() })).optional(),
   }).optional(),
   timezone: TextSchema.refine((value) => {
@@ -263,6 +265,7 @@ export const CorrectionFactsSchema = z.array(z.strictObject({
         Date.parse(item.at) <= Date.parse(fact.at))))), 'Acknowledgement and incorporation require an earlier delivered fact');
 export const CorrectionDeliverySnapshotSchema = z.strictObject({
   assignment: RefSchema, recipient: CorrectionRecipientSchema, operationId: IdSchema.optional(),
+  suspendedOperation: RefSchema.optional(),
   facts: CorrectionFactsSchema, deliveryRecipient: CorrectionRecipientSchema.optional(), incorporationAssignment: RefSchema.optional(),
 });
 export const CorrectionSchema = z.strictObject({
@@ -313,7 +316,7 @@ export const OperationSchema = record('operation', {
   externalAttempt: z.strictObject({ action: TextSchema, firstMateTaskId: IdSchema,
     assignment: RefSchema.optional(), attemptId: IdSchema.optional(),
     payload: z.string().optional(), repository: TextSchema.optional(),
-    baselineGeneration: TextSchema.nullable().optional(), startedAt: TimestampSchema,
+    baselineGeneration: TextSchema.nullable().optional(), baselineEndpointAlive: z.boolean().optional(), startedAt: TimestampSchema,
   }).optional(),
   taskRejection: z.strictObject({ beforeMutation: z.literal(true), reason: TextSchema }).optional(),
   reconciliation: z.strictObject({

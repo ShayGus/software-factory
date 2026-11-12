@@ -1,3 +1,4 @@
+import { checkConfiguredWorkerStart } from './worker-start-hook.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -17,7 +18,10 @@ export type RuntimeAdapter = z.input<typeof RuntimeAdapterSchema>;
 // Additive fields are retained, including omissions, provenance and unknown state.
 export const FleetSnapshotSchema = z.object({
   schema: z.literal('fm-fleet-snapshot.v1'), generated: TimestampSchema, fm_home: absolute,
-  backlog: z.object({ present: z.boolean(), records: z.array(z.object({ id: z.string().min(1) }).passthrough()) }).passthrough(),
+  backlog: z.object({ present: z.boolean(), records: z.array(z.union([
+    z.object({ id: z.string().min(1), structured: z.literal(true).optional() }).passthrough(),
+    z.object({ id: z.null(), structured: z.literal(false) }).passthrough(),
+  ])) }).passthrough(),
   tasks: z.array(z.object({ id: z.string().min(1), spawn_gen: z.string().nullable(),
     project: z.string().nullable(), current_state: z.object({ state: z.string().min(1),
       observed_at: TimestampSchema, freshness: z.string() }).passthrough(),
@@ -44,9 +48,28 @@ export function readFleetSnapshot(input: RuntimeAdapter): FleetSnapshot {
 }
 export function runtimeTask(snapshot: FleetSnapshot, id: string) {
   const task = snapshot.tasks.find((entry) => entry.id === id);
+  const inventory = snapshot.main_inventory as { valid?: boolean; orphan_in_flight?: unknown[] } | undefined;
+  const orphaned = inventory?.orphan_in_flight?.some((entry) => entry === id ||
+    (!!entry && typeof entry === 'object' && 'id' in entry && entry.id === id));
+  const inFlight = snapshot.backlog.records.some((entry) => entry.id === id && entry.state === 'in_flight');
+  if (orphaned || (!task?.spawn_gen && (inventory?.valid === false || inFlight))) throw new Error('target_inventory_metadata_incomplete');
   if (task && (task.current_state.freshness !== 'fresh' || task.current_state.state === 'unknown' ||
     task.current_state.observed_at !== snapshot.generated)) throw new Error('runtime_task_unknown_or_stale');
   return task;
+}
+/** Endpoint evidence is separate from crew/pipeline state. Unknown is not dead. */
+export function endpointAlive(snapshot: FleetSnapshot, id: string): boolean | undefined {
+  const task = snapshot.tasks.find((entry) => entry.id === id);
+  const endpoint = task?.endpoint as { exists?: boolean; agent_alive?: unknown; observed_at?: string; freshness?: string } | undefined;
+  if (!endpoint || endpoint.freshness !== 'fresh' || endpoint.observed_at !== snapshot.generated) return undefined;
+  if (endpoint.exists === true && [true, 'yes'].includes(endpoint.agent_alive as boolean | string)) return true;
+  if (endpoint.exists === false && [false, 'no'].includes(endpoint.agent_alive as boolean | string)) return false;
+  return undefined;
+}
+export function observedEndpointCessation(snapshot: FleetSnapshot, attempt: NonNullable<Operation['externalAttempt']>): boolean {
+  const task = runtimeTask(snapshot, attempt.firstMateTaskId);
+  return attempt.baselineEndpointAlive === true && task?.spawn_gen === attempt.baselineGeneration &&
+    Date.parse(snapshot.generated) >= Date.parse(attempt.startedAt) && endpointAlive(snapshot, attempt.firstMateTaskId) === false;
 }
 export function recordOperationObservation(store: ProjectStore, operation: Operation, state: Operation['state'], note: string,
   extra: Partial<Pick<Operation, 'externalAttempt'>> = {}): Operation {
@@ -66,7 +89,7 @@ export function recordOperationObservation(store: ProjectStore, operation: Opera
 
 export const WorkerStartInputSchema = z.strictObject({
   projectId: z.string().min(1), idempotencyKey: z.string().min(1), assignment: z.object({ id: z.string(), revision: z.number().int().positive() }),
-  repository: absolute, executable: absolute, args: z.array(z.string()),
+  repository: absolute, executable: absolute, hookRegistry: absolute.optional(), args: z.array(z.string()),
 });
 /** One explicit start through FirstMate. An ambiguous call is observed, never blindly retried. */
 export function startManagedWorker(store: ProjectStore, input: unknown, adapter: RuntimeAdapter): Operation {
@@ -118,6 +141,9 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
       }
       // Any pre-existing generation belongs to ordinary FirstMate management.
       if (task?.spawn_gen) return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Existing worker generation; explicit new attempt required', snapshot }));
+      if (!data.hookRegistry || !assignment.brief) return recordOperationObservation(store, operation, 'pending', 'Worker start requires configured instruction and dispatch check');
+      const checked = checkConfiguredWorkerStart(store, data.projectId, assignment.firstMateTaskId, options.fmHome, data.hookRegistry, assignment.brief.path);
+      if (!checked.ok || !checked.managed) return recordOperationObservation(store, operation, 'pending', JSON.stringify({ reason: 'worker_start_check_failed', checked }));
       operation = recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Worker start begun', snapshot }), {
         externalAttempt: { action: 'start', firstMateTaskId: assignment.firstMateTaskId, assignment: data.assignment,
           attemptId: assignment.attemptId, repository: data.repository, baselineGeneration: null, startedAt: new Date().toISOString() } });

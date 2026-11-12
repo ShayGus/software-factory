@@ -133,6 +133,7 @@ export class ProjectStore {
       `);
     } catch (error) { this.#db.close(); throw error; }
   }
+  get databasePath(): string { return this.#path; }
   close(): void { this.#db.close(); }
 
   /** Serialize task intents and reconciliation across processes, including
@@ -272,7 +273,7 @@ export class ProjectStore {
   }
 
   /** Restore one closed project into a completely empty database, without executing operations. */
-  importProject(input: unknown, recovery?: { requireReconciliation: true; restoredArtifacts: { path: string; digest: string | null }[] }): void {
+  importProject(input: unknown, recovery?: { requireReconciliation: true; restoredArtifacts: { path: string; digest: string | null }[]; unresolvedReferences?: string[]; artifactBase?: string }): void {
     const data = parse(ProjectExportSchema, input);
     this.#transaction(() => {
       if (this.#db.prepare('SELECT 1 FROM record_history LIMIT 1').get() ||
@@ -309,6 +310,7 @@ export class ProjectStore {
           disposition: 'selected' as const, sourceRefs: [{ uri: 'factory:restore' }], scopeChanges: [] };
         const next = { ...project, revision: project.revision + 1, updatedAt: at,
           integration: { ...project.integration, state: 'reconciling' as const,
+            ...(recovery.artifactBase ? { artifactBase: recovery.artifactBase } : {}), restoredUnresolvedReferences: recovery.unresolvedReferences ?? [],
             resumeAfterRestore: project.integration?.state === 'disabled' ? 'disabled' as const : 'enabled' as const, restoredArtifacts: recovery.restoredArtifacts,
             outstandingConditions: project.integration?.outstandingConditions ?? [] } };
         parse(RecordsSchema, [decision, next]);

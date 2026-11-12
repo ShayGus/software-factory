@@ -95,7 +95,7 @@ if(step==='instruction_check') {
  }
  if(mode.removeHookDuringCheck) { const fs=await import('node:fs'); fs.rmSync(${JSON.stringify(join(home, 'config', 'hooks.json'))}); }
  out={verdict:'pass',findings:[]};
- if(mode.narrow) { assert.ok(snapshot.candidateInstructions.includes('Implement feature X for ERPNext only.')); out={verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'instructions',text:'Implement feature X for ERPNext only.'}]}]}; }
+ if(mode.narrow && snapshot.candidateInstructions.includes('Implement feature X for ERPNext only.')) { out={verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'instructions',text:'Implement feature X for ERPNext only.'}]}]}; }
 }
 
 if(step==='product_review') {
@@ -292,7 +292,7 @@ test('one captured feature reaches product completion through the existing CLI a
     try { assert.equal(validateReviewForCompletion(store.history('project-1'), result.review).ok, true); }
     finally { store.close(); }
     const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    assert.deepEqual(calls.map((call) => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'instruction_check', 'product_review']);
+    assert.deepEqual(calls.map((call) => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'instruction_check', 'instruction_check', 'product_review']);
     assert.equal(new Set(calls.map((call) => call.pid)).size, calls.length);
     assert.deepEqual(JSON.parse(readFileSync(join(flow.root, 'spawn-args.json'), 'utf8')).slice(-6), ['--harness', 'codex', '--model', 'build', '--effort', 'medium']);
     assert.equal((runFeature(flow.config, 'start') as { state: string }).state, 'awaiting_worker_return');

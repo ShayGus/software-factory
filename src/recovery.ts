@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileS
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { EvidenceSchema } from './primitives.js';
 import { ref, stableId } from './intake.js';
 import { type FactoryRecord, type Project, TaskMappingSchema } from './records.js';
 import { readFleetSnapshot, RuntimeAdapterSchema, type RuntimeAdapter } from './runtime.js';
@@ -80,7 +81,7 @@ export function reconcileProject(store: ProjectStore, projectId: string, input: 
     project = saveProject(store, project, { ...project.integration, state: 'reconciling',
       outstandingConditions: project.integration?.outstandingConditions ?? [] });
     const artifacts = project.integration?.restoredArtifacts ?? [];
-    const issues = inspectArtifacts(artifacts);
+    const issues = [...inspectArtifacts(artifacts), ...(project.integration?.restoredUnresolvedReferences ?? []).map((path) => ({ path, issue: 'unresolved_reference' as const }))];
     if (issues.length) return { state: 'reconciling' as const, artifacts: issues };
     const snapshot = readFleetSnapshot(runtime);
     const wrapper = new TaskWrapper(options);
@@ -89,8 +90,9 @@ export function reconcileProject(store: ProjectStore, projectId: string, input: 
     for (const operation of store.operations(projectId)) if (operation.externalAttempt) ids.add(operation.externalAttempt.firstMateTaskId);
     const tasks = [...ids].map((id) => ({ id, task: wrapper.read(id) ?? null }));
     const state = enable ? 'enabled' : project.integration?.resumeAfterRestore ?? 'enabled';
-    saveProject(store, project, { ...project.integration, state,
-      outstandingConditions: project.integration?.outstandingConditions ?? [], observation: JSON.stringify({ snapshot, tasks }) });
+    const { restoredArtifacts: _retiredGate, restoredUnresolvedReferences: _retiredUnresolved, ...integration } = project.integration!;
+    saveProject(store, project, { ...integration, state,
+      outstandingConditions: project.integration?.outstandingConditions ?? [], observation: JSON.stringify({ snapshot, tasks, verifiedRestoreArtifacts: artifacts }) });
     return { state, snapshot, tasks, suspended: store.operations(projectId).filter((operation) => operation.suspended).map(ref) };
   });
 }
@@ -102,24 +104,31 @@ export function importLegacyTasks(store: ProjectStore, projectId: string, input:
     const snapshot = readFleetSnapshot(input);
     const records = store.records(projectId);
     const at = new Date().toISOString();
-    const mappings = snapshot.backlog.records.filter((task) => !records.some((record) => record.kind === 'task_mapping' && record.firstMateTaskId === task.id))
-      .map((task) => TaskMappingSchema.parse({ kind: 'task_mapping', id: stableId('legacy-task', projectId, task.id), projectId,
+    const mappings = snapshot.backlog.records.filter((task) => task.id !== null && !records.some((record) => record.kind === 'task_mapping' && record.firstMateTaskId === task.id))
+      .map((task) => TaskMappingSchema.parse({ kind: 'task_mapping', id: stableId('legacy-task', projectId, task.id!), projectId,
         schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at, firstMateTaskId: task.id,
         feature: null, criteria: [], detailedPlanTask: null, dependencies: [], legacy: true, disposition: { state: 'active' },
         importedExecution: { observedAt: snapshot.generated, state: typeof task.state === 'string' ? task.state : 'unknown', verification: 'unverified' } }));
-    if (mappings.length) saveProject(store, projectRecord(store, projectId), projectRecord(store, projectId).integration ??
-      { state: 'enabled', outstandingConditions: [] }, mappings);
-    return mappings;
+    const project = projectRecord(store, projectId);
+    if (mappings.length || snapshot.backlog.records.some((task) => task.structured === false)) saveProject(store, project,
+      { ...(project.integration ?? { state: 'enabled', outstandingConditions: [] }), observation: JSON.stringify({ snapshot }) }, mappings);
+    return { mappings, omissions: snapshot.backlog.records.filter((task) => task.structured === false) };
   });
 }
 
-const localPath = (uri: string) => isAbsolute(uri) ? resolve(uri) : uri.startsWith('file:') ? fileURLToPath(uri) : undefined;
-function referencedArtifacts(value: unknown, found = new Map<string, string[]>()) {
-  if (Array.isArray(value)) for (const item of value) referencedArtifacts(item, found);
+const localPath = (uri: string, base?: string, unresolved?: Set<string>) => {
+  if (isAbsolute(uri)) return resolve(uri);
+  if (uri.startsWith('file:')) return fileURLToPath(uri);
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/u.test(uri)) return undefined;
+  if (base) return resolve(base, uri);
+  unresolved?.add(uri); return undefined;
+};
+function referencedArtifacts(value: unknown, found = new Map<string, string[]>(), base?: string, unresolved?: Set<string>) {
+  if (Array.isArray(value)) for (const item of value) referencedArtifacts(item, found, base, unresolved);
   else if (value && typeof value === 'object') {
     const object = value as Record<string, unknown>;
     if (typeof object.uri === 'string') {
-      const path = localPath(object.uri);
+      const path = localPath(object.uri, base, unresolved);
       if (path) {
         const digest = typeof object.digest === 'string' ? object.digest : undefined;
         const prior = found.get(path) ?? [];
@@ -128,11 +137,11 @@ function referencedArtifacts(value: unknown, found = new Map<string, string[]>()
     }
     // Saved brief and return locations are local artifacts too.
     for (const [key, item] of Object.entries(object)) {
-      if (['path', 'returnLocation', 'briefPath', 'sidecarPath'].includes(key) && typeof item === 'string' && isAbsolute(item)) {
+      if (['path', 'briefPath', 'sidecarPath'].includes(key) && typeof item === 'string' && isAbsolute(item)) {
         const expected = key === 'sidecarPath' && typeof object.sidecarDigest === 'string' && object.sidecarDigest.startsWith('sha256:') ? [object.sidecarDigest] : [];
         found.set(item, [...new Set([...(found.get(item) ?? []), ...expected])]);
       }
-      referencedArtifacts(item, found);
+      referencedArtifacts(item, found, base, unresolved);
     }
   }
   return found;
@@ -140,14 +149,17 @@ function referencedArtifacts(value: unknown, found = new Map<string, string[]>()
 const BackupArtifactSchema = z.strictObject({ path: z.string().refine(isAbsolute), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).nullable(),
   expectedDigests: z.array(z.string()).optional(), content: z.string().nullable(), issue: z.enum(['missing', 'changed']).optional() });
 export const ProjectBackupSchema = z.strictObject({ schema: z.literal('software-factory-backup.v1'),
-  exportedAt: z.iso.datetime(), project: ProjectExportSchema, projectDigest: z.string(), excludedDirectories: z.array(z.string().refine(isAbsolute)), artifacts: z.array(BackupArtifactSchema) });
+  exportedAt: z.iso.datetime(), project: ProjectExportSchema, projectDigest: z.string(), artifactBase: z.string().refine(isAbsolute).optional(), unresolvedReferences: z.array(z.string()).default([]), excludedDirectories: z.array(z.string().refine(isAbsolute)), artifacts: z.array(BackupArtifactSchema) });
 export type ProjectBackup = z.infer<typeof ProjectBackupSchema>;
 /** A self-contained export with bytes and digests. No live SQLite file copying. */
-export function backupProject(store: ProjectStore, projectId: string): ProjectBackup {
+export function backupProject(store: ProjectStore, projectId: string, artifactBase?: string): ProjectBackup {
   return store.withTaskLock(projectId, () => {
     const project = store.exportProject(projectId);
+    const base = artifactBase ?? projectRecord(store, projectId).integration?.artifactBase;
+    if (base && !isAbsolute(base)) throw new Error('absolute_artifact_base_required');
+    const unresolved = new Set<string>();
     const excludedDirectories: string[] = [];
-    const artifacts = [...referencedArtifacts(project)].filter(([path, expectedDigests]) => {
+    const artifacts = [...referencedArtifacts(project, undefined, base, unresolved)].filter(([path, expectedDigests]) => {
       try {
         if (statSync(path).isDirectory() && !expectedDigests.length) { excludedDirectories.push(path); return false; }
         return true;
@@ -165,15 +177,33 @@ export function backupProject(store: ProjectStore, projectId: string): ProjectBa
     });
     if (sha(JSON.stringify(project)) !== sha(JSON.stringify(store.exportProject(projectId)))) throw new Error('project_changed_during_backup_retry');
     return ProjectBackupSchema.parse({ schema: 'software-factory-backup.v1', exportedAt: new Date().toISOString(), project,
-      projectDigest: sha(JSON.stringify(project)), excludedDirectories, artifacts });
+      projectDigest: sha(JSON.stringify(project)), ...(base ? { artifactBase: base } : {}), unresolvedReferences: [...unresolved], excludedDirectories, artifacts });
   });
 }
 function inspectArtifacts(artifacts: { path: string; digest: string | null }[]) {
-  return artifacts.flatMap<{ path: string; issue: 'missing' | 'changed' }>(({ path, digest }) => {
-    try { return digest && sha(readFileSync(path)) === digest ? [] : [{ path, issue: 'changed' as const }]; }
+  return artifacts.flatMap<{ path: string; issue: 'missing' | 'changed' | 'verification_required' }>(({ path, digest }) => {
+    try {
+      const actual = sha(readFileSync(path));
+      return digest === null ? [{ path, issue: 'verification_required' as const }] : actual === digest ? [] : [{ path, issue: 'changed' as const }];
+    }
     catch { return [{ path, issue: 'missing' as const }]; }
   });
 }
+export function verifyRestoredArtifact(store: ProjectStore, input: unknown) {
+  const data = z.strictObject({ projectId: z.string().min(1), path: z.string().refine(isAbsolute),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u), evidence: z.array(EvidenceSchema).min(1) }).parse(input);
+  return store.withTaskLock(data.projectId, () => {
+    const project = projectRecord(store, data.projectId);
+    const artifact = project.integration?.restoredArtifacts?.find((entry) => entry.path === data.path);
+    if (project.integration?.state !== 'reconciling' || !artifact || artifact.digest !== null) throw new Error('artifact_not_awaiting_verification');
+    if (sha(readFileSync(data.path)) !== data.digest) throw new Error('supplied_artifact_digest_mismatch');
+    const next = saveProject(store, project, { ...project.integration,
+      restoredArtifacts: project.integration.restoredArtifacts!.map((entry) => entry.path === data.path ? { ...entry, digest: data.digest } : entry),
+      observation: JSON.stringify({ verifiedSuppliedArtifact: data }) });
+    return { project: ref(next), path: data.path, digest: data.digest };
+  });
+}
+
 function contained(root: string, path: string) {
   const rel = relative(root, path);
   return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
@@ -193,7 +223,8 @@ export function restoreProjectBackup(store: ProjectStore, input: unknown, artifa
       throw new Error(`backup_artifact_digest_mismatch: ${artifact.path}`);
     }
   }
-  const required = referencedArtifacts(backup.project);
+  const unresolved = new Set<string>();
+  const required = referencedArtifacts(backup.project, undefined, backup.artifactBase, unresolved);
   for (const [path, digests] of required) {
     const artifact = backup.artifacts.find((entry) => entry.path === path);
     if (!artifact) {
@@ -204,9 +235,10 @@ export function restoreProjectBackup(store: ProjectStore, input: unknown, artifa
   }
   // Import first validates the whole closed history and receipts. Gate is atomic
   // with the imported records, so a crash before file restoration cannot replay.
-  store.importProject(backup.project, { requireReconciliation: true,
+  store.importProject(backup.project, { requireReconciliation: true, unresolvedReferences: [...unresolved],
+    ...(backup.artifactBase ? { artifactBase: backup.artifactBase } : {}),
     restoredArtifacts: backup.artifacts.map(({ path, digest, expectedDigests }) => ({ path, digest: expectedDigests?.at(-1) ?? digest })) });
-  const issues: { path: string; issue: string }[] = [];
+  const issues: { path: string; issue: string }[] = [...unresolved].map((path) => ({ path, issue: 'unresolved_reference' }));
   for (const artifact of backup.artifacts) {
     if (artifact.issue) issues.push({ path: artifact.path, issue: artifact.issue });
     if (!contained(root, artifact.path)) { issues.push({ path: artifact.path, issue: 'outside_artifact_root' }); continue; }

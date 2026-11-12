@@ -1,4 +1,4 @@
-import { readFleetSnapshot, runtimeTask, recordOperationObservation } from './runtime.js';
+import { readFleetSnapshot, runtimeTask, endpointAlive, observedEndpointCessation, recordOperationObservation } from './runtime.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
@@ -354,15 +354,14 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
         ...(options.maxObservationAgeMs ? { maxObservationAgeMs: options.maxObservationAgeMs } : {}) });
       const runtime = runtimeTask(snapshot, observed.id);
       if (operation.externalAttempt) {
-        if (!runtime?.spawn_gen || runtime.spawn_gen !== operation.externalAttempt.baselineGeneration ||
-          !['stopped', 'exited', 'done', 'failed', 'complete'].includes(runtime.current_state.state)) {
+        if (!observedEndpointCessation(snapshot, operation.externalAttempt)) {
           throw new Error('cancellation_outcome_unknown_no_retry');
         }
       } else {
         if (!runtime?.spawn_gen) throw new Error('cancellation_requires_observed_worker_generation');
         operation = recordOperationObservation(store, operation, 'unknown', JSON.stringify({ action: 'exit', snapshot }), {
           externalAttempt: { action: 'exit', firstMateTaskId: observed.id,
-            baselineGeneration: runtime.spawn_gen, startedAt: new Date().toISOString() } });
+            baselineGeneration: runtime.spawn_gen, baselineEndpointAlive: endpointAlive(snapshot, observed.id) === true, startedAt: new Date().toISOString() } });
         wrapper.mutationAttempted = true;
         wrapper.run([observed.id, 'exit'], options.controlExecutable);
       }

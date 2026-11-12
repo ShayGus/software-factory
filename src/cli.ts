@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { applyCommand } from './application.js';
-import { backupProject, restoreProjectBackup, reconcileProject, disableProject, importLegacyTasks } from './recovery.js';
+import { backupProject, restoreProjectBackup, reconcileProject, disableProject, importLegacyTasks, verifyRestoredArtifact } from './recovery.js';
 import { startManagedWorker, RuntimeAdapterSchema } from './runtime.js';
 import { captureLearning, consolidateLearning, readLegacySection } from './learning.js';
 import { learningContext } from './learning-context.js';
@@ -25,7 +25,8 @@ const help = `Software Factory request intake and staged planning
 All commands print JSON; chat-hook is silent on success. No settings are installed.
 
   apply-command  --db <sqlite> --input <CommandEnvelope JSON file> [--adapter-config <TaskAdapterOptions JSON file>]
-  backup         --db <sqlite> --project <id>
+  backup         --db <sqlite> --project <id> [--artifact-base <absolute source base>]
+  verify-restored-artifact --db <sqlite> --input <projectId, path, digest, evidence JSON>
   restore        --db <empty sqlite> --input <backup JSON> --artifact-root <absolute root>
                  --adapter-config <TaskAdapterOptions JSON with snapshotExecutable>
   reconcile-project --db <sqlite> --project <id> --adapter-config <TaskAdapterOptions JSON>
@@ -94,7 +95,8 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   'learning-schedule': { db: valueOption, schedule: valueOption, 'agent-config': valueOption },
   'learning-tick': { db: valueOption, schedule: valueOption, 'agent-config': valueOption, now: valueOption },
   'apply-command': { db: valueOption, input: valueOption, 'adapter-config': valueOption },
-  backup: { db: valueOption, project: valueOption },
+  backup: { db: valueOption, project: valueOption, 'artifact-base': valueOption },
+  'verify-restored-artifact': { db: valueOption, input: valueOption },
   restore: { db: valueOption, input: valueOption, 'artifact-root': valueOption, 'adapter-config': valueOption },
   'reconcile-project': { db: valueOption, project: valueOption, 'adapter-config': valueOption },
   'disable-project': { db: valueOption, project: valueOption, mode: valueOption, 'adapter-config': valueOption },
@@ -156,7 +158,8 @@ export function runCli(args: string[]): number {
     try {
       switch (verb) {
         case 'apply-command': output(applyCommand(store, jsonFile('input'), optional('adapter-config') ? TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')) : undefined)); break;
-        case 'backup': output(backupProject(store, required('project'))); break;
+        case 'backup': output(backupProject(store, required('project'), optional('artifact-base'))); break;
+        case 'verify-restored-artifact': output(verifyRestoredArtifact(store, jsonFile('input'))); break;
         case 'restore': {
           const backup = jsonFile('input'); const projectId = storeProjectId(backup);
           const adapter = TaskAdapterOptionsSchema.parse(jsonFile('adapter-config'));

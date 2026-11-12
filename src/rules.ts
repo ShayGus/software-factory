@@ -686,6 +686,12 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
           address.firstMateTaskId !== intended.firstMateTaskId)) ctx.add(record, 'correction_recipient_mismatch',
           'correction.addressedRecipient', 'Re-addressing must pin the selected attempt');
         for (const past of record.correction.deliveryHistory ?? []) {
+          if (past.suspendedOperation) {
+            const retired = ctx.get(record, past.suspendedOperation, 'operation', 'correction.deliveryHistory.suspendedOperation');
+            if (retired && (!retired.suspended || retired.externalAttempt || retired.state !== 'pending' || retired.id !== past.operationId)) {
+              ctx.add(record, 'invalid_suspended_replacement', 'correction.deliveryHistory', 'Only an unattempted retired delivery can be replaced on the same recipient');
+            }
+          }
           const target = ctx.get(record, past.assignment, 'assignment', 'correction.deliveryHistory');
           if (target && (past.recipient.attemptId !== target.attemptId || past.recipient.firstMateTaskId !== target.firstMateTaskId ||
             past.recipient.firstMateTaskId !== intended?.firstMateTaskId)) ctx.add(record, 'correction_recipient_mismatch',
@@ -933,6 +939,7 @@ export function assertRevisionTransition(previousInput: unknown, nextInput: unkn
       const address = old.addressedRecipient ?? old.intendedRecipient ?? old.deliveryRecipient;
       const snapshot = after.at(-1)!;
       const expected = { assignment: old.assignment, recipient: address ?? snapshot.recipient, facts: old.facts,
+        ...(snapshot.suspendedOperation ? { suspendedOperation: snapshot.suspendedOperation } : {}),
         ...(old.operationId ? { operationId: old.operationId } : {}),
         ...(old.deliveryRecipient ? { deliveryRecipient: old.deliveryRecipient } : {}),
         ...(old.incorporationAssignment ? { incorporationAssignment: old.incorporationAssignment } : {}) };
@@ -940,7 +947,8 @@ export function assertRevisionTransition(previousInput: unknown, nextInput: unkn
         !sameRef(snapshot.recipient.assignment, old.assignment) || !correction.addressedRecipient ||
         !sameRef(correction.addressedRecipient.assignment, correction.assignment) ||
         correction.addressedRecipient.firstMateTaskId !== snapshot.recipient.firstMateTaskId ||
-        (correction.addressedRecipient.assignment.id === snapshot.recipient.assignment.id && correction.addressedRecipient.attemptId === snapshot.recipient.attemptId) ||
+        (correction.addressedRecipient.assignment.id === snapshot.recipient.assignment.id && correction.addressedRecipient.attemptId === snapshot.recipient.attemptId && !snapshot.suspendedOperation) ||
+        (snapshot.suspendedOperation && (snapshot.suspendedOperation.id !== old.operationId || old.facts.some((fact) => fact.fact === 'delivered'))) ||
         !correction.operationId || correction.operationId === old.operationId || correction.deliveryRecipient || correction.incorporationAssignment ||
         old.facts.some((fact) => fact.fact === 'incorporated') || old.supersededBy ||
         canonical(correction.facts) !== canonical(old.facts.filter((fact) => fact.fact === 'recorded'))) throw new Error('correction_history_mutation');

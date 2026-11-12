@@ -175,7 +175,7 @@ A green technical review or a worker's passing claims cannot replace product
 conformance. `review-product` exits nonzero for failed or incomplete outcomes and
 keeps their records. It does not itself change FirstMate task state or feature state.
 
-Prepare and review have exclusive `.started` markers. Start uses a durable operation in the canonical store and is safe to repeat with the same configuration: it observes FirstMate before resolving an ambiguous launch and never blindly spawns another worker. Inputs, profile selections, agent outputs,
+Prepare and review have exclusive `.started` markers. Start uses a durable operation in the canonical store and the shared instruction/dispatch checker with a verified native hook and is safe to repeat with the same configuration: it observes FirstMate before resolving an ambiguous launch and never blindly spawns another worker. Inputs, profile selections, agent outputs,
 CLI stdout/stderr and `prepared.json` remain under `runDirectory`; the manifest binds
 later phases to the same parsed run configuration. There is no automatic retry after
 an ambiguous FirstMate effect. Inspect the saved output and use the existing
