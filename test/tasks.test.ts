@@ -1,3 +1,4 @@
+import { fakeRuntime } from './runtime-helper.js';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
@@ -24,7 +25,8 @@ function setup(t: TestContext, atomic = false, editRecords?: (records: FactoryRe
   editRecords?.(records);
   store.importProject({ schemaVersion: 1, projectId, history: records, receipts: [] });
   const fake = fakeTaskWrapper(directory, atomic, database);
-  const options: TaskAdapterOptions = { fmHome: directory, tasksExecutable: fake.executable, guardTaskId: 'permanent-guard' };
+  const runtime = fakeRuntime(directory, ['managed-task']);
+  const options: TaskAdapterOptions = { snapshotExecutable: runtime.executable, fmHome: directory, tasksExecutable: fake.executable, guardTaskId: 'permanent-guard' };
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
   let sequence = 0;
   const command = (payload: Partial<TaskCommand['payload']> = {}, mappingId = 'mapping-managed'): TaskCommand => {

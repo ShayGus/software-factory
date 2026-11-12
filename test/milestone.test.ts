@@ -1,3 +1,4 @@
+import { fakeRuntime } from './runtime-helper.js';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -146,9 +147,10 @@ const worker=spawnSync(${JSON.stringify(returnWorker)},[],{encoding:'utf8'});pro
 process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict:'pass'},job:{id:42,git_ref:process.argv[4],status:'done',job_type:'review'}}));`);
   assert.ok(quality);
   const project = baseline.find((record) => record.kind === 'project')!;
+  const runtime = fakeRuntime(home);
   const config: z.input<typeof FeatureRunConfigSchema> = { version: 1, project, database, runDirectory, agentConfig,
     hookRegistry, requestFile, clientRequestId: 'milestone', taskId: 'milestone-worker', repository,
-    firstMate: { home, dataDirectory: data, briefExecutable: brief, spawnExecutable: spawn, inboxExecutable: inbox,
+    firstMate: { home, snapshotExecutable: runtime.executable, dataDirectory: data, briefExecutable: brief, spawnExecutable: spawn, inboxExecutable: inbox,
       tasksExecutable: wrapper.executable, mode: 'local-only', yolo: 'off' }, sourceFiles: [],
     baselineEvidence: [{ artifact: { uri: `git:${repository}`, revision: before }, description: 'Feature X absent at baseline', observedAt: at }] };
   if (options.bootstrap) runFeature(config, 'bootstrap');
@@ -293,7 +295,7 @@ test('one captured feature reaches product completion through the existing CLI a
     assert.deepEqual(calls.map((call) => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'instruction_check', 'product_review']);
     assert.equal(new Set(calls.map((call) => call.pid)).size, calls.length);
     assert.deepEqual(JSON.parse(readFileSync(join(flow.root, 'spawn-args.json'), 'utf8')).slice(-6), ['--harness', 'codex', '--model', 'build', '--effort', 'medium']);
-    assert.throws(() => runFeature(flow.config, 'start'), /EEXIST/);
+    assert.equal((runFeature(flow.config, 'start') as { state: string }).state, 'awaiting_worker_return');
   } finally { flow.close(); }
 });
 

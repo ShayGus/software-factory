@@ -1,10 +1,13 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { readFleetSnapshot, runtimeTask } from './runtime.js';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { earlierCorrectionPending, intendedCorrectionRecipient, correctionTargetsAttempt, currentCorrections, correctionDeliverySnapshot, correctionOrder, hasCorrectionFact, correctionRequiresIncorporation } from './correction-state.js';
 import { DeliverCorrectionCommandSchema } from './commands.js';
-import { executionStateToken } from './firstmate.js';
+import { executionStateToken, parseFirstMateInboxBody } from './firstmate.js';
 import { ref, stableId } from './intake.js';
 import { EvidenceSchema, RefSchema, TimestampSchema, type CorrectionAction, type Ref } from './primitives.js';
 import { ObservationSchema, type Assignment, type FactoryRecord, type Observation, type Operation } from './records.js';
@@ -30,6 +33,7 @@ const fact = (record: Correction, name: string) => record.correction.facts.some(
 export const CorrectionAdapterOptionsSchema = z.strictObject({
   fmHome: z.string().min(1), sendExecutable: z.string().min(1), controlExecutable: z.string().min(1),
   stateExecutable: z.string().min(1).optional(),
+  snapshotExecutable: z.string().min(1).optional(),
   timeoutMs: z.number().int().positive().optional(), maxObservationAgeMs: z.number().int().positive().default(30_000),
   recipients: z.array(z.strictObject({ assignment: RefSchema, attemptId: z.string().min(1), firstMateTaskId: z.string().min(1),
     state: z.enum(['active', 'stopped', 'unknown']), observedAt: TimestampSchema })),
@@ -72,6 +76,7 @@ export function currentAttempt(records: FactoryRecord[], taskId: string): Assign
  * Compatibility is explicit; prose is never guessed to be safely mergeable. */
 export function queueCorrection(store: ProjectStore, input: unknown): { correction: Observation; operation: Operation } {
   const command = DeliverCorrectionCommandSchema.parse(input);
+  store.assertExternalOperationsAllowed(command.projectId);
   const operationId = stableId('correction-operation', command.projectId, command.idempotencyKey);
   return store.withTaskLock(command.projectId, () => {
     const result = store.mutate(command, (history) => {
@@ -266,16 +271,17 @@ function decisionRecord(projectId: string, at: string, text: string, proof: z.in
     disposition: 'selected' as const, sourceRefs: [{ uri: 'factory:correction-observation' }], scopeChanges: [] };
 }
 
-/** One ordered delivery. Unknown outcomes are not automatically replayed because
- * fm-send/fm-control do not expose an idempotency key. Crash recovery is BUILD-15. */
+/** One ordered delivery. Unknown outcomes inspect durable messages and runtime
+ * generations; they never authorize a blind fm-send/fm-control retry. */
 export function deliverCorrection(store: ProjectStore, projectId: string, correctionId: string, input: CorrectionAdapterOptions): Operation {
   const options = CorrectionAdapterOptionsSchema.parse(input);
-  for (const path of [options.fmHome, options.sendExecutable, options.controlExecutable, ...(options.stateExecutable ? [options.stateExecutable] : [])]) {
+  for (const path of [options.fmHome, options.sendExecutable, options.controlExecutable, ...(options.stateExecutable ? [options.stateExecutable] : []), ...(options.snapshotExecutable ? [options.snapshotExecutable] : [])]) {
     if (!isAbsolute(path)) throw new StoreError('validation', 'absolute_correction_adapter_paths_required');
   }
   // Task management has its own project lock. This outer lock coordinates the
   // steering queue; task calls below execute outside it using their existing lock.
   const initial = observation(store, projectId, correctionId);
+  store.assertExternalOperationsAllowed(projectId, deliveryIntent(store, projectId, initial).operation);
   if (['cancellation', 'new_work'].includes(initial.correction.action)) {
     return deliverTaskCorrection(store, projectId, initial, options);
   }
@@ -292,7 +298,7 @@ function deliveryIntent(store: ProjectStore, projectId: string, record: Correcti
   return { operation, command: receipt.command };
 }
 function unresolved(store: ProjectStore, projectId: string, record: Correction, operation: Operation, state: Operation['state'],
-  note: string, delivered = false, recipient?: DeliveryRecipient): Operation {
+  note: string, delivered = false, recipient?: DeliveryRecipient, externalAttempt?: Operation['externalAttempt']): Operation {
   const at = new Date().toISOString(); const proof = evidence(operation.id, note, at);
   const decision = decisionRecord(projectId, at, 'Correction delivery observation', proof, [ref(record), ref(operation)]);
   let next: Operation;
@@ -309,7 +315,7 @@ function unresolved(store: ProjectStore, projectId: string, record: Correction, 
       }
     }
     const finalProof = finalNote === note ? proof : evidence(operation.id, finalNote, at);
-    next = { ...operation, revision: operation.revision + 1, updatedAt: at, state: finalState,
+    next = { ...operation, ...(externalAttempt ? { externalAttempt } : {}), revision: operation.revision + 1, updatedAt: at, state: finalState,
       reconciliation: { observedAt: at, observedState: finalState, note: finalNote, evidence: finalProof } };
     return [decision, next, ...(accepted || (captured && !latest.correction.deliveryRecipient) ? [{ ...latest,
       revision: latest.revision + 1, updatedAt: at, correction: { ...latest.correction,
@@ -340,6 +346,10 @@ function recipientProblem(store: ProjectStore, projectId: string, record: Correc
 function deliverSteering(store: ProjectStore, projectId: string, correctionId: string, options: z.output<typeof CorrectionAdapterOptionsSchema>): Operation {
   const record = observation(store, projectId, correctionId);
   const { operation } = deliveryIntent(store, projectId, record);
+  store.assertExternalOperationsAllowed(projectId, operation);
+  if (operation.state === 'unknown' && operation.externalAttempt) {
+    return recoverCorrectionDelivery(store, projectId, record, operation, options);
+  }
   if (operation.state !== 'pending') return operation;
   if (record.correction.supersededBy) return unresolved(store, projectId, record, operation, 'succeeded', 'Superseded before delivery; sources retained in replacement');
   if (record.correction.action === 'rewind') return unresolved(store, projectId, record, operation, 'failed', 'Missing capability: installed fm-control supports interrupt|exit|relaunch, not rewind');
@@ -359,7 +369,7 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
   const sources = new Map<string, Correction>();
   const collect = (item: Correction) => { for (const previous of item.correction.supersedes) collect(observation(store, projectId, previous.id)); sources.set(item.id, item); };
   collect(record);
-  const text = JSON.stringify({ assignment: ref(assignment), attemptId: assignment.attemptId,
+  const text = JSON.stringify({ operationId: operation.id, assignment: ref(assignment), attemptId: assignment.attemptId,
     corrections: [...sources.values()].sort((a, b) => correctionOrder(a) - correctionOrder(b)).map((item) => ({
       id: item.id, sequence: item.correction.sequence, action: item.correction.action, originalText: item.correction.originalText,
       active: !item.correction.supersededBy, supersedes: item.correction.supersedes, supersededBy: item.correction.supersededBy ?? null,
@@ -367,7 +377,21 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
   if (action === 'read_status' && !options.stateExecutable) return unresolved(store, projectId, record, operation, 'pending', 'Configured fm-crew-state wrapper required for status');
   // Durable in-flight marker prevents retry after an ambiguous call or interruption.
   const recipient = { assignment: ref(assignment), attemptId: assignment.attemptId, firstMateTaskId: assignment.firstMateTaskId };
-  const started = unresolved(store, projectId, record, operation, 'unknown', 'External delivery started; outcome unconfirmed', false, recipient);
+  let generation: string | null | undefined;
+  // Lifecycle recovery needs the pre-action generation. Steering carries its own
+  // unique operation identity in the durable message, so old inbox records cannot match.
+  if (action !== 'steer' && action !== 'read_status') {
+    try {
+      const snapshot = readFleetSnapshot({ fmHome: options.fmHome,
+        ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
+        ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), maxObservationAgeMs: options.maxObservationAgeMs });
+      generation = runtimeTask(snapshot, assignment.firstMateTaskId)?.spawn_gen;
+      if (!generation) throw new Error('lifecycle_requires_observed_generation');
+    } catch (error) { return unresolved(store, projectId, record, operation, 'pending', String(error)); }
+  }
+  const started = unresolved(store, projectId, record, operation, 'unknown', 'External delivery started; outcome unconfirmed', false, recipient,
+    { action, firstMateTaskId: assignment.firstMateTaskId, assignment: ref(assignment), attemptId: assignment.attemptId,
+      payload: text, ...(generation !== undefined ? { baselineGeneration: generation } : {}), startedAt: new Date().toISOString() });
   if (started.reconciliation?.note !== 'External delivery started; outcome unconfirmed') return started;
   try {
     const args = action === 'steer' ? [assignment.firstMateTaskId, text] : action === 'read_status' ? [assignment.firstMateTaskId] : [assignment.firstMateTaskId, action];
@@ -385,6 +409,52 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
     const failure = error as NodeJS.ErrnoException;
     return unresolved(store, projectId, record, started, failure.code === 'ENOENT' || failure.code === 'EACCES' ? 'failed' : 'unknown', String(error), false, recipient);
   }
+}
+/** Observe an interrupted delivery; absence never authorizes resending. */
+function recoverCorrectionDelivery(store: ProjectStore, projectId: string, record: Correction, operation: Operation,
+  options: z.output<typeof CorrectionAdapterOptionsSchema>): Operation {
+  const attempt = operation.externalAttempt!;
+  const recipient = record.correction.deliveryRecipient;
+  if (!recipient || attempt.firstMateTaskId !== recipient.firstMateTaskId || attempt.attemptId !== recipient.attemptId) return operation;
+  try {
+    const snapshot = readFleetSnapshot({ fmHome: options.fmHome,
+      ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
+      ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), maxObservationAgeMs: options.maxObservationAgeMs });
+    const task = runtimeTask(snapshot, recipient.firstMateTaskId);
+    if (attempt.action === 'steer' && attempt.payload) {
+      const inbox = join(options.fmHome, 'state', `${recipient.firstMateTaskId}.inbox`);
+      const matches: { path: string; digest: string }[] = [];
+      for (const directory of [inbox, join(inbox, 'handled')]) {
+        let names: string[];
+        try { names = readdirSync(directory); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw error;
+        }
+        for (const name of names.filter((name) => /^\d+\.msg$/u.test(name))) {
+          const path = join(directory, name);
+          let text: string;
+          try { text = readFileSync(path, 'utf8'); } catch (error) {
+            // An acknowledgement can move a record between the two reads.
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+            throw error;
+          }
+          let body: string;
+          try { body = parseFirstMateInboxBody(text); } catch { continue; }
+          if (body === attempt.payload) matches.push({ path, digest: digest(text) });
+        }
+      }
+      if (matches.length) return unresolved(store, projectId, record, operation, 'succeeded',
+        JSON.stringify({ recovered: 'durable_steering', matches, snapshot }), true, recipient);
+    } else if (task?.spawn_gen && Date.parse(snapshot.generated) >= Date.parse(attempt.startedAt)) {
+      const stopped = ['stopped', 'exited', 'done', 'failed', 'complete'].includes(task.current_state.state);
+      const accepted = attempt.action === 'relaunch' ? task.spawn_gen !== attempt.baselineGeneration :
+        attempt.action === 'interrupt' && task.spawn_gen === attempt.baselineGeneration && stopped;
+      if (accepted) return unresolved(store, projectId, record, operation, 'succeeded',
+        JSON.stringify({ recovered: 'lifecycle', snapshot }), true, recipient);
+    }
+    return unresolved(store, projectId, record, operation, 'unknown',
+      JSON.stringify({ reason: 'Delivery outcome unresolved; no retry authorized', snapshot }), false, recipient);
+  } catch (error) { return unresolved(store, projectId, record, operation, 'unknown', String(error), false, recipient); }
 }
 function deliverTaskCorrection(store: ProjectStore, projectId: string, record: Correction, options: z.output<typeof CorrectionAdapterOptionsSchema>): Operation {
   const { operation, command } = deliveryIntent(store, projectId, record);

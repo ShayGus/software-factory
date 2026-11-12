@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { z } from 'zod';
 import { CommandEnvelopeSchema, type BoundaryError, type CommandEnvelope } from './commands.js';
@@ -182,6 +182,16 @@ export class ProjectStore {
     return row ? parse(ReceiptSchema, JSON.parse(String(row.body))) : undefined;
   }
 
+  /** A disabled/restored project and retired intents may never reach wrappers. */
+  assertExternalOperationsAllowed(projectId: string, operation?: Operation): void {
+    const project = this.get(projectId, projectId);
+    if (project?.kind !== 'project') throw new StoreError('not_found', 'project_not_found');
+    if (project.integration && project.integration.state !== 'enabled') {
+      throw new StoreError('conflict', `project_integration_${project.integration.state}`);
+    }
+    if (operation?.suspended) throw new StoreError('conflict', 'operation_permanently_suspended');
+  }
+
   operations(projectId: string): Operation[] {
     return this.records(projectId).filter((record): record is Operation => record.kind === 'operation');
   }
@@ -262,7 +272,7 @@ export class ProjectStore {
   }
 
   /** Restore one closed project into a completely empty database, without executing operations. */
-  importProject(input: unknown): void {
+  importProject(input: unknown, recovery?: { requireReconciliation: true; restoredArtifacts: { path: string; digest: string | null }[] }): void {
     const data = parse(ProjectExportSchema, input);
     this.#transaction(() => {
       if (this.#db.prepare('SELECT 1 FROM record_history LIMIT 1').get() ||
@@ -288,6 +298,26 @@ export class ProjectStore {
       for (const receipt of data.receipts) this.#db.prepare(
         'INSERT INTO command_receipts(project_id, idempotency_key, body) VALUES (?, ?, ?)')
         .run(data.projectId, receipt.command.idempotencyKey, JSON.stringify(receipt));
+      if (recovery) {
+        const project = this.get(data.projectId, data.projectId);
+        if (project?.kind !== 'project') fail('restore_project_identity_required');
+        const at = new Date(Math.max(Date.now(), Date.parse(project.updatedAt))).toISOString();
+        const id = randomUUID();
+        const decision = { kind: 'decision_change' as const, id, projectId: data.projectId, schemaVersion: 1 as const,
+          revision: 1, createdAt: at, updatedAt: at, questionOrChange: 'Restore project; require live reconciliation',
+          affectedRecords: [{ id: project.id, revision: project.revision }], rationale: 'Restore artifacts and observe FirstMate before replay',
+          disposition: 'selected' as const, sourceRefs: [{ uri: 'factory:restore' }], scopeChanges: [] };
+        const next = { ...project, revision: project.revision + 1, updatedAt: at,
+          integration: { ...project.integration, state: 'reconciling' as const,
+            resumeAfterRestore: project.integration?.state === 'disabled' ? 'disabled' as const : 'enabled' as const, restoredArtifacts: recovery.restoredArtifacts,
+            outstandingConditions: project.integration?.outstandingConditions ?? [] } };
+        parse(RecordsSchema, [decision, next]);
+        this.#insertRecord(decision); this.#insertRecord(next);
+        const command = { schemaVersion: 1, id, projectId: data.projectId, issuedAt: at, idempotencyKey: id,
+          command: 'record_decision_suggestion', targetId: project.id, expectedRevision: project.revision, payload: { decision } };
+        this.#db.prepare('INSERT INTO command_receipts(project_id, idempotency_key, body) VALUES (?, ?, ?)')
+          .run(data.projectId, id, JSON.stringify({ command, result: { records: [decision, next].map(({ id, revision }) => ({ id, revision })) } }));
+      }
     });
   }
 

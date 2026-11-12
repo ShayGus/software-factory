@@ -25,6 +25,14 @@ export const ProjectSchema = record('project', {
   exclusions: z.array(TextSchema), vocabulary: z.record(TextSchema, TextSchema),
   repositories: z.array(SourceRefSchema), designRefs: z.array(SourceRefSchema),
   firstMateHomeRef: TextSchema,
+  integration: z.strictObject({
+    state: z.enum(['enabled', 'disabled', 'reconciling']),
+    resumeAfterRestore: z.enum(['enabled', 'disabled']).optional(),
+    disableMode: z.enum(['pause', 'hand_back']).optional(),
+    outstandingConditions: z.array(TextSchema),
+    observation: z.string().optional(),
+    restoredArtifacts: z.array(z.strictObject({ path: TextSchema, digest: TextSchema.nullable() })).optional(),
+  }).optional(),
   timezone: TextSchema.refine((value) => {
     try { new Intl.DateTimeFormat('en', { timeZone: value }); return true; } catch { return false; }
   }, 'Unknown local timezone'),
@@ -147,6 +155,8 @@ export const TaskMappingSchema = record('task_mapping', {
   firstMateTaskId: IdSchema, feature: RefSchema.nullable(), criteria: z.array(RefSchema),
   detailedPlanTask: RefSchema.nullable(), dependencies: z.array(IdSchema), legacy: z.boolean(),
   disposition: DispositionSchema,
+  importedExecution: z.strictObject({ observedAt: TimestampSchema, state: TextSchema,
+    verification: z.literal('unverified') }).optional(),
   management: z.strictObject({
     operationId: IdSchema, requirements: z.array(DependencySchema),
     explicitRequirements: z.array(DependencySchema).optional(),
@@ -299,6 +309,12 @@ export const PayloadDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const OperationSchema = record('operation', {
   idempotencyKey: IdSchema, command: CommandNameSchema, payloadDigest: PayloadDigestSchema,
   state: OperationStateSchema, externalReferences: z.array(SourceRefSchema),
+  suspended: z.strictObject({ at: TimestampSchema, reason: TextSchema }).optional(),
+  externalAttempt: z.strictObject({ action: TextSchema, firstMateTaskId: IdSchema,
+    assignment: RefSchema.optional(), attemptId: IdSchema.optional(),
+    payload: z.string().optional(), repository: TextSchema.optional(),
+    baselineGeneration: TextSchema.nullable().optional(), startedAt: TimestampSchema,
+  }).optional(),
   taskRejection: z.strictObject({ beforeMutation: z.literal(true), reason: TextSchema }).optional(),
   reconciliation: z.strictObject({
     observedAt: TimestampSchema, evidence: z.array(EvidenceSchema).min(1),

@@ -16,6 +16,10 @@ export interface DeliveryOptions {
 
 /** No scheduler or worker control: deliver one already-committed capture intent. */
 export function deliverRequest(store: ProjectStore, projectId: string, requestId: string, options: DeliveryOptions): Operation {
+  return store.withTaskLock(projectId, () => deliverRequestIntent(store, projectId, requestId, options));
+}
+
+function deliverRequestIntent(store: ProjectStore, projectId: string, requestId: string, options: DeliveryOptions): Operation {
   if (!isAbsolute(options.fmHome)) throw new StoreError('validation', 'explicit_absolute_FM_HOME_required');
   const executable = options.inboxExecutable ?? join(options.fmHome, 'bin', 'fm-inbox.sh');
   if (!isAbsolute(executable)) throw new StoreError('validation', 'absolute_inbox_executable_required');
@@ -24,6 +28,7 @@ export function deliverRequest(store: ProjectStore, projectId: string, requestId
   if (operation?.kind !== 'operation' || operation.command !== 'capture_request') {
     throw new StoreError('not_found', 'capture_delivery_operation_not_found');
   }
+  store.assertExternalOperationsAllowed(projectId, operation);
   if (operation.state === 'succeeded') return operation;
   // Validate durable intent against its original command, including imported stores.
   const receipt = store.exportProject(projectId).receipts.find((entry) =>

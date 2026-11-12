@@ -1,3 +1,4 @@
+import { fakeRuntime } from './runtime-helper.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -17,6 +18,7 @@ function setup(t: TestContext) {
   const database = join(directory, 'store.sqlite');
   const store = new ProjectStore(database);
   store.importProject({ schemaVersion: 1, projectId, history: baseline.filter(record => !['observation', 'guidance_revision'].includes(record.kind)), receipts: [] });
+  const runtime = fakeRuntime(directory, ['pilot-build']);
   const executable = join(directory, 'wrapper');
   writeFileSync(executable, `#!/usr/bin/env node
 const fs = require('node:fs'); const path = require('node:path');
@@ -29,7 +31,7 @@ process.stdout.write('accepted');
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
   const assignment = () => { const item = store.get(projectId, 'assignment-1'); assert.ok(item?.kind === 'assignment'); return item; };
   const options = (state: 'active' | 'stopped' | 'unknown' = 'active'): CorrectionAdapterOptions => ({ fmHome: directory,
-    sendExecutable: executable, controlExecutable: executable, recipients: [{ assignment: ref(assignment()),
+    sendExecutable: executable, controlExecutable: executable, snapshotExecutable: runtime.executable, recipients: [{ assignment: ref(assignment()),
       attemptId: assignment().attemptId, firstMateTaskId: assignment().firstMateTaskId, state, observedAt: new Date().toISOString() }] });
   let number = 0;
   const command = (action: CorrectionAction = 'clarification', extra: Record<string, unknown> = {}) => {
@@ -186,7 +188,7 @@ test('cancellation uses BUILD-08 with fake task and lifecycle wrappers', t => {
       criteria: flow.assignment().criteria, detailedPlanTask: flow.assignment().detailedPlanTask, dependencies: [], reason: 'Explicit cancellation' } } });
   const correction = queueCorrection(flow.store, command);
   const options = flow.options(); options.taskAdapter = { fmHome: flow.directory, tasksExecutable: fake.executable,
-    controlExecutable: options.controlExecutable };
+    controlExecutable: options.controlExecutable, snapshotExecutable: options.snapshotExecutable! };
   assert.equal(flow.deliver(correction.correction.id, options).state, 'succeeded');
   assert.deepEqual(flow.calls()[0]!.args, ['pilot-build', 'exit']);
   const mapping = flow.store.get(projectId, 'mapping-1'); assert.ok(mapping?.kind === 'task_mapping');
@@ -558,7 +560,7 @@ function queuedCancellation(flow: ReturnType<typeof setup>, urgentStop: boolean)
       criteria: flow.assignment().criteria, detailedPlanTask: flow.assignment().detailedPlanTask, dependencies: [], reason: 'Explicit cancellation' } } });
   const correction = queueCorrection(flow.store, command);
   const options = flow.options(); options.taskAdapter = { fmHome: flow.directory, tasksExecutable: fake.executable,
-    controlExecutable: options.controlExecutable };
+    controlExecutable: options.controlExecutable, snapshotExecutable: options.snapshotExecutable! };
   return { fake, correction, options, command };
 }
 

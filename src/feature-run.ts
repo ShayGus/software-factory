@@ -1,3 +1,4 @@
+import { startManagedWorker } from './runtime.js';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -26,7 +27,7 @@ export const FeatureRunConfigSchema = z.strictObject({
   agentConfig: absolute, hookRegistry: absolute, requestFile: absolute, clientRequestId: safeId,
   taskId: safeId, repository: absolute,
   firstMate: z.strictObject({ home: absolute, dataDirectory: absolute,
-    briefExecutable: absolute, spawnExecutable: absolute, inboxExecutable: absolute,
+    briefExecutable: absolute, spawnExecutable: absolute, inboxExecutable: absolute, snapshotExecutable: absolute.optional(),
     tasksExecutable: absolute, guardTaskId: safeId.optional(),
     mode: z.enum(['local-only', 'direct-PR', 'no-mistakes']), yolo: z.enum(['on', 'off']),
     timeoutMs: z.number().int().positive().max(3_600_000).default(1_080_000),
@@ -60,6 +61,7 @@ function validatedRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
       // is the same fallback used by ProjectStore's initialization replay.
       const initialized = initialization.command.payload.project ?? store.get(config.project.id, config.project.id, 1);
       if (!isDeepStrictEqual(initialized, config.project)) throw new StoreError('conflict', 'project_initialization_mismatch');
+      store.assertExternalOperationsAllowed(config.project.id);
       return project;
     } finally { store.close(); }
   } catch (error) {
@@ -87,9 +89,9 @@ function bootstrapRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
 
 /** A deliberately small runbook executor: existing commands own all mutations.
  * No scheduler, hidden retries, polling, quality enqueue or lifecycle hook install.
- * Bootstrap replays the existing idempotent init. Other phases are single-use;
- * a partial/ambiguous effect requires reconciliation through existing commands
- * before another explicit attempt. */
+ * Bootstrap replays the existing idempotent init. Preparation/review are single-use;
+ * start uses a durable operation and observes FirstMate before recovering an
+ * ambiguous result. */
 export function runFeature(configInput: unknown, phase: 'bootstrap' | 'prepare' | 'start' | 'review') {
   const config = FeatureRunConfigSchema.parse(configInput);
   if (phase === 'bootstrap') return bootstrapRunProject(config);
@@ -234,11 +236,19 @@ The detailed task must require the worker to commit its code, verify each criter
   const prepared = PreparedSchema.parse(json(join(directory, 'prepared.json')));
   if (prepared.configDigest !== digestText(JSON.stringify(config))) throw new Error('prepared_run_config_changed');
   if (phase === 'start') {
-    begin();
     command('deliver', ['--project', project.id, '--request', prepared.requestId, '--fm-home', fm.home, '--inbox-executable', fm.inboxExecutable]);
-    invoke(fm.spawnExecutable, [config.taskId, config.repository, '--mode', fm.mode, '--yolo', fm.yolo,
-      '--harness', build.harness, ...(build.model ? ['--model', build.model] : []), ...(build.effort ? ['--effort', build.effort] : [])], 'firstmate-spawn', true);
-    return { state: 'awaiting_worker_return', returnLocation: join(directory, 'worker-return.json') };
+    const store = new ProjectStore(config.database);
+    try {
+      const operation = startManagedWorker(store, { projectId: project.id, idempotencyKey: `${config.taskId}-start`,
+        assignment: prepared.assignment, repository: config.repository, executable: fm.spawnExecutable,
+        args: [config.taskId, config.repository, '--mode', fm.mode, '--yolo', fm.yolo,
+          '--harness', build.harness, ...(build.model ? ['--model', build.model] : []), ...(build.effort ? ['--effort', build.effort] : [])] },
+        { fmHome: fm.home, ...(fm.snapshotExecutable ? { snapshotExecutable: fm.snapshotExecutable } : {}), timeoutMs: fm.timeoutMs });
+      save('worker-start-operation', operation);
+      if (operation.state !== 'succeeded') throw new Error(`firstmate-spawn_failed: ${operation.state}; reconcile recorded operation before retry`);
+      return { state: operation.state === 'succeeded' ? 'awaiting_worker_return' : operation.state,
+        operation, returnLocation: join(directory, 'worker-return.json') };
+    } finally { store.close(); }
   }
   const returned = FeatureWorkerReturnSchema.parse(json(join(directory, 'worker-return.json')));
   begin();

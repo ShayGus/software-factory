@@ -379,7 +379,7 @@ revisions, and `get(projectId, id, revision?)` selects a current or historical r
 `mutate` call, targeting the operation's expected revision and returning its next
 BUILD-02 operation revision. Preserve its original command, key and digest; attach
 external references and evidenced reconciliation as appropriate. This only records
-an observation. There is no executor, retry loop, reconciler or automatic state change.
+an observation. Explicit delivery and reconciliation commands below own external operations; the store does not schedule them.
 
 `exportProject(projectId)` takes a consistent read snapshot and returns versioned
 JSON containing all record history (including operations) and command receipts with
@@ -390,7 +390,7 @@ then imports everything in one transaction. Restore preserves pending/unknown st
 and replay results without executing operations. Historical operations imported without
 a receipt still reserve their keys and cannot be replayed as new work. Export contains
 artifact/attachment references and their identities, not file bytes; move referenced
-files separately. Missing-file reporting and live reconciliation belong to BUILD-15.
+files separately when using this low-level export. For recovery, use the [BUILD-15 backup and restore commands](docs/recovery.md), which bundle local artifact bytes, report missing/changed files and gate live replay.
 
 The store currently validates and reads project histories in memory. This keeps the
 foundation small for the local baseline; large-project indexing/streaming is later work.
@@ -414,7 +414,7 @@ results and delivered artifacts. The reason records why that evidence still appl
 
 Durable history, transactions, idempotency and pending-operation storage are implemented.
 Request delivery, staged planning, assignment preparation and product review are implemented below.
-General operation execution/reconciliation remains a later build.
+Explicit task, steering and worker-start reconciliation, legacy import, backup/restore and project disable are available in [Recovery and incremental adoption](docs/recovery.md).
 No live FirstMate integration or full product milestone is claimed by these contract fixtures.
 
 ## Request capture CLI — BUILD-04
@@ -1474,5 +1474,4 @@ leaves the original recipient unresolved and cannot inherit a delivered fact. A
 nonzero exit or timeout can follow a saved message, so it remains `unknown` and is
 never blindly retried; missing or non-executable wrappers report `failed`. Unknown
 status output also remains unresolved. An exit-zero steering/lifecycle receipt
-records only `delivered`. Reconciliation of ambiguous delivery after a crash is
-reserved for BUILD-15.
+records only `delivered`. [Crash recovery](docs/recovery.md) observes recorded task IDs, worker generations and exact durable inbox payloads before resolving ambiguous delivery; an absent observation never authorizes a blind retry.

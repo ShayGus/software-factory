@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { applyCommand } from './application.js';
+import { backupProject, restoreProjectBackup, reconcileProject, disableProject, importLegacyTasks } from './recovery.js';
+import { startManagedWorker, RuntimeAdapterSchema } from './runtime.js';
 import { captureLearning, consolidateLearning, readLegacySection } from './learning.js';
 import { learningContext } from './learning-context.js';
 import { prepareLearningSchedule, runScheduledLearning } from './learning-schedule.js';
@@ -23,6 +25,14 @@ const help = `Software Factory request intake and staged planning
 All commands print JSON; chat-hook is silent on success. No settings are installed.
 
   apply-command  --db <sqlite> --input <CommandEnvelope JSON file> [--adapter-config <TaskAdapterOptions JSON file>]
+  backup         --db <sqlite> --project <id>
+  restore        --db <empty sqlite> --input <backup JSON> --artifact-root <absolute root>
+                 --adapter-config <TaskAdapterOptions JSON with snapshotExecutable>
+  reconcile-project --db <sqlite> --project <id> --adapter-config <TaskAdapterOptions JSON>
+  disable-project --db <sqlite> --project <id> --mode <pause|hand_back>
+                 [--adapter-config <TaskAdapterOptions JSON; required for hand_back>]
+  legacy-import  --db <sqlite> --project <id> --adapter-config <RuntimeAdapter JSON>
+  start-worker   --db <sqlite> --input <WorkerStartInput JSON> --adapter-config <RuntimeAdapter JSON>
   init           --db <sqlite> --input <Project JSON file>
   capture        --db <sqlite> --project <id> --client-request-id <id>
                  --channel <cli|chat|firstmate_inbox|other> --source <reference>
@@ -74,6 +84,7 @@ All commands print JSON; chat-hook is silent on success. No settings are install
 Mapping offsets are half-open UTF-16 positions in the original request.
 See README.md for project/mapping examples, correction, and announcement recovery.
 `;
+const storeProjectId = (input: unknown) => z.object({ project: z.object({ projectId: z.string() }) }).parse(input).project.projectId;
 const valueOption = { type: 'string' as const };
 const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple?: boolean }>> = {
   'learning-capture': { db: valueOption, input: valueOption },
@@ -83,6 +94,12 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   'learning-schedule': { db: valueOption, schedule: valueOption, 'agent-config': valueOption },
   'learning-tick': { db: valueOption, schedule: valueOption, 'agent-config': valueOption, now: valueOption },
   'apply-command': { db: valueOption, input: valueOption, 'adapter-config': valueOption },
+  backup: { db: valueOption, project: valueOption },
+  restore: { db: valueOption, input: valueOption, 'artifact-root': valueOption, 'adapter-config': valueOption },
+  'reconcile-project': { db: valueOption, project: valueOption, 'adapter-config': valueOption },
+  'disable-project': { db: valueOption, project: valueOption, mode: valueOption, 'adapter-config': valueOption },
+  'legacy-import': { db: valueOption, project: valueOption, 'adapter-config': valueOption },
+  'start-worker': { db: valueOption, input: valueOption, 'adapter-config': valueOption },
   init: { db: valueOption, input: valueOption },
   capture: { db: valueOption, project: valueOption, 'client-request-id': valueOption,
     channel: valueOption, source: valueOption, 'text-file': valueOption, 'captured-at': valueOption },
@@ -139,6 +156,29 @@ export function runCli(args: string[]): number {
     try {
       switch (verb) {
         case 'apply-command': output(applyCommand(store, jsonFile('input'), optional('adapter-config') ? TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')) : undefined)); break;
+        case 'backup': output(backupProject(store, required('project'))); break;
+        case 'restore': {
+          const backup = jsonFile('input'); const projectId = storeProjectId(backup);
+          const adapter = TaskAdapterOptionsSchema.parse(jsonFile('adapter-config'));
+          const restored = restoreProjectBackup(store, backup, required('artifact-root'));
+          const reconciliation = reconcileProject(store, projectId, adapter, false);
+          output({ ...restored, reconciliation });
+          return restored.artifacts.length || reconciliation.state === 'reconciling' ? 1 : 0;
+        }
+        case 'reconcile-project': {
+          const result = reconcileProject(store, required('project'), TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')));
+          output(result); return result.state === 'enabled' ? 0 : 1;
+        }
+        case 'disable-project': {
+          const result = disableProject(store, required('project'), z.enum(['pause', 'hand_back']).parse(required('mode')),
+            optional('adapter-config') ? TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')) : undefined);
+          output(result); return result.errors.length ? 1 : 0;
+        }
+        case 'legacy-import': output(importLegacyTasks(store, required('project'), RuntimeAdapterSchema.parse(jsonFile('adapter-config')))); break;
+        case 'start-worker': {
+          const result = startManagedWorker(store, jsonFile('input'), RuntimeAdapterSchema.parse(jsonFile('adapter-config')));
+          output(result); return result.state === 'succeeded' ? 0 : 1;
+        }
         case 'learning-capture': output(captureLearning(store, jsonFile('input'))); break;
         case 'learning-consolidate': output(consolidateLearning(store, jsonFile('input'), jsonFile('agent-config'))); break;
         case 'learning-context': output(learningContext(store.history(required('project')), optional('feature'))); break;

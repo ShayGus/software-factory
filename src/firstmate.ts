@@ -81,3 +81,20 @@ export function executionStateToken(input: unknown): string {
   const observation = ExecutionObservationSchema.parse(input);
   return observation.raw.slice('state: '.length).split(' · ')[0]!.trim();
 }
+
+/** Installed fm-task-inbox.v1 record contract. A synthetic terminator removes
+ * exactly one newline; legacy unterminated records retain every message byte. */
+export function parseFirstMateInboxBody(raw: string): string {
+  const separator = raw.indexOf('\n--\n');
+  if (separator < 0) throw new Error('unsupported_inbox_record');
+  const headers = raw.slice(0, separator).split('\n');
+  if (headers[0] !== 'schema=fm-task-inbox.v1') throw new Error('unsupported_inbox_schema');
+  const terminators = headers.filter((line) => line.startsWith('body-terminator='));
+  if (terminators.length > 1 || terminators.some((line) => line !== 'body-terminator=1')) throw new Error('invalid_inbox_terminator');
+  let body = raw.slice(separator + '\n--\n'.length);
+  if (terminators.length) {
+    if (!body.endsWith('\n')) throw new Error('inbox_terminator_missing');
+    body = body.slice(0, -1);
+  }
+  return body;
+}

@@ -33,6 +33,8 @@ export function checkStartingWorker(configInput: unknown, eventInput: unknown) {
       if (identity?.kind !== 'project' || identity.id !== project.projectId || identity.projectId !== project.projectId) {
         throw new Error(`hook_project_context_unavailable: ${project.projectId}`);
       }
+      if (identity.integration?.state === 'disabled') continue;
+      if (identity.integration?.state === 'reconciling') throw new Error('hook_project_requires_reconciliation');
       const records = store.records(project.projectId);
       const mapping = records.filter((record) => record.kind === 'task_mapping' && record.firstMateTaskId === event.task_id);
       // Resolve task-wide attempt currency before checking the selected attempt

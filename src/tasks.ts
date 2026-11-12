@@ -1,3 +1,4 @@
+import { readFleetSnapshot, runtimeTask, recordOperationObservation } from './runtime.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
@@ -21,6 +22,8 @@ export const TaskAdapterOptionsSchema = z.strictObject({
   guardTaskId: z.string().min(1).optional(),
   /** Existing fm-control.sh wrapper. Needed only for cancellation of active work. */
   controlExecutable: z.string().min(1).optional(),
+  snapshotExecutable: z.string().min(1).optional(),
+  maxObservationAgeMs: z.number().int().positive().optional(),
   timeoutMs: z.number().int().positive().optional(),
 });
 export type TaskAdapterOptions = z.infer<typeof TaskAdapterOptionsSchema>;
@@ -50,6 +53,7 @@ export function queueManagedTask(store: ProjectStore, input: unknown): { mapping
 }
 
 function queueTaskIntent(store: ProjectStore, command: TaskCommand): { mapping: TaskMapping; operation: Operation } {
+  store.assertExternalOperationsAllowed(command.projectId);
   const operationId = stableId('task-operation', command.projectId, command.idempotencyKey);
   const receipts = store.exportProject(command.projectId).receipts;
   const result = store.mutate(command, (history) => {
@@ -61,8 +65,8 @@ function queueTaskIntent(store: ProjectStore, command: TaskCommand): { mapping: 
     }
     if (previous?.kind === 'task_mapping' && previous.management) {
       const operation = records.find((record) => record.id === previous.management!.operationId);
-      if (operation?.kind !== 'operation' || (operation.state !== 'succeeded' &&
-        !(operation.state === 'failed' && operation.taskRejection?.beforeMutation))) {
+      if (operation?.kind !== 'operation' || (!operation.suspended && (operation.state !== 'succeeded' &&
+        !(operation.state === 'failed' && operation.taskRejection?.beforeMutation)))) {
         throw new StoreError('conflict', 'reconcile_previous_task_mutation_first');
       }
     }
@@ -115,6 +119,7 @@ function queueTaskIntent(store: ProjectStore, command: TaskCommand): { mapping: 
       updatedAt: command.issuedAt, firstMateTaskId: payload.task.firstMateTaskId, feature: payload.feature,
       criteria: payload.criteria, detailedPlanTask: payload.detailedPlanTask, dependencies: [...new Set(payload.dependencies)],
       legacy: payload.detailedPlanTask === null,
+      ...(previous?.importedExecution ? { importedExecution: previous.importedExecution } : {}),
       disposition: payload.action === 'cancel' ? { state: 'cancelled', reason: payload.reason, decision: ref(decision) } :
         previous?.disposition ?? { state: 'active' },
       management: { operationId, requirements, explicitRequirements, readiness: payload.readiness ?? previous?.management?.readiness ?? [],
@@ -135,12 +140,12 @@ class TaskProcessError extends Error {
   constructor(readonly code: string | undefined, readonly stdout: string, readonly stderr: string, message: string) { super(message); }
 }
 class DefinitiveTaskRejection extends Error {}
-class TaskWrapper {
+export class TaskWrapper {
   readonly events: unknown[] = [];
   readonly env: NodeJS.ProcessEnv;
   mutationAttempted = false;
   constructor(readonly options: TaskAdapterOptions) {
-    for (const path of [options.fmHome, options.tasksExecutable, options.controlExecutable].filter((path) => path !== undefined)) {
+    for (const path of [options.fmHome, options.tasksExecutable, options.controlExecutable, options.snapshotExecutable].filter((path) => path !== undefined)) {
       if (!isAbsolute(path)) throw new StoreError('validation', 'absolute_task_adapter_paths_required');
     }
     if (options.guardTaskId !== undefined && !validId(options.guardTaskId)) throw new StoreError('validation', 'invalid_guard_id');
@@ -220,12 +225,14 @@ export function reconcileManagedTask(store: ProjectStore, projectId: string, ope
 
 function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId: string, options: TaskAdapterOptions): Operation {
   const wrapper = new TaskWrapper(TaskAdapterOptionsSchema.parse(options));
-  const operation = store.get(projectId, operationId);
+  let operation = store.get(projectId, operationId);
   if (operation?.kind !== 'operation' || operation.command !== 'map_manage_execution_task') {
     throw new StoreError('not_found', 'task_operation_not_found');
   }
+  store.assertExternalOperationsAllowed(projectId, operation);
   if (operation.state === 'succeeded') return operation;
-  const receipt = store.exportProject(projectId).receipts.find((entry) => entry.command.idempotencyKey === operation.idempotencyKey);
+  const operationKey = operation.idempotencyKey;
+  const receipt = store.exportProject(projectId).receipts.find((entry) => entry.command.idempotencyKey === operationKey);
   if (receipt?.command.command !== 'map_manage_execution_task' || commandDigest(receipt.command) !== operation.payloadDigest) {
     throw new StoreError('validation', 'task_operation_receipt_required');
   }
@@ -341,10 +348,24 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
     }
     if (mapping.disposition.state === 'cancelled' && observed.state === 'in_flight') {
       if (!options.controlExecutable) throw new Error('active_cancellation_requires_configured_fm_control');
-      // exit is FirstMate's existing idempotent, postcondition-checked stop.
-      // Teardown belongs to FirstMate: it can mark done, which cancellation must not do.
-      wrapper.mutationAttempted = true;
-      wrapper.run([observed.id, 'exit'], options.controlExecutable);
+      const snapshot = readFleetSnapshot({ fmHome: options.fmHome,
+        ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
+        ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+        ...(options.maxObservationAgeMs ? { maxObservationAgeMs: options.maxObservationAgeMs } : {}) });
+      const runtime = runtimeTask(snapshot, observed.id);
+      if (operation.externalAttempt) {
+        if (!runtime?.spawn_gen || runtime.spawn_gen !== operation.externalAttempt.baselineGeneration ||
+          !['stopped', 'exited', 'done', 'failed', 'complete'].includes(runtime.current_state.state)) {
+          throw new Error('cancellation_outcome_unknown_no_retry');
+        }
+      } else {
+        if (!runtime?.spawn_gen) throw new Error('cancellation_requires_observed_worker_generation');
+        operation = recordOperationObservation(store, operation, 'unknown', JSON.stringify({ action: 'exit', snapshot }), {
+          externalAttempt: { action: 'exit', firstMateTaskId: observed.id,
+            baselineGeneration: runtime.spawn_gen, startedAt: new Date().toISOString() } });
+        wrapper.mutationAttempted = true;
+        wrapper.run([observed.id, 'exit'], options.controlExecutable);
+      }
     }
     if (!reasons.length) {
       // No unresolved condition may have appeared while the subprocesses ran.

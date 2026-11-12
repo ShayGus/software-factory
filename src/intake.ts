@@ -39,6 +39,11 @@ export const CaptureInputSchema = CaptureRequestCommandSchema.shape.payload.exte
 });
 export function captureRequest(store: ProjectStore, input: unknown) {
   const data = CaptureInputSchema.parse(input);
+  return store.withTaskLock(data.projectId, () => captureRequestIntent(store, data));
+}
+function captureRequestIntent(store: ProjectStore, input: unknown) {
+  const data = CaptureInputSchema.parse(input);
+  store.assertExternalOperationsAllowed(data.projectId);
   const id = stableId('request', data.projectId, data.clientRequestId);
   const existing = store.get(data.projectId, id);
   const capturedAt = data.capturedAt ?? (existing?.kind === 'request' ? existing.capturedAt : now());

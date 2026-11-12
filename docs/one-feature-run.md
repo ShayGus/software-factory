@@ -175,14 +175,12 @@ A green technical review or a worker's passing claims cannot replace product
 conformance. `review-product` exits nonzero for failed or incomplete outcomes and
 keeps their records. It does not itself change FirstMate task state or feature state.
 
-Prepare, start and review have exclusive `.started` markers. A second call cannot silently repeat
-capture/planning or spawn another worker. Inputs, profile selections, agent outputs,
+Prepare and review have exclusive `.started` markers. Start uses a durable operation in the canonical store and is safe to repeat with the same configuration: it observes FirstMate before resolving an ambiguous launch and never blindly spawns another worker. Inputs, profile selections, agent outputs,
 CLI stdout/stderr and `prepared.json` remain under `runDirectory`; the manifest binds
 later phases to the same parsed run configuration. There is no automatic retry after
 an ambiguous FirstMate effect. Inspect the saved output and use the existing
 `outbox`/`reconcile-task`, idempotent command replay and FirstMate recovery commands
-to reconcile the original operation. Do not delete a start marker and blindly
-launch again. After incomplete product review, inspect its saved input and receipt,
+to reconcile the original operation. Repeating start uses the same worker-start operation; see [Recovery and incremental adoption](recovery.md). After incomplete product review, inspect its saved input and receipt,
 then use `review-product` directly with a new review key if fresh evidence is needed.
 
 ## Worker-start hook

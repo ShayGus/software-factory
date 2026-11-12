@@ -915,6 +915,12 @@ export function assertRevisionTransition(previousInput: unknown, nextInput: unkn
   if (previous.id !== next.id || previous.projectId !== next.projectId || previous.kind !== next.kind ||
     next.revision !== previous.revision + 1 || next.createdAt !== previous.createdAt ||
     Date.parse(next.updatedAt) < Date.parse(previous.updatedAt)) throw new Error('invalid_revision_transition');
+  if (previous.kind === 'operation' && next.kind === 'operation') {
+    if ((previous.externalAttempt && canonical(previous.externalAttempt) !== canonical(next.externalAttempt)) ||
+      (previous.suspended && canonical(previous.suspended) !== canonical(next.suspended))) {
+      throw new Error('external_operation_history_mutation');
+    }
+  }
   if (previous.kind === 'observation' && next.kind === 'observation' && previous.correction) {
     const old = previous.correction; const correction = next.correction;
     const source = (item: typeof old) => [item.action, item.originalText, item.affectedRevision, item.sequence, item.taskOrder,
