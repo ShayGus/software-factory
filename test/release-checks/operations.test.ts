@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { applyCommand, manageExecutionTask, taskReadinessReasons, projectView, ref,
   captureLearning, consolidateLearning, learningContext, activeGuidance, validateRecords, readFleetSnapshot, importLegacyTasks, workView, WorkSnapshotSchema,
-  type CaptureLearningInput } from '../../src/index.js';
+  RecordsSchema, buildEditCommand, type CaptureLearningInput } from '../../src/index.js';
 import { fakeJudge } from '../judge-helper.js';
 import { fakeTask } from '../task-wrapper-helper.js';
 import { setup, projectId, at, cases, taskCommand } from './helper.js';
@@ -98,7 +98,9 @@ test('CHECK-10 — local correction acts immediately while conflicting general l
 });
 
 test('CHECK-11 — UI and agent writes share canonical records and task operations', async t => {
-  const flow = setup(t, 'CHECK-11'); const http = await flow.http();
+  const overview = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
+  const open = overview.find(record => record.id === 'decision-open'); assert.ok(open?.kind === 'decision_change');
+  const flow = setup(t, 'CHECK-11', records => records.push(open)); const http = await flow.http();
   const original = flow.store.get(projectId, 'request-1');
   const create = taskCommand(); const created = await http('POST', '/canonical', create);
   assert.equal(created.status, 200, created.text);
@@ -118,9 +120,31 @@ test('CHECK-11 — UI and agent writes share canonical records and task operatio
   assert.equal(view.features[0].tasks.find((r: { mapping: { id: string } }) => r.mapping.id === create.targetId).priority, 3);
   assert.deepEqual(flow.store.get(projectId, 'request-1'), original);
   const decisions = await http('GET', '/projects/project-1/decisions');
-  await t.test('CHECK-11 unresolved — Decisions view', { todo: 'BUILD-14 Decisions view absent; see docs/release-checks.md' }, () => {
-    assert.equal(decisions.status, 200, 'No Decisions view for canonical decision edits');
-  });
+  assert.equal(decisions.status, 200, decisions.text);
+  assert.ok(decisions.text.includes(open.questionOrChange)); assert.match(decisions.text, /Original request/);
+  const nativeCalls = flow.tasks.read().calls.length;
+  const answer = buildEditCommand({ kind: 'answer', decision: open }, {
+    answer: 'Use the second CRM with independent authentication.', reason: 'Keep the original every-system request and verify an independent system',
+  }, 'release-ui-answer', new Date().toISOString());
+  const answered = await http('POST', '/canonical', answer); assert.equal(answered.status, 200, answered.text);
+  const saved = flow.store.get(projectId, open.id); assert.ok(saved?.kind === 'decision_change');
+  assert.equal(saved.choice?.state, 'resolved'); assert.equal(saved.answer?.text, 'Use the second CRM with independent authentication.');
+  const afterAnswer = flow.store.exportProject(projectId);
+  assert.deepEqual(applyCommand(flow.store, answer, flow.adapter), JSON.parse(answered.text));
+  assert.deepEqual(flow.store.exportProject(projectId), afterAnswer);
+  const sameQuestion = { ...open, id: 'decision-agent-reuse' };
+  applyCommand(flow.store, { schemaVersion: 1, id: 'agent-question', projectId, issuedAt: new Date().toISOString(),
+    idempotencyKey: 'agent-question', command: 'record_decision_suggestion', targetId: sameQuestion.id,
+    expectedRevision: 0, payload: { decision: sameQuestion } }, flow.adapter);
+  const reuse = buildEditCommand({ kind: 'answer', decision: sameQuestion, reuse: saved },
+    { reason: 'Reuse the already settled answer in the identical original feature context' }, 'release-agent-answer', new Date().toISOString());
+  applyCommand(flow.store, reuse, flow.adapter);
+  const reused = flow.store.get(projectId, sameQuestion.id); assert.ok(reused?.kind === 'decision_change');
+  assert.deepEqual(reused.answer, { text: saved.answer!.text, reusedFrom: ref(saved) });
+  const refreshed = await http('GET', '/projects/project-1/decisions');
+  assert.ok(refreshed.text.includes(saved.answer!.text)); assert.match(refreshed.text, /No material product questions need input/);
+  assert.equal(flow.tasks.read().calls.length, nativeCalls, 'Decision edits and reuse do not fork native task state');
+  assert.deepEqual(flow.store.get(projectId, 'request-1'), original);
 });
 
 test('CHECK-14 — wrong fixture cannot support a checked count', async t => {
