@@ -86,8 +86,11 @@ If other drafts remain, the save offers the same explicit Inspect/Resume link.
 
 Every saved plan revision has an Inspect/Resume link naming its complete artifact
 bundle. This includes older-format drafts with no base metadata. A named URL
-loads exactly those immutable revisions, even when newer drafts or stage selections
-exist. No automatic resumption, compatibility inference or receipt-based edit-base
+loads exactly those immutable revisions as the primary readable design and plan,
+as well as the editors, even when newer drafts or stage selections exist. Selected
+stage revisions appear separately as labeled context. Readiness and evidence name
+the design/plan revisions they describe; completeness and current-evidence checks
+use the displayed bundle, retaining older evidence with its historical revision links. No automatic resumption, compatibility inference or receipt-based edit-base
 detection runs. Only a missing or incomplete named bundle shows Conflict and
 withholds artifact saves. Current revision heads still guard each new write;
 resuming an old bundle creates a new revision rather than overwriting history.

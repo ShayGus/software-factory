@@ -82,8 +82,9 @@ Stage and reuse selections remain explicit; newer unselected drafts are labeled
 separately from the selected design and plan. Without a bundle URL, editors start
 from the selected bundle. A successful artifact save returns exact design, plan
 and task revisions plus a Resume URL; the browser reloads that URL. Saved bundles
-have explicit Inspect/Resume links, including old drafts. Named bundles load
-exactly those revisions, with no automatic draft selection or compatibility
+have explicit Inspect/Resume links, including old drafts. Named bundles display and edit
+exactly those revisions, with revision-labeled readiness and evidence and separate
+selected-stage context. There is no automatic draft selection or compatibility
 inference. A missing named bundle shows a text conflict and disables its artifact
 editors. Every task in the chosen bundle has an editor. Prior assignments retain their old revision links. Task edits use BUILD-08 and its
 existing reconciliation/receipt records. Unknown outcomes stay visible and block

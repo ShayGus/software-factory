@@ -70,27 +70,29 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
         bundle(namedDesign, namedPlan) : undefined;
     }
     const missingBundle = !!named && !editBundle;
+    const displayDesign = named ? editBundle?.design : design;
+    const displayPlan = named ? editBundle?.plan : plan;
     const savedBundles = plans.map((candidate) => {
       const refs = { design: candidate.design, plan: ref(candidate), tasks: candidate.deliverySequence };
       return { refs, url: bundleUrl(options.projectId, feature.id, refs) };
     });
     const reviews = records.filter((record): record is Extract<FactoryRecord, { kind: 'product_review' }> => record.kind === 'product_review' && record.feature?.id === feature.id);
     const passedReviews = reviews.filter((review) => validateReviewForCompletion(history, ref(review)).ok &&
-      sameRef(review.design, design) && sameRef(review.plan, plan));
+      sameRef(review.design, displayDesign) && sameRef(review.plan, displayPlan));
     const criteria = feature.criteria.map((target) => {
       const criterion = lookup(target);
       const results = records.filter((record): record is Extract<FactoryRecord, { kind: 'criterion_result' }> => record.kind === 'criterion_result' && sameRef(record.criterion, target));
       const demonstrated = results.filter((result) => {
         const assignment = lookup(result.assignment);
         return result.result === 'passed' && assignment?.kind === 'assignment' && assignment.feature &&
-          hasUnchangedFeatureScope(history, assignment.feature, feature) && sameRef(assignment.design, design) && sameRef(assignment.plan, plan) &&
+          hasUnchangedFeatureScope(history, assignment.feature, feature) && sameRef(assignment.design, displayDesign) && sameRef(assignment.plan, displayPlan) &&
           currentAssignmentAttempts(records, (candidate) => candidate.firstMateTaskId === assignment.firstMateTaskId)
             .every((candidate, _index, all) => all.length === 1 && sameRef(candidate, assignment)) &&
           !outstandingTaskCorrections(records, assignment.firstMateTaskId).length;
       });
       const verified = demonstrated.some((result) => reviews.some((review) => {
         if (!review.feature || !hasUnchangedFeatureScope(history, review.feature, feature) ||
-          !sameRef(review.design, design) || !sameRef(review.plan, plan) ||
+          !sameRef(review.design, displayDesign) || !sameRef(review.plan, displayPlan) ||
           !review.results.some((entry) => sameRef(entry, result)) || !review.assignments.some((entry) => sameRef(entry, result.assignment))) return false;
         if (review.conformance) return !review.conformance.error && review.conformance.verdict?.criteria.some((outcome) =>
           sameRef(outcome.criterion, target) && outcome.state === 'accomplished') === true;
@@ -123,7 +125,7 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
         label: operation?.kind === 'operation' && operation.state === 'unknown' ? 'Unknown outcome — reconciliation required' :
           !task ? 'Unknown — execution observation unavailable' : stale ? `Stale — last observed ${task.state}` : `Observed — ${task.state}` };
     });
-    return { feature, designs, design, designDrafts, plans, plan, planDrafts, editBundle, missingBundle, savedBundles, historicalDetails, assignments, reviews, criteria, decisions, corrections, tasks,
+    return { feature, designs, design, displayDesign, designDrafts, plans, plan, displayPlan, planDrafts, editBundle, missingBundle, savedBundles, historicalDetails, assignments, reviews, criteria, decisions, corrections, tasks,
       stages: history.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> => record.kind === 'stage_revision' && record.feature.id === feature.id),
       requests: feature.sourceRequests.map((target) => ({ target, record: lookup(target),
         coverage: requestCoverage(store, options.projectId, target.id) })),

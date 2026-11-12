@@ -594,3 +594,37 @@ test('review 1335: an explicit saved bundle is editable without any selected sta
   assert.equal(editor.context.design.revision, 1);
   await sendEdit(flow, editor, { productBehavior: 'Explicitly edited without guessing a selection' }, 'explicit-unselected');
 });
+
+test('review 1349 finding 4: named bundle main content, editors and evidence describe the same revisions', async (t) => {
+  const flow = setup(t, baseline);
+  const path = '/projects/project-1/features/feature-1';
+  assert.match(projectView(flow.store, { projectId: 'project-1' }).features[0]!.completeness, /^Complete/u);
+  const designSave = await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'design'), { productBehavior: 'Named design body for revision-specific inspection' }, 'inspection-design');
+  const planSave = await sendEdit(flow, findEditor((await flow.http('GET', designSave.first.json().resumeUrl)).body, 'plan'), { integrationApproach: 'Named plan body for revision-specific inspection' }, 'inspection-plan');
+  const result = planSave.first.json();
+  const page = await flow.http('GET', result.resumeUrl);
+  const designEditor = findEditor(page.body, 'design'); assert.ok(designEditor.context.kind === 'design');
+  const planEditor = findEditor(page.body, 'plan'); assert.ok(planEditor.context.kind === 'plan');
+  const withoutForms = (html: string) => html.replace(/<form data-editor>[\s\S]*?<\/form>/gu, '');
+  const designBody = withoutForms(page.body.match(/<section id="design">([\s\S]*?)<\/section>/u)?.[1] ?? '');
+  const planBody = withoutForms(page.body.match(/<section id="plan">([\s\S]*?)<\/section>/u)?.[1] ?? '');
+  assert.ok(designBody.includes(`<h3>Product behavior</h3><p class="prose">${designEditor.values.productBehavior}</p>`));
+  assert.ok(planBody.includes(`<p class="prose">${planEditor.values.integrationApproach}</p>`));
+  assert.equal(designEditor.context.design.revision, result.bundle.design.revision);
+  assert.equal(planEditor.context.plan.revision, result.bundle.plan.revision);
+  const selected = page.body.match(/<p id="selected-stage-context">([\s\S]*?)<\/p>/u)?.[1]; assert.ok(selected);
+  assert.match(selected, /Selected-stage context/u);
+  assert.match(selected, /inspect\/design-1\?revision=1/u);
+  assert.match(selected, /inspect\/plan-1\?revision=1/u);
+  const readiness = planBody.match(/<p>Readiness for ([\s\S]*?)<\/p>/u)?.[1]; assert.ok(readiness);
+  assert.ok(readiness.includes(`/inspect/plan-1?revision=${result.bundle.plan.revision}`));
+  assert.ok(readiness.includes(`/inspect/design-1?revision=${result.bundle.design.revision}`));
+  assert.match(readiness, /Incomplete or stale/u);
+  const criteria = page.body.match(/<section id="criteria">([\s\S]*?)<\/section>/u)?.[1]; assert.ok(criteria);
+  const evidenceScope = criteria.match(/<p>Evidence for displayed bundle: ([\s\S]*?)<\/p>/u)?.[1]; assert.ok(evidenceScope);
+  assert.ok(evidenceScope.includes(`/inspect/design-1?revision=${result.bundle.design.revision}`));
+  assert.ok(evidenceScope.includes(`/inspect/plan-1?revision=${result.bundle.plan.revision}`));
+  assert.match(criteria, /Evidence revisions:[\s\S]*inspect\/design-1\?revision=1[\s\S]*inspect\/plan-1\?revision=1/u);
+  assert.match(page.body, /Incomplete — product behavior still needs verification/u);
+  assert.doesNotMatch(page.body, /Complete — current product review passed/u);
+});

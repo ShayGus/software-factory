@@ -88,14 +88,19 @@ export function renderOverview(view: ProjectView) {
     <section><h2>Work and input needed</h2>${view.features.map((feature) => `<h3><a href="${featureUrl(view.options.projectId, feature.feature.id)}">${h(feature.feature.outcome)}</a></h3>${taskRows(feature)}`).join('')}</section>`);
 }
 function evidence(view: ProjectView, item: FeatureView['criteria'][number]) {
-  return item.results.map((result) => `<li>${recordLink(view.options.projectId, result, `${result.result}: ${result.accomplishedBehavior}`)}
+  return item.results.map((result) => {
+    const assignment = view.history.find((record) => sameRef(record, result.assignment));
+    return `<li>${recordLink(view.options.projectId, result, `${result.result}: ${result.accomplishedBehavior}`)}
     — ${item.demonstrated.some((current) => sameRef(current, result)) ? 'Reported current evidence' : 'Stale or non-passing evidence; retained as history'}
-    <p>Assignment: ${recordLink(view.options.projectId, result.assignment)}</p>${result.evidence.map((entry) => `<p>${h(entry.description)} · ${h(entry.observedAt)}<br>${external(entry.artifact.uri)} @ ${h(entry.artifact.revision ?? entry.artifact.digest)}</p>`).join('')}
-    ${items(result.limitations)}</li>`).join('') || '<li>Missing evidence — no result recorded for this criterion.</li>';
+    <p>Assignment: ${recordLink(view.options.projectId, result.assignment)}</p>
+    <p>Evidence revisions: ${assignment?.kind === 'assignment' ? `design ${recordLink(view.options.projectId, assignment.design)} · plan ${recordLink(view.options.projectId, assignment.plan)}` : 'Unknown'}</p>
+    ${result.evidence.map((entry) => `<p>${h(entry.description)} · ${h(entry.observedAt)}<br>${external(entry.artifact.uri)} @ ${h(entry.artifact.revision ?? entry.artifact.digest)}</p>`).join('')}
+    ${items(result.limitations)}</li>`;
+  }).join('') || '<li>Missing evidence — no result recorded for this criterion.</li>';
 }
 function artifacts(view: ProjectView, feature: FeatureView) {
-  const design = feature.design ?? feature.editBundle?.design;
-  const plan = feature.plan ?? feature.editBundle?.plan;
+  const design = feature.displayDesign;
+  const plan = feature.displayPlan;
   const tasks = feature.plan?.deliverySequence.flatMap((target) => {
     const task = view.history.find((record) => sameRef(record, target));
     return task?.kind === 'detailed_plan_task' ? [task] : [];
@@ -119,12 +124,11 @@ function artifacts(view: ProjectView, feature: FeatureView) {
     ${editable ? taskEditor(task) : ''}</li>`;
   return `${feature.missingBundle ? `<p role="status">Conflict — named bundle no longer exists or is incomplete. <a href="${featureUrl(view.options.projectId, feature.feature.id)}">Open the selected bundle</a>.</p>` : ''}<section id="design"><h2>Product design</h2><p>Revision history: ${links(view.options.projectId, feature.designs)}</p>
     ${feature.designDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.designDrafts)}. Stage selection stays unchanged.</p>` : ''}
-    ${context && !sameRef(context.design, design) ? `<p>Explicit design bundle in the editors: ${recordLink(view.options.projectId, context.design)}.</p>` : ''}
     ${design ? `<p>${recordLink(view.options.projectId, design)} · ${sameRef(design.feature, feature.feature) ? 'Current feature revision' : 'Stale — design names an earlier feature revision'}</p>
       <h3>Product behavior</h3>${text(design.productBehavior)}<h3>Technical design</h3>${text(design.technicalDesign)}<h3>Data flow</h3>${text(design.dataFlow)}
       <h3>Reuse findings</h3>${items(design.reuseFindings)}<h3>Interfaces</h3>${items(design.interfaces)}<h3>Examples</h3>${items(design.examples)}
       <h3>Testing approach</h3>${text(design.testingApproach)}<h3>Alternatives</h3>${items(design.alternatives)}<h3>Exclusions</h3>${items(design.exclusions)}
-      <h3>Unresolved questions</h3>${items(design.unresolvedQuestions)}<p>Source comparison: ${h(design.sourceComparison.result)}</p>
+      <h3>Unresolved questions</h3>${items(design.unresolvedQuestions)}<p>Source comparison for ${recordLink(view.options.projectId, design)}: ${h(design.sourceComparison.result)}</p>
       ${context ? edit({ ...context, kind: 'design' }, `Edit product design · r${context.design.revision}`,
         (['productBehavior', 'technicalDesign', 'dataFlow', 'testingApproach'] as const).map((name) => field(name, name.replace(/[A-Z]/gu, (letter) => ` ${letter.toLowerCase()}`), context.design[name])).join('') +
         (['reuseFindings', 'interfaces', 'examples', 'alternatives', 'exclusions', 'unresolvedQuestions'] as const).map((name) => field(name, `${labelName(name)} (one per line)`, context.design[name].join('\n'))).join('')) : empty('Incomplete — a coherent design, plan and task set is required before editing.')}` : empty('Unknown — product design not recorded.')}</section>
@@ -132,8 +136,7 @@ function artifacts(view: ProjectView, feature: FeatureView) {
     <h3>Saved artifact bundles</h3><ul>${feature.savedBundles.map((saved) => `<li><a href="${h(saved.url)}">Inspect/Resume ${h(saved.refs.design.id)} r${saved.refs.design.revision} · ${h(saved.refs.plan.id)} r${saved.refs.plan.revision} · ${saved.refs.tasks.length} tasks</a></li>`).join('')}</ul>
     ${feature.planDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.planDrafts)}. Stage selection stays unchanged.</p>` : ''}
     ${feature.historicalDetails.length ? `<p>Historical detailed plans: ${links(view.options.projectId, feature.historicalDetails.map((stage) => stage.artifact))}.</p>` : ''}
-    ${context && !sameRef(context.plan, plan) ? `<p>Explicit plan bundle in the editors: ${recordLink(view.options.projectId, context.plan)}.</p>` : ''}
-    ${plan ? `<p>${recordLink(view.options.projectId, plan)} · ${plan.readiness.ready && sameRef(plan.feature, feature.feature) && sameRef(plan.design, design) ? 'Recorded ready — see readiness evidence' : 'Incomplete or stale — readiness needs checking'}</p>
+    ${plan ? `<p>Readiness for ${recordLink(view.options.projectId, plan)} · design ${recordLink(view.options.projectId, plan.design)}: ${plan.readiness.ready && sameRef(plan.feature, feature.feature) && sameRef(plan.design, design) ? 'Recorded ready — see readiness evidence' : 'Incomplete or stale — readiness needs checking'}</p>
       <p>Strategy: ${h(plan.strategy)} · ${h(plan.strategyReason)}</p>${text(plan.integrationApproach)}
       <h3>Integration steps</h3>${items(plan.workflow?.integrationSteps ?? [])}<h3>Final verification</h3>${items(plan.workflow?.finalVerification ?? [])}
       <h3>Plan dependencies</h3>${items(plan.dependencies.map((edge) => `${edge.consumerTaskId} needs ${edge.prerequisiteTaskId}: ${edge.reason}`))}
@@ -145,15 +148,18 @@ function artifacts(view: ProjectView, feature: FeatureView) {
 }
 export function renderFeature(view: ProjectView, item: FeatureView) {
   const projectId = view.options.projectId;
-  return shell(view, item.feature.outcome, `<a href="/">All features</a><h1>${h(item.feature.outcome)}</h1><p>${h(item.completeness)}</p>
+  const named = view.options.bundle?.featureId === item.feature.id;
+  const scope = `design ${item.displayDesign ? recordLink(projectId, item.displayDesign) : 'Unknown'} · plan ${item.displayPlan ? recordLink(projectId, item.displayPlan) : 'Unknown'}`;
+  return shell(view, item.feature.outcome, `<a href="/">All features</a><h1>${h(item.feature.outcome)}</h1><p>Completeness for displayed bundle: ${scope} — ${h(item.completeness)}</p>
+    ${named ? `<p id="selected-stage-context">Selected-stage context: design ${item.design ? recordLink(projectId, item.design) : 'Unknown'} · plan ${item.plan ? recordLink(projectId, item.plan) : 'Unknown'} · <a href="${featureUrl(projectId, item.feature.id)}">Open selected bundle</a></p>` : ''}
     <p>Feature stage: ${h(item.feature.methodStage)} · ${h(item.feature.disposition.state)} · Priority ${item.feature.priority} · ${recordLink(projectId, item.feature)}</p>
     <nav class="section-nav" aria-label="Feature sections"><a href="#request">Original request</a><a href="#design">Design</a><a href="#plan">Detailed plan</a><a href="#criteria">Criteria & evidence</a><a href="#briefs">Worker briefs</a><a href="#changes">Changes & corrections</a></nav>
     ${featureEditor(item)}<section id="request"><h2>Original request</h2>${item.requests.map(({ target, record, coverage }) => `<article><h3>${recordLink(projectId, target)}</h3>
       ${record?.kind === 'request' ? `<blockquote>${h(record.originalText)}</blockquote><p>Source: ${external(record.source.uri)} · ${h(record.channel)} · ${h(record.capturedAt)}</p>` : empty('Unknown — original request unavailable.')}
       <p>Request coverage: ${coverage.structuralCoverageComplete ? 'Mapped' : 'Incomplete — unmapped original text remains'}. Semantic review: ${h(coverage.semanticReview)}.</p>
       ${items(coverage.unmapped.map((range) => range.text))}</article>`).join('')}</section>
-    <section><h2>Stage progress</h2><p>Recorded feature stage: ${h(item.feature.methodStage)}</p>${item.stages.map((stage) => `<p>${recordLink(projectId, stage, stage.stage)} → ${recordLink(projectId, stage.artifact)} · ${sameRef(stage.feature, item.feature) ? 'Current feature revision' : 'Stale — earlier feature revision'} · ${h(stage.changeReason)}</p>`).join('') || empty('Unknown — stage history not recorded.')}</section>
-    ${artifacts(view, item)}<section id="criteria"><h2>Criteria & evidence</h2>${item.criteria.map((criterion) => `<article class="criterion"><h3>${recordLink(projectId, criterion.target, criterion.criterion?.kind === 'criterion' ? criterion.criterion.expectedBehavior : criterion.target.id)}</h3>
+    <section><h2>Stage progress</h2><p>Recorded feature stage: ${h(item.feature.methodStage)}</p>${named ? empty('Named bundle inspection does not change stage selections.') : item.stages.map((stage) => `<p>${recordLink(projectId, stage, stage.stage)} → ${recordLink(projectId, stage.artifact)} · ${sameRef(stage.feature, item.feature) ? 'Current feature revision' : 'Stale — earlier feature revision'} · ${h(stage.changeReason)}</p>`).join('') || empty('Unknown — stage history not recorded.')}</section>
+    ${artifacts(view, item)}<section id="criteria"><h2>Criteria & evidence</h2><p>Evidence for displayed bundle: ${scope}.</p>${item.criteria.map((criterion) => `<article class="criterion"><h3>${recordLink(projectId, criterion.target, criterion.criterion?.kind === 'criterion' ? criterion.criterion.expectedBehavior : criterion.target.id)}</h3>
       <p class="state">${h(criterion.label)}</p>${criterion.criterion?.kind === 'criterion' ? `<p>${h(criterion.criterion.requirement)} · ${h(criterion.criterion.disposition.state)} · Verify: ${h(criterion.criterion.verificationMethod)}</p>
       ${edit({ kind: 'criterion', feature: item.feature, criterion: criterion.criterion }, 'Edit criterion', field('expectedBehavior', 'Expected behavior', criterion.criterion.expectedBehavior) + field('verificationMethod', 'Verification method', criterion.criterion.verificationMethod))}` : empty('Unknown — criterion record unavailable.')}
       <ul>${evidence(view, criterion)}</ul></article>`).join('')}</section>
