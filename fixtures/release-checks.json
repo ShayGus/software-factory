@@ -1,0 +1,376 @@
+{
+  "CHECK-01": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Also allow users to export results.",
+    "candidate": "Implement the common feature without export.",
+    "instructionVerdict": {
+      "verdict": "fail",
+      "findings": [
+        {
+          "type": "omission",
+          "message": "The plan omits the requested export behavior.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "Also allow users to export results."
+            },
+            {
+              "source": "instructions",
+              "text": "Implement the common feature without export."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "CHECK-02": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+    "candidate": "Also build an analytics dashboard.",
+    "instructionVerdict": {
+      "verdict": "fail",
+      "findings": [
+        {
+          "type": "invented_scope",
+          "message": "The added analytics dashboard is an unselected enhancement.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "every connected system"
+            },
+            {
+              "source": "instructions",
+              "text": "Also build an analytics dashboard."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "CHECK-03": {
+    "originalRequest": "Correct the ERPNext error message.",
+    "candidate": "Replace the integration system and add a dashboard.",
+    "instructionVerdict": {
+      "verdict": "fail",
+      "findings": [
+        {
+          "type": "invented_scope",
+          "message": "The narrow correction was expanded into replacing the integration system.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "Correct the ERPNext error message."
+            },
+            {
+              "source": "instructions",
+              "text": "Replace the integration system and add a dashboard."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "CHECK-04": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Also allow users to export results.",
+    "deliveredCode": "export function feature(system) { return system.featureX(); }\n",
+    "productVerdict": {
+      "sourceComparison": "failed",
+      "instructionFidelity": "passed",
+      "planConformance": "passed",
+      "criteria": [
+        {
+          "criterion": {
+            "id": "criterion-general",
+            "revision": 1
+          },
+          "state": "accomplished",
+          "behavior": "Worker claims the common behavior works",
+          "quotes": [
+            {
+              "source": "delivery",
+              "text": "export function feature(system) { return system.featureX(); }"
+            }
+          ],
+          "limitations": []
+        },
+        {
+          "criterion": {
+            "id": "criterion-second-system",
+            "revision": 1
+          },
+          "state": "accomplished",
+          "behavior": "Worker claims the common behavior works",
+          "quotes": [
+            {
+              "source": "delivery",
+              "text": "export function feature(system) { return system.featureX(); }"
+            }
+          ],
+          "limitations": []
+        }
+      ],
+      "findings": [
+        {
+          "check": "sourceComparison",
+          "type": "original_request_omission",
+          "message": "Export is requested but absent from the derived checklist and implementation.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "Also allow users to export results."
+            }
+          ]
+        }
+      ],
+      "suggestions": [],
+      "unresolvedQuestions": []
+    }
+  },
+  "CHECK-05": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+    "deliveredCode": "export function feature(system) { if (system.name !== \"ERPNext\") throw Error(\"unsupported\"); return system.featureX(); }\n",
+    "productVerdict": {
+      "sourceComparison": "passed",
+      "instructionFidelity": "passed",
+      "planConformance": "failed",
+      "criteria": [
+        {
+          "criterion": {
+            "id": "criterion-general",
+            "revision": 1
+          },
+          "state": "accomplished",
+          "behavior": "Worker claims the common behavior works",
+          "quotes": [
+            {
+              "source": "delivery",
+              "text": "export function feature(system) { if (system.name !== \"ERPNext\") throw Error(\"unsupported\"); return system.featureX(); }"
+            }
+          ],
+          "limitations": []
+        },
+        {
+          "criterion": {
+            "id": "criterion-second-system",
+            "revision": 1
+          },
+          "state": "failed",
+          "behavior": "Worker claims the common behavior works",
+          "quotes": [
+            {
+              "source": "delivery",
+              "text": "export function feature(system) { if (system.name !== \"ERPNext\") throw Error(\"unsupported\"); return system.featureX(); }"
+            }
+          ],
+          "limitations": []
+        }
+      ],
+      "findings": [
+        {
+          "check": "planConformance",
+          "type": "missing_behavior",
+          "message": "The requested second-system behavior is absent despite green technical checks.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "every connected system"
+            }
+          ]
+        }
+      ],
+      "suggestions": [],
+      "unresolvedQuestions": []
+    }
+  },
+  "CHECK-06": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+    "correction": "Preserve every connected system and include export in the current attempt."
+  },
+  "CHECK-07": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Verify the common interface before starting the second-system acceptance."
+  },
+  "CHECK-08": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example."
+  },
+  "CHECK-09": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Show missing and stale work honestly."
+  },
+  "CHECK-10": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example."
+  },
+  "CHECK-11": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Let me change task priority from the UI or the agent."
+  },
+  "CHECK-12": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Keep existing work when I disable the extension or restore its data."
+  },
+  "CHECK-13": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Reuse the working connection interface; add only the missing feature.",
+    "candidate": "Create a parallel connection implementation instead of reusing the working interface.",
+    "instructionVerdict": {
+      "verdict": "fail",
+      "findings": [
+        {
+          "type": "invented_scope",
+          "message": "A parallel connection implementation has no source-backed justification.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "Reuse the working connection interface"
+            },
+            {
+              "source": "instructions",
+              "text": "Create a parallel connection implementation instead of reusing the working interface."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "CHECK-14": {
+    "originalRequest": "Count supported connected systems using the supplied production fixture; verify the definition and inputs before reporting a checked count."
+  },
+  "CHECK-15": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+    "deliveredCode": "export const baselinePreserved = true;\n",
+    "productVerdict": {
+      "sourceComparison": "passed",
+      "instructionFidelity": "passed",
+      "planConformance": "failed",
+      "criteria": [
+        {
+          "criterion": {
+            "id": "criterion-general",
+            "revision": 1
+          },
+          "state": "failed",
+          "behavior": "Baseline preserved; requested feature is still absent.",
+          "quotes": [
+            {
+              "source": "delivery",
+              "text": "export const baselinePreserved = true;"
+            }
+          ],
+          "limitations": []
+        },
+        {
+          "criterion": {
+            "id": "criterion-second-system",
+            "revision": 1
+          },
+          "state": "failed",
+          "behavior": "Baseline preserved; requested feature is still absent.",
+          "quotes": [
+            {
+              "source": "delivery",
+              "text": "export const baselinePreserved = true;"
+            }
+          ],
+          "limitations": []
+        }
+      ],
+      "findings": [
+        {
+          "check": "planConformance",
+          "type": "missing_behavior",
+          "message": "Baseline preserved; no requested behavior improves.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "every connected system"
+            }
+          ]
+        }
+      ],
+      "suggestions": [],
+      "unresolvedQuestions": []
+    }
+  },
+  "CHECK-16": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Keep coupled investigation in one focused context; parallelize independent verification."
+  },
+  "CHECK-17": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+    "correction": "Rewind the existing pilot-build worker to its previous turn; do not start a new worker."
+  },
+  "CHECK-18": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example. Surface the ready PR, its age and next action while new work and review wait. Reuse the settled local delivery instructions."
+  },
+  "CHECK-19": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+    "candidate": "Implement feature X for ERPNext only.",
+    "instructionVerdict": {
+      "verdict": "fail",
+      "findings": [
+        {
+          "type": "narrowing",
+          "message": "The ERPNext example became the full implementation scope.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "every connected system"
+            },
+            {
+              "source": "instructions",
+              "text": "Implement feature X for ERPNext only."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "CHECK-20": {
+    "originalRequest": "Build feature X for every connected system, ERPNext is only an example.",
+    "deliveredCode": "export function feature(system) { if (system.name !== \"ERPNext\") throw Error(\"unsupported\"); return system.featureX(); }\n",
+    "productVerdict": {
+      "sourceComparison": "passed",
+      "instructionFidelity": "passed",
+      "planConformance": "failed",
+      "criteria": [
+        {
+          "criterion": {
+            "id": "criterion-general",
+            "revision": 1
+          },
+          "state": "accomplished",
+          "behavior": "Worker claims the common behavior works",
+          "quotes": [
+            {
+              "source": "delivery",
+              "text": "export function feature(system) { if (system.name !== \"ERPNext\") throw Error(\"unsupported\"); return system.featureX(); }"
+            }
+          ],
+          "limitations": []
+        },
+        {
+          "criterion": {
+            "id": "criterion-second-system",
+            "revision": 1
+          },
+          "state": "failed",
+          "behavior": "Worker claims the common behavior works",
+          "quotes": [
+            {
+              "source": "delivery",
+              "text": "export function feature(system) { if (system.name !== \"ERPNext\") throw Error(\"unsupported\"); return system.featureX(); }"
+            }
+          ],
+          "limitations": []
+        }
+      ],
+      "findings": [
+        {
+          "check": "planConformance",
+          "type": "narrowed_generality",
+          "message": "The requested second-system behavior is absent despite green technical checks.",
+          "quotes": [
+            {
+              "source": "original_request",
+              "text": "every connected system"
+            }
+          ]
+        }
+      ],
+      "suggestions": [],
+      "unresolvedQuestions": []
+    }
+  }
+}
