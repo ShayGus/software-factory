@@ -1337,11 +1337,18 @@ list exposes the other affected assignments for explicit targeted steering.
 Pending scope amendments can consolidate only when they share an explicit
 `compatibilityKey` and no intervening distinct instruction forms an ordering
 barrier. Consolidation recursively sends every original correction and source in
-sequence, marks superseded instructions, and leaves their delivery facts untouched.
+canonical task order, marks superseded instructions, and leaves their delivery
+facts untouched. Coalescing barriers and payload ordering use the stable task order;
+assignment-local sequence remains original source metadata. Preserved supersession
+links are validated against their original assignment/attempt lineage and runtime
+task, including after the active delivery address changes.
 Delivered messages and urgent stops never consolidate. Delivered payloads identify
 each entry as active or superseded and include both supersession relationships.
-A failed or unknown earlier correction blocks later ordinary steering and ordinary
-task-backed cancellation. Urgent cancellation and interruption bypass that queue. Durable steering can be delivered to a freshly observed stopped
+Within one attempt, earlier unresolved deliveries block later ordinary steering
+and ordinary task-backed cancellation. Only actions requiring incorporation retain
+that obligation across attempts. Delivered resume, status and new_work actions are
+complete without incorporation and are not replayed for a replacement. Urgent
+cancellation and interruption bypass the queue. Durable steering can be delivered to a freshly observed stopped
 attempt. Drain earlier messages in sequence while it is stopped, then deliver the
 explicit resume; relaunch continues to wait until those deliveries are confirmed.
 
@@ -1380,8 +1387,12 @@ The operator re-addresses the same record using `queue-correction`: use its curr
 revision as `expectedRevision`, retain the original action, text, source references,
 affected revision, sequence, supersedes and flags, select the current `assignment`,
 and set `payload.readdress: true`. Use a new idempotency key for that explicit
-operation. Then run the existing `deliver-correction` path with fresh recipient
-observations. The stable correction ID and order do not change. `deliveryHistory`
+operation. Re-addressed cancellation and new_work also require a complete matching
+`taskCommand`, just as initial queueing does. Missing or mismatched task commands
+are rejected before records, operations or receipts are committed. A rejected
+request can be corrected under the same key; once a complete command is committed,
+changing it under that key conflicts. Then run the existing `deliver-correction`
+path with fresh recipient observations. The stable correction ID and order do not change. `deliveryHistory`
 preserves earlier addresses, operation IDs and transport facts; current delivery
 and incorporation facts start separately for the selected attempt. Re-addressing
 never applies the scope change twice or translates a lifecycle action into a launch.

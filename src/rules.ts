@@ -1,4 +1,4 @@
-import { correctionTargetsAttempt, outstandingTaskCorrections, unresolvedTaskCorrections } from './correction-state.js';
+import { correctionTargetsAttempt, outstandingTaskCorrections, unresolvedTaskCorrections, correctionOrder, type TrackedCorrection } from './correction-state.js';
 import { activeGuidance, learningKey } from './learning-context.js';
 import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
@@ -704,12 +704,19 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
             'correction_incorporation_mismatch', 'correction.incorporationAssignment', 'Incorporation must name the delivered attempt');
         }
         if (!ctx.index.has(key(record.correction.affectedRevision))) ctx.add(record, 'missing_reference', 'correction.affectedRevision', 'Missing corrected revision');
+        const initial = ctx.index.get(key({ id: record.id, revision: 1 }));
+        const lineageRef = original?.assignment ?? (initial?.kind === 'observation' ? initial.correction?.assignment : undefined) ?? record.correction.assignment;
         for (const ref of record.correction.supersedes) {
           const prior = ctx.get(record, ref, 'observation', 'correction.supersedes');
-          if (prior?.correction && (prior.correction.assignment.id !== record.correction.assignment.id ||
-            prior.correction.sequence >= record.correction.sequence || prior.correction.urgentStop ||
-            prior.correction.facts.some((fact) => fact.fact === 'delivered'))) ctx.add(record,
-            'invalid_correction_supersession', 'correction.supersedes', 'Only earlier undelivered amendments on this assignment can consolidate');
+          if (!prior?.correction) continue;
+          // Supersession was authored on this original lineage. Re-addressing
+          // changes delivery only; it must not rewrite these historical links.
+          const lineage = ctx.get(record, lineageRef, 'assignment', 'correction.supersedes');
+          const source = ctx.get(record, prior.correction.assignment, 'assignment', 'correction.supersedes');
+          if (prior.correction.assignment.id !== lineageRef.id || source?.firstMateTaskId !== lineage?.firstMateTaskId ||
+            source?.attemptId !== lineage?.attemptId || correctionOrder(prior as TrackedCorrection) >= correctionOrder(record as TrackedCorrection) ||
+            prior.correction.urgentStop || prior.correction.facts.some((fact) => fact.fact === 'delivered')) ctx.add(record,
+            'invalid_correction_supersession', 'correction.supersedes', 'Supersession must preserve earlier undelivered amendments on the original task lineage');
         }
       }
       break;

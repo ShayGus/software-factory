@@ -22,10 +22,11 @@ export function correctionTargetsAttempt(records: FactoryRecord[], record: Track
   return target?.assignment.id === assignment.id && target.attemptId === assignment.attemptId && target.firstMateTaskId === assignment.firstMateTaskId;
 }
 export const hasCorrectionFact = (record: TrackedCorrection, fact: string) => record.correction.facts.some((item) => item.fact === fact);
+export const correctionRequiresIncorporation = (record: TrackedCorrection) => ['clarification', 'amended_scope', 'rewind', 'cancellation'].includes(record.correction.action);
 export const correctionOrder = (record: TrackedCorrection) => record.correction.taskOrder ?? record.correction.sequence;
 export function outstandingTaskCorrections(records: FactoryRecord[], taskId: string): TrackedCorrection[] {
   return currentCorrections(records).filter((record) => !record.correction.supersededBy &&
-    ['clarification', 'amended_scope', 'rewind', 'cancellation'].includes(record.correction.action) &&
+    correctionRequiresIncorporation(record) &&
     intendedCorrectionRecipient(records, record)?.firstMateTaskId === taskId && !hasCorrectionFact(record, 'incorporated'))
     .sort((a, b) => correctionOrder(a) - correctionOrder(b));
 }
@@ -49,9 +50,15 @@ export function correctionDeliverySnapshot(records: FactoryRecord[], record: Tra
 }
 export function earlierCorrectionPending(records: FactoryRecord[], record: TrackedCorrection): boolean {
   const target = intendedCorrectionRecipient(records, record);
-  return currentCorrections(records).some((prior) => prior.id !== record.id &&
-    intendedCorrectionRecipient(records, prior)?.firstMateTaskId === target?.firstMateTaskId &&
-    correctionOrder(prior) < correctionOrder(record) && !prior.correction.supersededBy && !hasCorrectionFact(prior, 'incorporated') &&
-    !(hasCorrectionFact(prior, 'delivered') && intendedCorrectionRecipient(records, prior)?.assignment.id === target?.assignment.id &&
-      intendedCorrectionRecipient(records, prior)?.attemptId === target?.attemptId));
+  return currentCorrections(records).some((prior) => {
+    const address = intendedCorrectionRecipient(records, prior);
+    if (prior.id === record.id || address?.firstMateTaskId !== target?.firstMateTaskId ||
+      correctionOrder(prior) >= correctionOrder(record) || prior.correction.supersededBy || hasCorrectionFact(prior, 'incorporated')) return false;
+    const sameAttempt = address?.assignment.id === target?.assignment.id && address?.attemptId === target?.attemptId;
+    // Operational/status actions have no implementation obligation to transfer.
+    // Within one attempt they remain ordered until delivered; older attempts do
+    // not force a replacement to replay an obsolete operational action.
+    if (!correctionRequiresIncorporation(prior) && (!sameAttempt || hasCorrectionFact(prior, 'delivered'))) return false;
+    return !(sameAttempt && hasCorrectionFact(prior, 'delivered'));
+  });
 }

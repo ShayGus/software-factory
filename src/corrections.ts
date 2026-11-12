@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
-import { earlierCorrectionPending, intendedCorrectionRecipient, correctionTargetsAttempt, currentCorrections, correctionDeliverySnapshot, correctionOrder, hasCorrectionFact } from './correction-state.js';
+import { earlierCorrectionPending, intendedCorrectionRecipient, correctionTargetsAttempt, currentCorrections, correctionDeliverySnapshot, correctionOrder, hasCorrectionFact, correctionRequiresIncorporation } from './correction-state.js';
 import { DeliverCorrectionCommandSchema } from './commands.js';
 import { executionStateToken } from './firstmate.js';
 import { ref, stableId } from './intake.js';
@@ -49,6 +49,16 @@ export function correctionOperation(action: CorrectionAction, urgentStop = false
   }
 }
 
+type TaskCommand = ReturnType<typeof DeliverCorrectionCommandSchema.parse>['payload']['taskCommand'];
+function validateCorrectionTaskCommand(action: CorrectionAction, command: TaskCommand, projectId: string, assignment: Assignment): void {
+  if (action === 'new_work' || action === 'cancellation') {
+    if (!command || command.projectId !== projectId || command.payload.action !== (action === 'new_work' ? 'create' : 'cancel') ||
+      (action === 'cancellation' && command.payload.task.firstMateTaskId !== assignment.firstMateTaskId)) {
+      throw new StoreError('validation', 'correction_requires_matching_BUILD08_task_command');
+    }
+  } else if (command) throw new StoreError('validation', 'unexpected_task_command');
+}
+
 /** Resolve current attempts across IDs conservatively. Revisions order only one ID. */
 export function currentAttempt(records: FactoryRecord[], taskId: string): Assignment | undefined {
   const assignments = current(records).filter((record): record is Assignment => record.kind === 'assignment' && record.firstMateTaskId === taskId);
@@ -85,11 +95,7 @@ export function queueCorrection(store: ProjectStore, input: unknown): { correcti
           meaning(source.correction) !== meaning({ ...payload, originalText: payload.originalCorrection })) {
           throw new StoreError('validation', 'readdress_must_preserve_pending_correction_order_sources_and_meaning');
         }
-        if (payload.taskCommand && (payload.taskCommand.projectId !== command.projectId ||
-          payload.taskCommand.payload.action !== (source.correction.action === 'cancellation' ? 'cancel' : source.correction.action === 'new_work' ? 'create' : '') ||
-          (source.correction.action === 'cancellation' && payload.taskCommand.payload.task.firstMateTaskId !== assignment.firstMateTaskId))) {
-          throw new StoreError('validation', 'readdress_requires_matching_task_operation');
-        }
+        validateCorrectionTaskCommand(source.correction.action, payload.taskCommand, command.projectId, assignment);
         const { deliveryRecipient: _delivery, incorporationAssignment: _incorporation, ...prior } = source.correction;
         const next = { ...source, revision: source.revision + 1, updatedAt: command.issuedAt, correction: { ...prior,
           assignment: ref(assignment), addressedRecipient: { assignment: ref(assignment), attemptId: assignment.attemptId, firstMateTaskId: assignment.firstMateTaskId },
@@ -115,13 +121,7 @@ export function queueCorrection(store: ProjectStore, input: unknown): { correcti
       }
       if (action === 'amended_scope' && !payload.changedOutcome) throw new StoreError('validation', 'scope_amendment_requires_changed_outcome');
       if (payload.urgentStop && ['resume', 'new_work', 'rewind', 'status'].includes(action)) throw new StoreError('validation', 'urgent_stop_conflicts_with_action');
-      if (action === 'new_work' || action === 'cancellation') {
-        const task = payload.taskCommand;
-        if (!task || task.projectId !== command.projectId || task.payload.action !== (action === 'new_work' ? 'create' : 'cancel') ||
-          (action === 'cancellation' && task.payload.task.firstMateTaskId !== assignment.firstMateTaskId)) {
-          throw new StoreError('validation', 'correction_requires_matching_BUILD08_task_command');
-        }
-      } else if (payload.taskCommand) throw new StoreError('validation', 'unexpected_task_command');
+      validateCorrectionTaskCommand(action, payload.taskCommand, command.projectId, assignment);
       const previous = corrections(records).filter((record) => record.correction.assignment.id === assignment.id);
       if (payload.sequence !== Math.max(0, ...previous.map((record) => record.correction.sequence)) + 1) {
         throw new StoreError('conflict', 'correction_sequence_must_be_next');
@@ -165,13 +165,16 @@ export function queueCorrection(store: ProjectStore, input: unknown): { correcti
       const completedEvidence = changed ? records.filter((record) =>
         (record.kind === 'criterion_result' && impacted.some((target) => target.id === record.assignment.id)) ||
         (record.kind === 'product_review' && record.feature?.id === affected.id)) : [];
-      const barrier = Math.max(0, ...previous.filter((record) => !record.correction.supersededBy &&
-        (record.correction.action !== action || record.correction.compatibilityKey !== payload.compatibilityKey ||
-          record.correction.urgentStop || fact(record, 'delivered'))).map((record) => record.correction.sequence));
-      const compatible = previous.filter((record) => record.correction.sequence > barrier && !record.correction.supersededBy &&
-        action === 'amended_scope' && record.correction.action === action && payload.compatibilityKey &&
-        record.correction.compatibilityKey === payload.compatibilityKey && !payload.urgentStop && !record.correction.urgentStop &&
-        !fact(record, 'delivered') && records.some((op) => op.kind === 'operation' && op.id === record.correction.operationId && op.state === 'pending'));
+      const taskCorrections = currentCorrections(history).filter((record) =>
+        intendedCorrectionRecipient(history, record)?.firstMateTaskId === assignment.firstMateTaskId);
+      const compatiblePending = (record: Correction) => action === 'amended_scope' && record.correction.action === action &&
+        !!payload.compatibilityKey && record.correction.compatibilityKey === payload.compatibilityKey &&
+        correctionTargetsAttempt(history, record, assignment) && !payload.urgentStop && !record.correction.urgentStop &&
+        !record.correction.supersededBy && !fact(record, 'delivered') && records.some((op) =>
+          op.kind === 'operation' && op.id === record.correction.operationId && op.state === 'pending');
+      const barrier = Math.max(0, ...taskCorrections.filter((record) => !record.correction.supersededBy && !compatiblePending(record)).map(correctionOrder));
+      const compatible = taskCorrections.filter((record) => correctionOrder(record) > barrier && compatiblePending(record))
+        .sort((a, b) => correctionOrder(a) - correctionOrder(b));
       // A message is retained verbatim; consolidation preserves all instructions and sources.
       const supersedes = compatible.map(ref);
       const observation = ObservationSchema.parse({ kind: 'observation', id: command.targetId, projectId: command.projectId,
@@ -357,7 +360,7 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
   const collect = (item: Correction) => { for (const previous of item.correction.supersedes) collect(observation(store, projectId, previous.id)); sources.set(item.id, item); };
   collect(record);
   const text = JSON.stringify({ assignment: ref(assignment), attemptId: assignment.attemptId,
-    corrections: [...sources.values()].sort((a, b) => a.correction.sequence - b.correction.sequence).map((item) => ({
+    corrections: [...sources.values()].sort((a, b) => correctionOrder(a) - correctionOrder(b)).map((item) => ({
       id: item.id, sequence: item.correction.sequence, action: item.correction.action, originalText: item.correction.originalText,
       active: !item.correction.supersededBy, supersedes: item.correction.supersedes, supersededBy: item.correction.supersededBy ?? null,
       sources: item.correction.sourceRefs ?? item.affectedScope, affectedRevision: item.correction.affectedRevision })) });
@@ -414,7 +417,8 @@ export function correctionDeliveryStatus(store: ProjectStore, projectId: string,
   const current = address && currentAttempt(history, address.firstMateTaskId);
   const replacement = current ? { assignment: ref(current), attemptId: current.attemptId, firstMateTaskId: current.firstMateTaskId } : null;
   const operation = record.correction.operationId && store.get(projectId, record.correction.operationId);
-  const unresolved = !hasCorrectionFact(record, 'incorporated') && (!current || !correctionTargetsAttempt(history, record, current) ||
+  const completed = hasCorrectionFact(record, 'incorporated') || (!correctionRequiresIncorporation(record) && hasCorrectionFact(record, 'delivered'));
+  const unresolved = !completed && (!current || !correctionTargetsAttempt(history, record, current) ||
     (!!record.correction.deliveryHistory?.length && !hasCorrectionFact(record, 'delivered')) ||
     (operation && operation.kind === 'operation' && ['unknown', 'failed'].includes(operation.state)));
   return { correction: ref(record), state: unresolved ? 'unresolved' : hasCorrectionFact(record, 'incorporated') ? 'incorporated' :

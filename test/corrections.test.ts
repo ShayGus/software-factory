@@ -290,7 +290,7 @@ function commitReviewFixture(flow: ReturnType<typeof setup>, writes: FactoryReco
   () => [decision, ...writes]);
 }
 
-function checkedScopeSuccessor(flow: ReturnType<typeof setup>) {
+function checkedScopeSuccessor(flow: ReturnType<typeof setup>, key = 'checked-scope-successor') {
   const feature = flow.store.get(projectId, 'feature-1'); const design = flow.store.get(projectId, 'design-1');
   const plan = flow.store.get(projectId, 'plan-1'); const task = flow.store.get(projectId, 'task-1');
   const mapping = flow.store.get(projectId, 'mapping-1'); const assignment = flow.assignment();
@@ -311,7 +311,7 @@ function checkedScopeSuccessor(flow: ReturnType<typeof setup>) {
     sourceRefs: assignment.sourceRefs.map(source), selectedContext: assignment.selectedContext.map(item => ({ ...item, source: source(item.source) })),
     instructionFidelity: { ...assignment.instructionFidelity, sourceRefs: assignment.instructionFidelity.sourceRefs.map(source) },
     ...(assignment.correctionContext ? { correctionContext: { ...assignment.correctionContext, requiresReplan: false } } : {}) };
-  commitReviewFixture(flow, [nextDesign, nextPlan, nextTask, nextMapping, nextAssignment], 'checked-scope-successor');
+  commitReviewFixture(flow, [nextDesign, nextPlan, nextTask, nextMapping, nextAssignment], key);
   return nextAssignment;
 }
 
@@ -559,7 +559,7 @@ function queuedCancellation(flow: ReturnType<typeof setup>, urgentStop: boolean)
   const correction = queueCorrection(flow.store, command);
   const options = flow.options(); options.taskAdapter = { fmHome: flow.directory, tasksExecutable: fake.executable,
     controlExecutable: options.controlExecutable };
-  return { fake, correction, options };
+  return { fake, correction, options, command };
 }
 
 test('review 1245-6: ordinary task cancellation waits for earlier steering before calling BUILD-08', t => {
@@ -803,4 +803,113 @@ test('review 1270: CLI exposes unresolved recipients and re-addresses the same c
   assert.equal(status().state, 'delivered');
   assert.equal(correctionCount(flow), 1);
   assert.equal(flow.calls().length, 1);
+});
+
+function queueForAttempt(flow: ReturnType<typeof setup>, assignment: Assignment, action: CorrectionAction, id: string, extra: Record<string, unknown> = {}) {
+  const sequence = Math.max(0, ...flow.store.records(projectId).filter(record => record.kind === 'observation' && record.correction?.assignment.id === assignment.id)
+    .map(record => record.kind === 'observation' ? record.correction!.sequence : 0)) + 1;
+  return queueCorrection(flow.store, { schemaVersion: 1, id, projectId, issuedAt: new Date().toISOString(), idempotencyKey: id,
+    command: 'deliver_correction', targetId: id, expectedRevision: 0, payload: {
+      affectedRevision: ref(flow.store.get(projectId, assignment.feature!.id)!), assignment: ref(assignment), action,
+      originalCorrection: `Original source ${id}`, sequence, supersedes: [], sourceRefs: [{ uri: `fixture://${id}` }], ...extra,
+    } });
+}
+function assignmentById(flow: ReturnType<typeof setup>, id: string) {
+  const record = flow.store.get(projectId, id); assert.ok(record?.kind === 'assignment'); return record;
+}
+function pendingNewWork(flow: ReturnType<typeof setup>) {
+  const fake = fakeTaskWrapper(flow.directory, false, flow.database);
+  const command = flow.command('new_work', { taskCommand: {
+    schemaVersion: 1, id: 'review-new-work-task', projectId, issuedAt: new Date().toISOString(), idempotencyKey: 'review-new-work-task',
+    command: 'map_manage_execution_task', targetId: 'review-new-work-mapping', expectedRevision: 0,
+    payload: { task: { kind: 'new', firstMateTaskId: 'followup', title: 'Planned followup', repo: 'sample' }, action: 'create',
+      feature: { id: 'feature-1', revision: 1 }, criteria: flow.assignment().criteria, detailedPlanTask: flow.assignment().detailedPlanTask,
+      dependencies: [], readiness: [{ id: 'hold-for-check', reason: 'Check before execution', evidence: [] }], reason: 'Explicit new work' } } });
+  const correction = queueCorrection(flow.store, command);
+  const options = flow.options(); options.taskAdapter = { fmHome: flow.directory, tasksExecutable: fake.executable, guardTaskId: 'permanent-guard' };
+  return { fake, command, correction, options };
+}
+
+test('review 1277-2: a consolidated amendment retains original supersession lineage when re-addressed to another assignment', t => {
+  const flow = setup(t); const first = flow.queue('amended_scope', { changedOutcome: 'First amended outcome', compatibilityKey: 'outcome' });
+  const second = flow.queue('amended_scope', { changedOutcome: 'Final amended outcome', compatibilityKey: 'outcome' });
+  checkedScopeSuccessor(flow);
+  const { replacement } = prepareReplacement(flow);
+  const links = structuredClone(flow.observation(second.correction.id).correction!.supersedes);
+  const addressed = queueCorrection(flow.store, readdressInput(flow, second.correction.id, replacement));
+  assert.deepEqual(addressed.correction.correction!.supersedes, links);
+  assert.equal(flow.deliver(second.correction.id, replacementOptions(flow, replacement)).state, 'succeeded');
+  const payload = JSON.parse(flow.calls()[0]!.args[1]!);
+  assert.deepEqual(payload.corrections.map((item: { id: string }) => item.id), [first.correction.id, second.correction.id]);
+  assert.deepEqual(payload.corrections.map((item: { active: boolean }) => item.active), [false, true]);
+});
+
+for (const action of ['resume', 'status', 'new_work'] as const) test(`review 1277-3: delivered ${action} is complete across replacement without incorporation`, t => {
+  const flow = setup(t);
+  const source = action === 'new_work' ? pendingNewWork(flow) : { correction: flow.queue(action), options: flow.options(action === 'resume' ? 'stopped' : 'active') };
+  if (action === 'status') {
+    const executable = join(flow.directory, 'completed-status');
+    writeFileSync(executable, '#!/usr/bin/env node\nprocess.stdout.write("state: active\\n");\n'); chmodSync(executable, 0o755);
+    source.options.stateExecutable = executable;
+  }
+  assert.equal(flow.deliver(source.correction.correction.id, source.options).state, 'succeeded');
+  const { replacement } = prepareReplacement(flow);
+  const next = queueForAttempt(flow, replacement, 'clarification', `after-completed-${action}`);
+  assert.equal(flow.deliver(next.correction.id, replacementOptions(flow, replacement)).state, 'succeeded');
+  const original = flow.observation(source.correction.correction.id);
+  assert.equal(original.correction!.facts.some(item => item.fact === 'incorporated'), false);
+  assert.equal(correctionDeliveryStatus(flow.store, projectId, original.id).state, 'delivered');
+});
+
+for (const action of ['cancellation', 'new_work'] as const) test(`review 1277-4: re-addressed ${action} requires its task command before committing`, t => {
+  const flow = setup(t); const source = action === 'cancellation' ? queuedCancellation(flow, false) : pendingNewWork(flow);
+  const { replacement } = prepareReplacement(flow); const input = readdressInput(flow, source.correction.correction.id, replacement);
+  const before = flow.store.history(projectId);
+  assert.throws(() => queueCorrection(flow.store, input), /matching_BUILD08_task_command/);
+  assert.deepEqual(flow.store.history(projectId), before);
+  assert.equal(flow.store.receipt(projectId, input.idempotencyKey), undefined);
+  const complete = { ...input, payload: { ...input.payload, taskCommand: (source.command.payload as unknown as { taskCommand: unknown }).taskCommand } };
+  const intent = queueCorrection(flow.store, complete);
+  const options = { ...replacementOptions(flow, replacement), taskAdapter: source.options.taskAdapter! };
+  assert.equal(flow.deliver(intent.correction.id, options).state, 'succeeded');
+  assert.equal(correctionCount(flow), 1);
+});
+
+function firstPendingAmendment(flow: ReturnType<typeof setup>) {
+  const clarified = flow.queue(); flow.deliver(clarified.correction.id); flow.fact(clarified.correction.id, 'incorporated');
+  const amendment = flow.queue('amended_scope', { changedOutcome: 'First requested amendment', compatibilityKey: 'outcome' });
+  checkedScopeSuccessor(flow);
+  return amendment;
+}
+
+test('review 1277-6: a newer clarification is a consolidation barrier even when its local sequence is smaller', t => {
+  const flow = setup(t); const original = firstPendingAmendment(flow); const { replacement } = prepareReplacement(flow);
+  const clarification = queueForAttempt(flow, replacement, 'clarification', 'newer-clarification');
+  queueCorrection(flow.store, readdressInput(flow, original.correction.id, replacement));
+  const last = queueForAttempt(flow, replacement, 'amended_scope', 'after-clarification-amendment', {
+    changedOutcome: 'Newest requested amendment', compatibilityKey: 'outcome' });
+  assert.equal(flow.observation(original.correction.id).correction!.supersededBy, undefined);
+  assert.deepEqual(last.correction.correction!.supersedes, []);
+  const current = assignmentById(flow, replacement.id); const options = replacementOptions(flow, current);
+  assert.equal(flow.deliver(original.correction.id, options).state, 'succeeded');
+  assert.equal(flow.deliver(clarification.correction.id, options).state, 'succeeded');
+  assert.equal(flow.deliver(last.correction.id, options).state, 'succeeded');
+});
+
+test('review 1277-6: consolidated payloads follow canonical task order while retaining original local sequence values', t => {
+  const flow = setup(t); const first = firstPendingAmendment(flow);
+  const secondAttempt = prepareReplacement(flow, 'second-amendment-author', 0, 'second-author').replacement;
+  const second = queueForAttempt(flow, secondAttempt, 'amended_scope', 'second-author-amendment', {
+    changedOutcome: 'Second requested amendment', compatibilityKey: 'outcome' });
+  checkedScopeSuccessor(flow, 'second-checked-plan');
+  const replacement = prepareReplacement(flow, 'final-amendment-author', 0, 'final-author').replacement;
+  queueCorrection(flow.store, readdressInput(flow, first.correction.id, replacement));
+  queueCorrection(flow.store, readdressInput(flow, second.correction.id, replacement));
+  const last = queueForAttempt(flow, replacement, 'amended_scope', 'final-consolidated-amendment', {
+    changedOutcome: 'Final requested amendment', compatibilityKey: 'outcome' });
+  const current = assignmentById(flow, replacement.id);
+  assert.equal(flow.deliver(last.correction.id, replacementOptions(flow, current)).state, 'succeeded');
+  const payload = JSON.parse(flow.calls().at(-1)!.args[1]!);
+  assert.deepEqual(payload.corrections.map((item: { id: string }) => item.id), [first.correction.id, second.correction.id, last.correction.id]);
+  assert.deepEqual(payload.corrections.map((item: { sequence: number }) => item.sequence), [2, 1, 3]);
 });
