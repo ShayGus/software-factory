@@ -168,6 +168,10 @@ export const SelectedContextSchema = z.strictObject({
 }).refine((value) => !value.truncated || value.extract !== undefined,
   'Truncated context must retain the supplied extract and reachable source');
 
+export const CorrectionRecipientSchema = z.strictObject({ assignment: RefSchema, attemptId: IdSchema, firstMateTaskId: IdSchema });
+export const UnresolvedCorrectionSchema = z.strictObject({ correction: RefSchema,
+  earlier: CorrectionRecipientSchema, replacement: CorrectionRecipientSchema, reason: TextSchema });
+
 export const AssignmentSchema = record('assignment', {
   attemptId: IdSchema, feature: RefSchema.nullable(), design: RefSchema, plan: RefSchema,
   detailedPlanTask: RefSchema, firstMateTaskId: IdSchema,
@@ -182,6 +186,8 @@ export const AssignmentSchema = record('assignment', {
   brief: z.strictObject({
     path: TextSchema, sidecarPath: TextSchema, scaffold: TextSchema,
     sidecarDigest: TextSchema,
+    preparationFindings: z.array(z.strictObject({ code: TextSchema, path: TextSchema, message: TextSchema })).optional(),
+    unresolvedCorrections: z.array(UnresolvedCorrectionSchema).optional(),
   }).optional(),
 }).refine((value) => value.feature !== null || value.criteria.length === 0,
   'Standalone maintenance assignments cannot name product criteria');
@@ -237,31 +243,31 @@ export const DecisionChangeSchema = record('decision_change', {
   choice: z.strictObject({ kind: z.enum(['product', 'technical']), state: z.enum(['resolved', 'open']) }).optional(),
 });
 
+export const CorrectionFactsSchema = z.array(z.strictObject({
+  fact: CorrectionDeliveryFactSchema, at: TimestampSchema, evidence: z.array(EvidenceSchema).min(1),
+})).min(1).refine((value) => new Set(value.map((fact) => fact.fact)).size === value.length, 'Delivery facts must be distinct')
+  .refine((value) => value.some((fact) => fact.fact === 'recorded'), 'Correction must have its recorded fact')
+  .refine((value) => value.every((fact) => fact.fact === 'recorded' ||
+    (Date.parse(fact.at) >= Date.parse(value.find((item) => item.fact === 'recorded')?.at ?? '') &&
+      (!['acknowledged', 'incorporated'].includes(fact.fact) || value.some((item) => item.fact === 'delivered' &&
+        Date.parse(item.at) <= Date.parse(fact.at))))), 'Acknowledgement and incorporation require an earlier delivered fact');
+export const CorrectionDeliverySnapshotSchema = z.strictObject({
+  assignment: RefSchema, recipient: CorrectionRecipientSchema, operationId: IdSchema.optional(),
+  facts: CorrectionFactsSchema, deliveryRecipient: CorrectionRecipientSchema.optional(), incorporationAssignment: RefSchema.optional(),
+});
 export const CorrectionSchema = z.strictObject({
   action: CorrectionActionSchema, originalText: TextSchema, assignment: RefSchema,
-  affectedRevision: RefSchema, sequence: z.number().int().positive(),
-  supersedes: z.array(RefSchema),
-  sourceRefs: z.array(SourceRefSchema).optional(),
+  affectedRevision: RefSchema, sequence: z.number().int().positive(), taskOrder: z.number().int().positive().optional(),
+  supersedes: z.array(RefSchema), sourceRefs: z.array(SourceRefSchema).optional(),
   urgentStop: z.boolean().optional(), compatibilityKey: TextSchema.optional(),
   supersededBy: RefSchema.optional(), operationId: IdSchema.optional(),
-  carriedFrom: RefSchema.optional(),
-  intendedRecipient: z.strictObject({ assignment: RefSchema, attemptId: IdSchema, firstMateTaskId: IdSchema }).optional(),
-  deliveryRecipient: z.strictObject({ assignment: RefSchema, attemptId: IdSchema, firstMateTaskId: IdSchema }).optional(),
-  incorporationAssignment: RefSchema.optional(),
+  intendedRecipient: CorrectionRecipientSchema.optional(), addressedRecipient: CorrectionRecipientSchema.optional(),
+  deliveryRecipient: CorrectionRecipientSchema.optional(), incorporationAssignment: RefSchema.optional(),
+  deliveryHistory: z.array(CorrectionDeliverySnapshotSchema).optional(),
   impact: z.strictObject({ assignments: z.array(RefSchema), dependencies: z.array(RefSchema),
     completedEvidence: z.array(RefSchema), requiresReplan: z.boolean() }).optional(),
-  facts: z.array(z.strictObject({
-    fact: CorrectionDeliveryFactSchema, at: TimestampSchema, evidence: z.array(EvidenceSchema).min(1),
-  })).min(1),
-}).refine((value) => new Set(value.facts.map((fact) => fact.fact)).size === value.facts.length,
-  'Delivery facts must be distinct')
-  .refine((value) => value.facts.some((fact) => fact.fact === 'recorded'),
-    'Correction must have its recorded fact')
-  .refine((value) => value.facts.every((fact) => fact.fact === 'recorded' ||
-    (Date.parse(fact.at) >= Date.parse(value.facts.find((item) => item.fact === 'recorded')?.at ?? '') &&
-      (!['acknowledged', 'incorporated'].includes(fact.fact) || value.facts.some((item) =>
-        item.fact === 'delivered' && Date.parse(item.at) <= Date.parse(fact.at))))),
-    'Acknowledgement and incorporation require an earlier delivered fact');
+  facts: CorrectionFactsSchema,
+});
 
 export const ObservationSchema = record('observation', {
   finding: TextSchema, affectedScope: z.array(SourceRefSchema).min(1), evidence: z.array(EvidenceSchema),

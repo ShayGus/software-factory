@@ -1370,22 +1370,33 @@ require current evidence. Existing explicit retention rules continue to govern
 recording feature completion. Historical returns and reviews remain stored.
 
 Outstanding corrections belong to the runtime task across assignment replacement.
-Replacement briefs include their original records in mandatory context. When the
-replacement changes the attempt, preparation queues a separate source-linked
-correction intent and returns it in `correctionDeliveries`. Each `carriedFrom`
-link preserves the original source and original transport history. These intents
-remain ordered within the source assignment and use fresh recipient observations
-for the replacement; preparation never invokes a steering/lifecycle wrapper.
-A carried scope amendment uses clarification delivery because its changed scope
-already has a checked plan; it does not increment the outcome again. Urgent stops,
-rewinds and cancellations retain their lifecycle meaning and cannot be bypassed
-by preparing another assignment.
+Each correction remains one record. Replacement briefs list the outstanding
+sources as read-only context and return `unresolvedCorrections`, naming the earlier
+recipient and the replacement. Dispatch, completion and prerequisite readiness stay
+blocked while a correction is still addressed to an earlier attempt. Preparation
+creates no correction copies and invokes no transport or lifecycle wrapper.
 
-Dispatch requires outstanding source corrections in the replacement's checked
-instructions. Completion and prerequisite readiness additionally require verified
-incorporation on its own delivered correction record. A predecessor's receipt or
-acknowledgement cannot supply that fact. The original correction remains historical;
-its source-linked replacement evidence establishes incorporation for current work.
+The operator re-addresses the same record using `queue-correction`: use its current
+revision as `expectedRevision`, retain the original action, text, source references,
+affected revision, sequence, supersedes and flags, select the current `assignment`,
+and set `payload.readdress: true`. Use a new idempotency key for that explicit
+operation. Then run the existing `deliver-correction` path with fresh recipient
+observations. The stable correction ID and order do not change. `deliveryHistory`
+preserves earlier addresses, operation IDs and transport facts; current delivery
+and incorporation facts start separately for the selected attempt. Re-addressing
+never applies the scope change twice or translates a lifecycle action into a launch.
+
+`correction-status --db project.sqlite --project ID --correction ID` shows current
+unresolved delivery, the earlier recipient and the replacement. A queued new
+address remains unresolved until delivery is confirmed; acknowledgement still does
+not establish incorporation. Earlier criteria evidence cannot close current work.
+
+Brief preparation resolves an existing receipt before recomputing context. An
+identical replay restores the committed brief and sidecar, including their frozen
+findings and unresolved-delivery snapshot, even if project context has since
+changed. Changed input under the same key conflicts; an old preparation cannot
+overwrite a newer assignment revision. Use `correction-status` for live delivery
+state rather than treating the preparation snapshot as current status.
 
 External delivery and its recipient are marked unconfirmed durably before invoking
 a wrapper. The outcome transaction rechecks the attempt; a concurrent replacement

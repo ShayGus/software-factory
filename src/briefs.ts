@@ -5,8 +5,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, isAbsolute, parse, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { queueReplacementCorrections } from './corrections.js';
-import { outstandingTaskCorrections } from './correction-state.js';
+import { outstandingTaskCorrections, unresolvedTaskCorrections } from './correction-state.js';
 import { PrepareAssignmentCommandSchema } from './commands.js';
 import { ref } from './intake.js';
 import { ArtifactSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
@@ -15,7 +14,7 @@ import { planningRecord } from './planning-checks.js';
 import { assignmentCriteria, digestText, recordSource, requiredAssignmentContext,
   sameSource, sameArtifactIdentity, selectAssignmentContext } from './instruction-context.js';
 import { assignmentMetadataFindings, instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, workerAssignmentBlock, type InstructionFinding } from './instructions.js';
-import { hasUnchangedFeatureScope, validateAssignmentForDispatch } from './rules.js';
+import { commandDigest, hasUnchangedFeatureScope, validateAssignmentForDispatch } from './rules.js';
 import { judgeWorkerInstructions } from './instruction-judge.js';
 import { ProjectStore, StoreError } from './store.js';
 
@@ -83,10 +82,40 @@ function fileFindings(records: FactoryRecord[], assignment: Assignment): Instruc
   return findings;
 }
 
+function materializePreparation(store: ProjectStore, records: FactoryRecord[], saved: Assignment) {
+  if (!saved.brief) throw new StoreError('validation', 'assignment_preparation_not_saved');
+  if (store.get(saved.projectId, saved.id)?.revision !== saved.revision) throw new StoreError('conflict', 'superseded_assignment_cannot_materialize_brief');
+  atomicWrite(saved.brief.sidecarPath, sidecar(records, saved));
+  atomicWrite(saved.brief.path, renderWorkerBrief(records, saved, saved.brief.scaffold));
+  const findings = saved.brief.preparationFindings ?? saved.instructionFidelity.findings.map((item) => ({
+    code: item.description.split(':')[0]!, path: 'brief', message: item.description }));
+  return { assignment: ref(saved), briefPath: saved.brief.path, sidecarPath: saved.brief.sidecarPath,
+    unresolvedCorrections: saved.brief.unresolvedCorrections ?? [], ok: findings.length === 0, findings,
+    instructionFidelity: saved.instructionFidelity.result, dispatchReady: false as const };
+}
+
 /** No execution call. Commit immutable preparation intent first, then materialize
  * files. The same key repairs an interrupted write of either file on retry. */
 export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   const data = PrepareWorkerBriefInputSchema.parse(input);
+  // Resolve replay before reading files or deriving context from mutable project state.
+  const receipt = store.receipt(data.projectId, data.idempotencyKey);
+  if (receipt) {
+    const original = receipt.command;
+    if (original.command !== 'prepare_assignment' || !original.payload.generation) throw new StoreError('conflict', 'idempotency_conflict');
+    const path = resolve(data.briefPath);
+    const sidecarPath = resolve(data.sidecarPath ?? `${dirname(path)}/${parse(path).name}.sf.json`);
+    const replay = { ...original, targetId: data.assignmentId, expectedRevision: data.expectedRevision, payload: { ...original.payload,
+      detailedPlanTask: data.detailedPlanTask, plan: data.plan, firstMateTaskId: data.firstMateTaskId, returnLocation: data.returnLocation,
+      generation: { ...original.payload.generation, attemptId: data.attemptId, briefPath: path, sidecarPath,
+        maxSourceChars: data.maxSourceChars, sourceFiles: data.sourceFiles.map((entry) => ({ ...entry, path: resolve(entry.path) })) } } };
+    if (commandDigest(replay) !== commandDigest(original)) throw new StoreError('conflict', 'idempotency_conflict');
+    const savedRef = receipt.result.records.find((item) => item.id === data.assignmentId);
+    const saved = savedRef && store.get(data.projectId, savedRef.id, savedRef.revision);
+    if (saved?.kind !== 'assignment') throw new StoreError('validation', 'assignment_preparation_not_saved');
+    return materializePreparation(store, store.history(data.projectId), saved);
+  }
+
   const records = store.history(data.projectId);
   const task = planningRecord(records, data.detailedPlanTask);
   const plan = planningRecord(records, data.plan);
@@ -164,6 +193,8 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   assignment.instructionFidelity.result = findings.length ? 'failed' : 'untested';
   assignment.instructionFidelity.findings = findings.map((finding) => ({ result: 'failed', description: `${finding.code}: ${finding.message}`,
     sourceRefs: assignment.instructionFidelity.sourceRefs, evidence: [] }));
+  assignment.brief!.preparationFindings = findings;
+  assignment.brief!.unresolvedCorrections = unresolvedTaskCorrections(records, assignment);
   const coverage = sidecar(records, assignment);
   assignment.brief!.sidecarDigest = digestText(coverage);
   const command = PrepareAssignmentCommandSchema.parse({ schemaVersion: 1, id: randomUUID(), projectId: data.projectId,
@@ -177,16 +208,8 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   const result = store.mutate(command, () => [assignment]);
   const savedRef = result.records.find((record) => record.id === assignment.id)!;
   const saved = store.get(data.projectId, savedRef.id, savedRef.revision);
-  if (saved?.kind !== 'assignment' || !saved.brief) throw new StoreError('validation', 'assignment_preparation_not_saved');
-  if (store.get(data.projectId, saved.id)?.revision !== saved.revision) {
-    throw new StoreError('conflict', 'superseded_assignment_cannot_materialize_brief');
-  }
-  // Use the committed record on replay, including its original comparison time.
-  atomicWrite(sidecarPath, sidecar(records, saved));
-  atomicWrite(briefPath, renderWorkerBrief(records, saved, saved.brief.scaffold));
-  const correctionDeliveries = findings.length === 0 && !saved.correctionContext?.requiresReplan ? queueReplacementCorrections(store, saved) : [];
-  return { assignment: ref(saved), briefPath, sidecarPath, correctionDeliveries, ok: findings.length === 0, findings,
-    instructionFidelity: saved.instructionFidelity.result, dispatchReady: false as const };
+  if (saved?.kind !== 'assignment') throw new StoreError('validation', 'assignment_preparation_not_saved');
+  return materializePreparation(store, records, saved);
 }
 
 /** Read-only gate shared by the CLI and worker-start hook. Exit eligibility is based on

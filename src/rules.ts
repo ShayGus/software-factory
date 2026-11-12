@@ -1,4 +1,4 @@
-import { correctionTargetsAttempt, outstandingTaskCorrections, intendedCorrectionRecipient, carriesCorrection, type TrackedCorrection } from './correction-state.js';
+import { correctionTargetsAttempt, outstandingTaskCorrections, unresolvedTaskCorrections } from './correction-state.js';
 import { activeGuidance, learningKey } from './learning-context.js';
 import { planReadinessFindings, stageCriteria, stageDependencies } from './planning-checks.js';
 import { createHash } from 'node:crypto';
@@ -674,18 +674,22 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
     case 'observation':
       if (record.correction) {
         const intended = ctx.get(record, record.correction.assignment, 'assignment', 'correction.assignment');
-        if (record.correction.intendedRecipient) {
-          const target = record.correction.intendedRecipient;
-          if (!sameRef(target.assignment, record.correction.assignment) || target.attemptId !== intended?.attemptId ||
-            target.firstMateTaskId !== intended.firstMateTaskId) ctx.add(record,
-            'correction_recipient_mismatch', 'correction.intendedRecipient', 'Recorded correction intent must pin its original assignment/attempt');
+        const original = record.correction.intendedRecipient;
+        if (original) {
+          const origin = ctx.get(record, original.assignment, 'assignment', 'correction.intendedRecipient');
+          if (origin && (origin.attemptId !== original.attemptId || origin.firstMateTaskId !== original.firstMateTaskId ||
+            origin.firstMateTaskId !== intended?.firstMateTaskId)) ctx.add(record, 'correction_recipient_mismatch',
+            'correction.intendedRecipient', 'The original recipient and runtime task remain immutable');
         }
-        if (record.correction.carriedFrom) {
-          const source = ctx.get(record, record.correction.carriedFrom, 'observation', 'correction.carriedFrom');
-          if (!source?.correction || source.id === record.id || record.correction.originalText !== source.correction.originalText ||
-            intendedCorrectionRecipient(ctx.records, source as TrackedCorrection)?.firstMateTaskId !== intended?.firstMateTaskId ||
-            carriesCorrection(ctx.records, source as TrackedCorrection, record.id)) ctx.add(record,
-            'invalid_carried_correction', 'correction.carriedFrom', 'A replacement must retain an acyclic source link for the same runtime task');
+        const address = record.correction.addressedRecipient;
+        if (address && (!sameRef(address.assignment, record.correction.assignment) || address.attemptId !== intended?.attemptId ||
+          address.firstMateTaskId !== intended.firstMateTaskId)) ctx.add(record, 'correction_recipient_mismatch',
+          'correction.addressedRecipient', 'Re-addressing must pin the selected attempt');
+        for (const past of record.correction.deliveryHistory ?? []) {
+          const target = ctx.get(record, past.assignment, 'assignment', 'correction.deliveryHistory');
+          if (target && (past.recipient.attemptId !== target.attemptId || past.recipient.firstMateTaskId !== target.firstMateTaskId ||
+            past.recipient.firstMateTaskId !== intended?.firstMateTaskId)) ctx.add(record, 'correction_recipient_mismatch',
+            'correction.deliveryHistory', 'Historical delivery facts must retain their earlier attempt');
         }
         const captured = record.correction.deliveryRecipient;
         const recipient = captured && ctx.get(record, captured.assignment, 'assignment', 'correction.deliveryRecipient');
@@ -808,13 +812,13 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
   if (ctx.current.get(owner.id)?.revision !== owner.revision) ctx.add(owner,
     'superseded_assignment', 'assignment', 'A newer revision of this assignment exists');
   for (const correction of outstandingTaskCorrections(validated.data, owner.firstMateTaskId)) {
-    if (correctionTargetsAttempt(validated.data, correction, owner)) continue;
+    if (correctionTargetsAttempt(validated.data, correction, owner) && !correction.correction.deliveryHistory?.length) continue;
     if (!owner.correctionContext?.corrections.some((item) => item.id === correction.id) ||
       !owner.selectedContext.some((item) => item.source.record?.id === correction.id)) ctx.add(owner,
       'missing_correction_context', 'selectedContext', 'Replacement instructions must retain outstanding task corrections');
-    if (!['clarification', 'amended_scope'].includes(correction.correction.action) || correction.correction.urgentStop) ctx.add(owner,
-      'unresolved_lifecycle_correction', 'assignment', 'Replacement cannot bypass an outstanding lifecycle correction');
   }
+  for (const unresolved of unresolvedTaskCorrections(validated.data, owner)) ctx.add(owner,
+    'unresolved_correction_delivery', 'assignment', `Correction ${unresolved.correction.id} requires explicit delivery from ${unresolved.earlier.attemptId} to ${unresolved.replacement.attemptId}`);
   if (owner.correctionContext?.requiresReplan) ctx.add(owner, 'correction_requires_replan', 'assignment', 'Amended outcome needs checked replanning');
   if (owner.instructionFidelity.result !== 'passed') ctx.add(owner, 'instruction_fidelity', 'instructionFidelity',
     'Instruction comparison with original request, design and task has not passed');
@@ -906,12 +910,32 @@ export function assertRevisionTransition(previousInput: unknown, nextInput: unkn
     Date.parse(next.updatedAt) < Date.parse(previous.updatedAt)) throw new Error('invalid_revision_transition');
   if (previous.kind === 'observation' && next.kind === 'observation' && previous.correction) {
     const old = previous.correction; const correction = next.correction;
-    if (!correction || canonical([old.action, old.originalText, old.sequence, old.affectedRevision, old.supersedes, old.sourceRefs, old.operationId, old.urgentStop, old.compatibilityKey, old.impact, old.carriedFrom, old.intendedRecipient]) !==
-      canonical([correction.action, correction.originalText, correction.sequence, correction.affectedRevision, correction.supersedes, correction.sourceRefs, correction.operationId, correction.urgentStop, correction.compatibilityKey, correction.impact, correction.carriedFrom, correction.intendedRecipient]) ||
+    const source = (item: typeof old) => [item.action, item.originalText, item.affectedRevision, item.sequence, item.taskOrder,
+      item.supersedes, item.sourceRefs, item.urgentStop, item.compatibilityKey, item.impact, item.intendedRecipient];
+    if (!correction || canonical(source(old)) !== canonical(source(correction)) ||
+      (old.supersededBy && !sameRef(old.supersededBy, correction.supersededBy ?? null))) throw new Error('correction_history_mutation');
+    const before = old.deliveryHistory ?? []; const after = correction.deliveryHistory ?? [];
+    const readdressed = after.length === before.length + 1;
+    if (readdressed) {
+      const address = old.addressedRecipient ?? old.intendedRecipient ?? old.deliveryRecipient;
+      const snapshot = after.at(-1)!;
+      const expected = { assignment: old.assignment, recipient: address ?? snapshot.recipient, facts: old.facts,
+        ...(old.operationId ? { operationId: old.operationId } : {}),
+        ...(old.deliveryRecipient ? { deliveryRecipient: old.deliveryRecipient } : {}),
+        ...(old.incorporationAssignment ? { incorporationAssignment: old.incorporationAssignment } : {}) };
+      if (canonical(after.slice(0, -1)) !== canonical(before) || canonical(snapshot) !== canonical(expected) ||
+        !sameRef(snapshot.recipient.assignment, old.assignment) || !correction.addressedRecipient ||
+        !sameRef(correction.addressedRecipient.assignment, correction.assignment) ||
+        correction.addressedRecipient.firstMateTaskId !== snapshot.recipient.firstMateTaskId ||
+        (correction.addressedRecipient.assignment.id === snapshot.recipient.assignment.id && correction.addressedRecipient.attemptId === snapshot.recipient.attemptId) ||
+        !correction.operationId || correction.operationId === old.operationId || correction.deliveryRecipient || correction.incorporationAssignment ||
+        old.facts.some((fact) => fact.fact === 'incorporated') || old.supersededBy ||
+        canonical(correction.facts) !== canonical(old.facts.filter((fact) => fact.fact === 'recorded'))) throw new Error('correction_history_mutation');
+    } else if (canonical(after) !== canonical(before) || !sameRef(old.assignment, correction.assignment) || old.operationId !== correction.operationId ||
+      canonical(old.addressedRecipient) !== canonical(correction.addressedRecipient) ||
       old.facts.some((fact) => !correction.facts.some((item) => canonical(fact) === canonical(item))) ||
-      !sameRef(old.assignment, correction.assignment) ||
       (old.deliveryRecipient && canonical(old.deliveryRecipient) !== canonical(correction.deliveryRecipient)) ||
-      (old.incorporationAssignment && !sameRef(old.incorporationAssignment, correction.incorporationAssignment ?? null)) || (old.supersededBy && !sameRef(old.supersededBy, correction.supersededBy ?? null))) {
+      (old.incorporationAssignment && !sameRef(old.incorporationAssignment, correction.incorporationAssignment ?? null))) {
       throw new Error('correction_history_mutation');
     }
   }
