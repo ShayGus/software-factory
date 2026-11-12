@@ -103,7 +103,7 @@ this observational reconciliation automatically; it never invokes a pending muta
 If restore reports `unresolved_reference`, supply and verify that source, then run
 `resolve-restored-reference --db <restored-db> --input <resolution.json>` for each
 reported reference. The input contains the exact `projectId` and `reference`, an
-absolute source `base`, the expected SHA-256 `digest`, and nonempty verification
+absolute source `base`, the expected SHA-256 `digest` for a file, and nonempty verification
 `evidence` (artifact identity, description and observation time). For example:
 
 ```json
@@ -122,12 +122,22 @@ absolute source `base`, the expected SHA-256 `digest`, and nonempty verification
 
 The operation verifies the file at `base/reference`, records that base and the
 verified file identity, and removes only the resolved reference from the restore
-gate. The recorded base must remain consistent across resolutions; a wrong digest
+gate. A digest retained in history or an original command receipt must match;
+operator evidence cannot replace it with a new hash. A new verified identity can
+be recorded only when no digest was retained. The recorded base must remain consistent across resolutions; a wrong digest
 cannot release the gate. Historical source URIs remain intact. After every
 reported reference is resolved, use `reconcile-project` with the existing task and
 snapshot adapter to inspect live FirstMate state and lift the gate. This procedure
 works on the already imported database and does not require deleting or replacing
 its history.
+
+For a repository directory, omit `digest` and provide evidence identifying the
+existing directory (for example an artifact URI with a stable revision). When no
+retained content digest is required, resolution applies the same excluded-directory
+rule as backup: it verifies directory presence, records the exclusion and source
+base, and adds no file-hash obligation. A directory cannot discharge a reference
+that requires retained file bytes or a known digest. Workspace contents are not
+copied.
 
 ## Disable and handback
 

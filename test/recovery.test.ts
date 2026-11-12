@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
 import { ProjectStore, RecordsSchema, queueManagedTask, reconcileManagedTask, queueCorrection, deliverCorrection,
   startManagedWorker, importLegacyTasks, disableProject, reconcileProject, backupProject, restoreProjectBackup,
-  initializeProject, ref, checkStartingWorker, captureRequest, manageExecutionTask, parseFirstMateInboxBody, prepareWorkerBrief, requiredAssignmentContext, verifyRestoredArtifact, digestText, type Assignment, type CorrectionAdapterOptions } from '../src/index.js';
+  initializeProject, ref, checkStartingWorker, captureRequest, manageExecutionTask, parseFirstMateInboxBody, prepareWorkerBrief, requiredAssignmentContext, verifyRestoredArtifact, resolveRestoredReference, commandDigest, digestText, type Assignment, type CorrectionAdapterOptions } from '../src/index.js';
 import { fakeJudge } from './judge-helper.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 import { fakeRuntime } from './runtime-helper.js';
@@ -745,4 +745,96 @@ test('review 1321-4: a suspended failed task correction can recover explicitly o
   assert.equal(recover(flow.store, request, { ...options, taskAdapter: flow.adapter }).state, 'succeeded');
   assert.equal(recover(flow.store, request, { ...options, taskAdapter: flow.adapter }).state, 'succeeded');
   assert.equal(flow.tasks.read().calls.filter((call) => call.args[0] === 'add' && call.args[1] !== '--help').length, 1);
+});
+
+// Review 1342: regressions added before changing artifact resolution.
+for (const digestLocation of ['history', 'receipt'] as const) test(`review 1342-3: resolution preserves a digest retained only in ${digestLocation}`, t => {
+  const flow = setup(t, true); const reference = 'retained-identity.txt'; const path = join(flow.home, reference);
+  const original = 'Original retained bytes'; const changed = 'Different recovered bytes'; const digest = digestText(original);
+  writeFileSync(path, original);
+  const captured = captureRequest(flow.store, { projectId, clientRequestId: 'retained-identity', channel: 'cli', source: { uri: 'fixture:source' },
+    originalText: 'Preserve the attachment identity', attachments: [{ uri: reference, revision: 'source-v1', digest }] });
+  // Historical imports may retain the content identity in only one of these
+  // sources. Both are durable evidence, irrespective of the caller's new input.
+  const exported = flow.store.exportProject(projectId);
+  const request = exported.history.find((record) => record.id === captured.request.id); assert.ok(request?.kind === 'request');
+  const receipt = exported.receipts.find((entry) => entry.command.command === 'capture_request');
+  assert.ok(receipt?.command.command === 'capture_request');
+  const withoutDigest = (artifact: (typeof request.attachments)[number]) => {
+    const { digest: _digest, ...retained } = artifact; return retained;
+  };
+  if (digestLocation === 'receipt') request.attachments = request.attachments.map(withoutDigest);
+  else {
+    receipt.command.payload.attachments = receipt.command.payload.attachments.map(withoutDigest);
+    for (const record of exported.history) if (record.kind === 'operation' && record.idempotencyKey === receipt.command.idempotencyKey) {
+      record.payloadDigest = commandDigest(receipt.command);
+    }
+  }
+  const source = new ProjectStore(join(flow.home, 'identity-source.sqlite'));
+  let bundle;
+  try { source.importProject(exported); bundle = backupProject(source, projectId); } finally { source.close(); }
+  const restored = new ProjectStore(join(flow.home, 'identity-restored.sqlite'));
+  try {
+    restoreProjectBackup(restored, bundle, flow.home); writeFileSync(path, changed);
+    const input = { projectId, reference, base: flow.home, digest: digestText(changed), evidence: [{
+      artifact: { uri: path, digest: digestText(changed) }, description: 'Operator supplied recovered bytes', observedAt: new Date().toISOString() }] };
+    assert.throws(() => resolveRestoredReference(restored, input), /recorded_digest_mismatch/);
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'reconciling');
+    assert.throws(() => resolveRestoredReference(restored, { ...input, digest }), /digest_mismatch/);
+    writeFileSync(path, original);
+    resolveRestoredReference(restored, { ...input, digest, evidence: [{ artifact: { uri: path, digest },
+      description: 'Recovered bytes match the retained identity', observedAt: new Date().toISOString() }] });
+    for (const other of bundle.unresolvedReferences.filter((entry) => entry !== reference)) {
+      const otherPath = join(flow.home, other); const otherDigest = digestText(readFileSync(otherPath, 'utf8'));
+      resolveRestoredReference(restored, { projectId, reference: other, base: flow.home, digest: otherDigest,
+        evidence: [{ artifact: { uri: otherPath, digest: otherDigest }, description: 'Verified remaining local source', observedAt: new Date().toISOString() }] });
+    }
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
+  } finally { restored.close(); }
+});
+
+test('review 1342-5: relative repository directories resolve through exclusion without a file hash', t => {
+  const flow = setup(t, true); const reference = 'repository'; const directory = join(flow.home, reference); mkdirSync(directory);
+  const project = flow.store.get(projectId, projectId); assert.ok(project?.kind === 'project'); const at = new Date().toISOString();
+  const decision = { kind: 'decision_change', id: 'repository-reference', projectId, schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at,
+    questionOrChange: 'Record project repository', affectedRecords: [ref(project)], rationale: 'Repository source reference', disposition: 'selected',
+    sourceRefs: [{ uri: 'fixture:repository' }], scopeChanges: [] };
+  flow.store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
+    command: 'record_decision_suggestion', targetId: project.id, expectedRevision: project.revision, payload: { decision } }, () =>
+    [decision, { ...project, revision: project.revision + 1, updatedAt: at, repositories: [{ uri: reference }] }]);
+  const bundle = backupProject(flow.store, projectId); const restored = new ProjectStore(join(flow.home, 'directory-restored.sqlite'));
+  try {
+    restoreProjectBackup(restored, bundle, flow.home);
+    const resolution = { projectId, reference, base: flow.home,
+      evidence: [{ artifact: { uri: directory, revision: 'repository-present' }, description: 'Verified repository directory; excluded from file backup', observedAt: at }] };
+    const resolved = spawnSync(process.execPath, [cli, 'resolve-restored-reference', '--db', join(flow.home, 'directory-restored.sqlite'),
+      '--input', flow.save('directory-resolution.json', resolution)], { encoding: 'utf8' });
+    assert.equal(resolved.status, 0, resolved.stderr);
+    for (const other of bundle.unresolvedReferences.filter((entry) => entry !== reference)) {
+      const path = join(flow.home, other); const digest = digestText(readFileSync(path, 'utf8'));
+      resolveRestoredReference(restored, { projectId, reference: other, base: flow.home, digest,
+        evidence: [{ artifact: { uri: path, digest }, description: 'Verified remaining local source', observedAt: at }] });
+    }
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
+    const next = backupProject(restored, projectId);
+    assert.ok(next.excludedDirectories.includes(directory));
+    assert.equal(next.artifacts.some((artifact) => artifact.path === directory), false);
+  } finally { restored.close(); }
+});
+
+
+test('review 1342-5: directory exclusion cannot discard a retained file digest', t => {
+  const flow = setup(t, true); const reference = 'file-replaced-by-directory'; const path = join(flow.home, reference); mkdirSync(path);
+  const digest = digestText('Retained file content');
+  captureRequest(flow.store, { projectId, clientRequestId: 'file-directory-conflict', channel: 'cli', source: { uri: 'fixture:source' },
+    originalText: 'Retain file content', attachments: [{ uri: reference, digest }] });
+  const bundle = backupProject(flow.store, projectId); const restored = new ProjectStore(join(flow.home, 'directory-identity-conflict.sqlite'));
+  try {
+    restoreProjectBackup(restored, bundle, flow.home);
+    const input = { projectId, reference, base: flow.home, evidence: [{ artifact: { uri: path, revision: 'directory-present' },
+      description: 'Directory presence cannot replace retained file bytes', observedAt: new Date().toISOString() }] };
+    assert.throws(() => resolveRestoredReference(restored, input), /recorded_digest_mismatch/);
+    assert.throws(() => resolveRestoredReference(restored, { ...input, digest }), /directory_has_file_digest/);
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'reconciling');
+  } finally { restored.close(); }
 });

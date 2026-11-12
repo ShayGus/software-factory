@@ -27,7 +27,7 @@ All commands print JSON; chat-hook is silent on success. No settings are install
   apply-command  --db <sqlite> --input <CommandEnvelope JSON file> [--adapter-config <TaskAdapterOptions JSON file>]
   backup         --db <sqlite> --project <id> [--artifact-base <absolute source base>]
   verify-restored-artifact --db <sqlite> --input <projectId, path, digest, evidence JSON>
-  resolve-restored-reference --db <sqlite> --input <projectId, reference, base, digest, evidence JSON>
+  resolve-restored-reference --db <sqlite> --input <projectId, reference, base, optional file digest, evidence JSON>
   recover-task-correction --db <sqlite> --input <projectId, correctionId, idempotencyKey JSON>
                  --adapter-config <CorrectionAdapterOptions JSON>
   restore        --db <empty sqlite> --input <backup JSON> --artifact-root <absolute root>

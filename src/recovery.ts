@@ -208,7 +208,7 @@ export function verifyRestoredArtifact(store: ProjectStore, input: unknown) {
  * Neither history nor the original source URI is rewritten. */
 export function resolveRestoredReference(store: ProjectStore, input: unknown) {
   const data = z.strictObject({ projectId: z.string().min(1), reference: z.string().min(1),
-    base: z.string().refine(isAbsolute), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    base: z.string().refine(isAbsolute), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
     evidence: z.array(EvidenceSchema).min(1) }).parse(input);
   return store.withTaskLock(data.projectId, () => {
     const project = projectRecord(store, data.projectId); const integration = project.integration;
@@ -217,15 +217,27 @@ export function resolveRestoredReference(store: ProjectStore, input: unknown) {
     }
     if (integration.artifactBase && resolve(integration.artifactBase) !== resolve(data.base)) throw new Error('recorded_artifact_base_conflict');
     const path = localPath(data.reference, data.base);
-    if (!path || sha(readFileSync(path)) !== data.digest) throw new Error('resolved_reference_digest_mismatch');
+    if (!path) throw new Error(`resolved_reference_path_required: ${data.reference}`);
+    // History and original receipts are both authoritative identity sources.
+    // Operator evidence cannot replace a digest already retained in either one.
+    const expected = referencedArtifacts(store.exportProject(data.projectId), undefined, data.base).get(path) ?? [];
+    if (expected.some((digest) => digest !== data.digest)) throw new Error(`resolved_reference_recorded_digest_mismatch: ${data.reference}`);
     const artifacts = integration.restoredArtifacts ?? [];
     const existing = artifacts.find((entry) => entry.path === path);
     if (existing?.digest && existing.digest !== data.digest) throw new Error('resolved_reference_identity_conflict');
+    const directory = statSync(path).isDirectory();
+    if (directory) {
+      // Same rule as backup: directories without a required content identity are
+      // excluded workspace references, not file-byte restoration obligations.
+      if (data.digest !== undefined) throw new Error(`resolved_directory_has_file_digest: ${data.reference}`);
+    } else if (!data.digest || sha(readFileSync(path)) !== data.digest) throw new Error('resolved_reference_digest_mismatch');
+    const retained = artifacts.filter((entry) => entry.path !== path);
+    if (!directory) retained.push({ path, digest: data.digest! });
     const next = saveProject(store, project, { ...integration, artifactBase: resolve(data.base),
       restoredUnresolvedReferences: integration.restoredUnresolvedReferences.filter((reference) => reference !== data.reference),
-      restoredArtifacts: [...artifacts.filter((entry) => entry.path !== path), { path, digest: data.digest }],
-      observation: JSON.stringify({ resolvedReference: { ...data, path } }) });
-    return { project: ref(next), reference: data.reference, path, digest: data.digest };
+      restoredArtifacts: retained,
+      observation: JSON.stringify({ resolvedReference: { ...data, path, excludedDirectory: directory } }) });
+    return { project: ref(next), reference: data.reference, path, ...(directory ? { excludedDirectory: true } : { digest: data.digest! }) };
   });
 }
 
