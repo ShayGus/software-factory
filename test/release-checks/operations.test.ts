@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { applyCommand, manageExecutionTask, taskReadinessReasons, projectView, ref,
-  captureLearning, consolidateLearning, learningContext, activeGuidance, validateRecords, readFleetSnapshot, importLegacyTasks,
+  captureLearning, consolidateLearning, learningContext, activeGuidance, validateRecords, readFleetSnapshot, importLegacyTasks, workView, WorkSnapshotSchema,
   type CaptureLearningInput } from '../../src/index.js';
 import { fakeJudge } from '../judge-helper.js';
 import { fakeTask } from '../task-wrapper-helper.js';
@@ -45,16 +45,28 @@ test('CHECK-09 — stale and omitted observations remain uncertain in the UI', a
   const snapshot = flow.executable('incomplete-fleet.cjs', `process.stdout.write(${JSON.stringify(JSON.stringify(fleet))});`);
   const imported = importLegacyTasks(flow.store, projectId, { ...flow.runtimeAdapter, snapshotExecutable: snapshot });
   assert.equal(imported.omissions.length, 1);
-  const http = await flow.http();
+  const observation = WorkSnapshotSchema.parse(JSON.parse(readFileSync(new URL('../../../fixtures/ui-work-snapshot.json', import.meta.url), 'utf8')));
+  observation.observedAt = new Date(Date.now() - 120_000).toISOString();
+  observation.omissions = imported.omissions.map(row => String(row.raw));
+  const unknown = observation.tasks[1]!;
+  observation.tasks = [{ ...unknown, firstMateTaskId: 'pilot-build' }];
+  const uiOptions = { projectId, readSnapshot: () => observation };
+  const workModel = workView(projectView(flow.store, uiOptions));
+  assert.equal(workModel.stale, true);
+  assert.deepEqual(workModel.snapshot?.omissions, observation.omissions);
+  assert.ok(workModel.rows[0]?.unknowns.some(text => text.includes('Unknown')));
+  const http = await flow.http(uiOptions);
   const overview = await http('GET', '/projects/project-1/overview'); assert.equal(overview.status, 200);
   const data = JSON.parse(overview.text);
   assert.match(data.features[0].tasks[0].label, /Unknown/);
   assert.equal(JSON.parse(data.project.integration.observation).snapshot.main_inventory.unstructured_current_count, 1);
   assert.equal(data.features[0].requests[0].record.originalText, cases['CHECK-09']!.originalRequest);
   const work = await http('GET', '/projects/project-1/work');
-  await t.test('CHECK-09 unresolved — fleet omission presentation', { todo: 'BUILD-13 Work view absent; see docs/release-checks.md' }, () => {
-    assert.equal(work.status, 200, 'No Work view to disclose fleet omissions');
-  });
+  assert.equal(work.status, 200, work.text);
+  assert.match(work.text, /Stale — FirstMate snapshot/);
+  assert.ok(work.text.includes('Unknown — omitted: ' + observation.omissions[0]));
+  assert.match(work.text, /Worker: Unknown · Execution: Unknown · Waiting: Unknown/);
+  assert.match(work.text, /Feature completeness: Incomplete/);
 });
 
 test('CHECK-10 — local correction acts immediately while conflicting general lessons remain explicit', t => {

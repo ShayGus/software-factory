@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import type { TestContext } from 'node:test';
 import { ProjectStore, RecordsSchema, prepareWorkerBrief, requiredAssignmentContext, checkWorkerBrief,
   ref, ToolkitApi, createToolkitRequestHandler, parseRoborevResult, reviewProduct,
-  type FactoryRecord, type InstructionJudgeVerdict, type ProductVerdict } from '../../src/index.js';
+  type UiOptions, type FactoryRecord, type InstructionJudgeVerdict, type ProductVerdict } from '../../src/index.js';
 import { fakeJudgeOptions } from '../judge-helper.js';
 import { fakeRuntime } from '../runtime-helper.js';
 import { fakeTask, fakeTaskWrapper } from '../task-wrapper-helper.js';
@@ -50,8 +50,8 @@ export function setup(t: TestContext, id: string, edit?: (records: FactoryRecord
       firstMateTaskId: a.firstMateTaskId, returnLocation: a.returnLocation, briefPath: path, sourceFiles: sources });
     assert.equal(result.ok, true, JSON.stringify(result)); return { path, result };
   };
-  async function http() {
-    const api = new ToolkitApi(store, adapter, { projectId, fixture: true });
+  async function http(options: Partial<UiOptions> = {}) {
+    const api = new ToolkitApi(store, adapter, { projectId, fixture: true, ...options });
     const server = createServer(createToolkitRequestHandler(api, { port: 0 }));
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const address = server.address(); assert.ok(address && typeof address !== 'string');
