@@ -1255,7 +1255,9 @@ for (const mode of ['split', 'renamed'] as const) test(`non-ready Detail retains
       workflow: { ...plan.workflow!, retainedTasks: plan.deliverySequence.map(task => ({ task, reason: 'Retain checked task detail' })) } }] });
   const refined = flow.store.get('project-1', plan.id); assert.ok(refined?.kind === 'implementation_plan_revision');
   assert.equal(refined.readiness.ready, false);
-  assert.deepEqual(refined.workflow?.slices[0]?.criteriaFeature, plan.feature);
+  assert.deepEqual(refined.workflow?.slices[0]?.criteriaProvenance,
+    { feature: plan.feature, criteria: plan.workflow!.slices[0]!.criteria });
+  assert.equal(refined.workflow?.slices[0]?.criteriaFeature, undefined);
   const expected = mode === 'split' ? [{ id: 'criterion-general', revision: 1 }, { id: 'criterion-reused-target', revision: 1 },
     { id: 'criterion-second-system', revision: 1 }] : [{ id: 'criterion-reused-target', revision: 1 }, { id: 'criterion-second-system', revision: 1 }];
   let path = '/projects/project-1/features/feature-1';
@@ -1266,7 +1268,8 @@ for (const mode of ['split', 'renamed'] as const) test(`non-ready Detail retains
     const { first } = await sendEdit(flow, editor, {}, `detail-${mode}-${save}`);
     const saved = flow.store.get('project-1', plan.id); assert.ok(saved?.kind === 'implementation_plan_revision');
     assert.deepEqual(saved.workflow?.slices[0]?.criteria, expected);
-    assert.deepEqual(saved.workflow?.slices[0]?.criteriaFeature, detail.feature);
+    assert.deepEqual(saved.workflow?.slices[0]?.criteriaProvenance, { feature: detail.feature, criteria: expected });
+    assert.equal(saved.workflow?.slices[0]?.criteriaFeature, undefined);
     path = first.json().resumeUrl;
   }
 });
