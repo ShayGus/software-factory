@@ -159,9 +159,9 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
       tasks: [...new Map(history.filter((record) => record.kind === 'task_mapping' && sameRef(record.feature, feature)).map((record) => [record.id, record])).values()],
     }));
     const currentContext = features.filter((feature) =>
-      (exactFeatures.some((affected) => affected.id === feature.id && !sameRef(affected, feature)) ||
-        affected.some((record) => record.kind === 'criterion' && record.featureId === feature.id &&
-          !exactFeatures.some((owner) => sameRef(owner, feature)))))
+      !exactFeatures.some((owner) => sameRef(owner, feature)) &&
+      (exactFeatures.some((affected) => affected.id === feature.id) ||
+        affected.some((record) => record.kind === 'criterion' && record.featureId === feature.id)))
       .map((feature) => ({ feature, tasks: records.filter((record) => record.kind === 'task_mapping' && record.feature?.id === feature.id) }));
     const requestRefs = [...context.flatMap((item) => item.feature.sourceRequests), ...affected.flatMap((record) => 'sourceRefs' in record ? record.sourceRefs.flatMap((source) => source.record ? [source.record] : []) : []), ...decision.sourceRefs.flatMap((source) => source.record ? [source.record] : []), ...decision.affectedRecords];
     const requests = [...new Map(requestRefs.flatMap((target) => { const record = lookup(target); return record?.kind === 'request' ? [[`${record.id}@${record.revision}`, record] as const] : []; })).values()];

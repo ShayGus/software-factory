@@ -178,7 +178,9 @@ function artifacts(view: ProjectView, feature: FeatureView) {
     tasks: saved.tasks.map((task) => ({ ...task, criteria: stageCriteria(view.history, stage, task.criteria, task.feature, [task]) })),
     plan: { ...saved.plan, dependencies: stageDependencies(view.history, stage, saved.plan.dependencies, saved.plan.feature),
       ...(saved.plan.workflow ? { workflow: { ...saved.plan.workflow, slices: saved.plan.workflow.slices.map((slice) => ({ ...slice,
-        criteria: stageCriteria(view.history, stage, slice.criteria, saved.plan.readiness.ready ? undefined : saved.plan.feature, slice.tasks) })) } } : {}) },
+        criteria: stageCriteria(view.history, stage, slice.criteria,
+          slice.criteriaFeature ?? (sameRef(saved.plan, stage.artifact) ? undefined : saved.plan.feature), undefined, slice.id),
+        criteriaFeature: { id: feature.feature.id, revision: feature.feature.revision } })) } } : {}) },
   } : saved;
   const context = base && design ? { feature: feature.feature, ...base,
     expectedRevisions: [feature.feature, base.design, base.plan, ...base.tasks].map((record) => {

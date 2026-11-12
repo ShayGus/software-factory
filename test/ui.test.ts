@@ -10,7 +10,7 @@ import { runInNewContext } from 'node:vm';
 import {
   ProjectStore, RecordsSchema, ToolkitApi, buildEditCommand, createToolkitRequestHandler, projectView, renderFeature,
   type EditContext, type EditValues, type FactoryRecord, captureRequest, validateAssignmentForDispatch, checkPlanReadiness,
-  workView, WorkSnapshotSchema, type UiOptions,
+  workView, WorkSnapshotSchema, type UiOptions, recordStage,
   queueCorrection, deliverCorrection,
   consolidateLearning, nextLearningWindow,
   validateRecords,
@@ -1204,7 +1204,6 @@ function reusedEditorHistory(mode: 'split' | 'renamed' | 'request') {
   const understanding = history.find(r => r.kind === 'understanding_revision'); assert.ok(understanding?.kind === 'understanding_revision');
   history.push({ ...understanding, revision: 2, feature: { id: current.id, revision: 2 }, criteria: current.criteria, sourceRequests: current.sourceRequests });
   for (const stage of history.filter(r => r.kind === 'stage_revision')) {
-    assert.ok(stage.kind === 'stage_revision');
     const artifact = history.find(r => r.id === stage.artifact.id && r.revision === stage.artifact.revision)!;
     const design = history.find(r => r.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
     const criterionMap = current.criteria.map(c => ({ current: c,
@@ -1244,6 +1243,34 @@ test(`checked reuse ${mode} survives ${kind} save${mode === 'renamed' ? ' after 
   assert.deepEqual(resumedPlan.dependencies, plan.dependencies);
 });
 
+for (const mode of ['split', 'renamed'] as const) test(`non-ready Detail retains checked ${mode} slice criteria through save and resume`, async t => {
+  const history = reusedEditorHistory(mode);
+  const plan = history.find(r => r.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+  const detail = history.find(r => r.kind === 'stage_revision' && r.stage === 'detail' && r.revision === 2);
+  assert.ok(detail?.kind === 'stage_revision');
+  const flow = setup(t, history);
+  recordStage(flow.store, { idempotencyKey: `refine-${mode}`, expectedRevision: 2, issuedAt: detail.updatedAt,
+    stage: { ...detail, revision: 3, artifact: { id: plan.id, revision: 2 } },
+    records: [{ ...plan, revision: 2, updatedAt: detail.updatedAt, feature: detail.feature, dependencies: [],
+      workflow: { ...plan.workflow!, retainedTasks: plan.deliverySequence.map(task => ({ task, reason: 'Retain checked task detail' })) } }] });
+  const refined = flow.store.get('project-1', plan.id); assert.ok(refined?.kind === 'implementation_plan_revision');
+  assert.equal(refined.readiness.ready, false);
+  assert.deepEqual(refined.workflow?.slices[0]?.criteriaFeature, plan.feature);
+  const expected = mode === 'split' ? [{ id: 'criterion-general', revision: 1 }, { id: 'criterion-reused-target', revision: 1 },
+    { id: 'criterion-second-system', revision: 1 }] : [{ id: 'criterion-reused-target', revision: 1 }, { id: 'criterion-second-system', revision: 1 }];
+  let path = '/projects/project-1/features/feature-1';
+  for (const save of ['initial', 'resume']) {
+    const editor = findEditor((await flow.http('GET', path)).body, 'plan'); assert.ok(editor.context.kind === 'plan');
+    assert.deepEqual(editor.context.tasks[0]?.criteria, expected);
+    assert.deepEqual(editor.context.plan.workflow?.slices[0]?.criteria, expected);
+    const { first } = await sendEdit(flow, editor, {}, `detail-${mode}-${save}`);
+    const saved = flow.store.get('project-1', plan.id); assert.ok(saved?.kind === 'implementation_plan_revision');
+    assert.deepEqual(saved.workflow?.slices[0]?.criteria, expected);
+    assert.deepEqual(saved.workflow?.slices[0]?.criteriaFeature, detail.feature);
+    path = first.json().resumeUrl;
+  }
+});
+
 test('resolved question history links to the saved answer instead of a missing open-question anchor', async t => {
   const flow = setup(t);
   const page = await flow.http('GET', '/projects/project-1/decisions');
@@ -1278,9 +1305,14 @@ test('each affected criterion resolves its own unique feature snapshot', async t
   history.push(...criteria.map(c => ({ ...c, revision: 2 })), { ...feature, revision: 2, previousRevision: 1,
     changeReason: 'Revised both criteria', criteria: feature.criteria.map(c => ({ ...c, revision: 2 })) });
   const flow = setup(t, history);
-  const context = projectView(flow.store, { projectId: 'project-1' }).questions[0]!.context;
+  const { context, currentContext } = projectView(flow.store, { projectId: 'project-1' }).questions[0]!;
   assert.deepEqual(context.map(item => item.feature.revision), [1, 2]);
   assert.ok(context.some(item => item.criteria.some(c => c.target.id === 'criterion-second-system' && c.target.revision === 2)));
+  assert.deepEqual(currentContext, []);
+  const page = await flow.http('GET', '/projects/project-1/decisions');
+  const article = page.body.match(/<article class="question"[\s\S]*?<\/article>/u)?.[0]; assert.ok(article);
+  assert.match(article, /Affected feature revision: <a href="\/projects\/project-1\/inspect\/feature-1\?revision=2"/u);
+  assert.doesNotMatch(article, /Current feature context/u);
 });
 
 test('toolkit guard edges retain ownership and observation independently of editable prerequisites', async t => {
@@ -1331,7 +1363,6 @@ test('named bundle continuation retains selected stage transitions, rationale an
   const stages = named.body.match(/<h2>Stage progress<\/h2>([\s\S]*?)<\/section>/u)?.[1]; assert.ok(stages);
   assert.match(stages, /Selected-stage history/u);
   for (const stage of fixture.filter(r => r.kind === 'stage_revision')) {
-    assert.ok(stage.kind === 'stage_revision');
     assert.ok(stages.includes(`/inspect/${stage.id}?revision=${stage.revision}`));
     assert.ok(stages.includes(`/inspect/${stage.artifact.id}?revision=${stage.artifact.revision}`));
     assert.ok(stages.includes(stage.changeReason));
