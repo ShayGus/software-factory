@@ -1236,6 +1236,7 @@ Observation context retains complete section snapshots that have not been adopte
 This structured selection is shared by observation extracts, sidecar records, fidelity checks, and the learning-context API.
 Original artifact identities are verified before projection and retained as `selectedContext[].artifact`; changed views have a separate `projectedArtifact` identity.
 Snapshot ranges keep their original UTF-16 offsets.
+Selected external ranges are retained as `selectedContext[].originalRange` and in context-pointer metadata so fidelity checks validate the selected occurrence, including repeated excerpts.
 An excerpt or explicit range overlapping an adopted section is refused with `retired_section_excerpt` until its reference is reconciled.
 Record excerpts select their unchanged text directly from the worker record; serialized JSON and character offsets are not rewritten.
 The replacement record carries source pointers rather than the superseded text; full source text and diffs stay in observation/run history.

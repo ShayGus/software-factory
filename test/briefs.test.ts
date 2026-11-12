@@ -513,3 +513,31 @@ test('review 1237 finding 1: brief preparation refuses a retired excerpt without
     assert.equal(flow.store.get(projectId, flow.input.assignmentId), undefined);
   } finally { flow.close(); rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('review 1238 finding 2: fidelity validates the explicitly selected live occurrence of a repeated excerpt', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-live-repeated-excerpt-')); const memoryPath = join(directory, 'memory.md');
+  const excerpt = 'Repeated phrase from the source.';
+  const memory = `## Rules\n${excerpt}\n## Live\n${excerpt}\n`; writeFileSync(memoryPath, memory);
+  const flow = setup({ editRecords: (records) => {
+    const design = records.find((record) => record.kind === 'design_revision'); assert.ok(design?.kind === 'design_revision');
+    design.sourceRefs.push({ uri: memoryPath, excerpt });
+  } });
+  try {
+    const source = flow.sourceFiles.find((source) => source.source.uri === memoryPath); assert.ok(source); writeFileSync(source.path, memory);
+    const start = memory.lastIndexOf(excerpt); assert.notEqual(start, memory.indexOf(excerpt));
+    flow.input.sourceFiles = flow.sourceFiles.map((file) => file === source ? { ...file, start, end: start + excerpt.length } : file);
+    const at = '2026-11-12T08:30:00.000Z';
+    captureLearning(flow.store, { projectId, id: 'repeated-live-excerpt', idempotencyKey: 'repeated-live-excerpt', issuedAt: at,
+      identity: { scope: { kind: 'project' }, topic: 'repeated-live-excerpt' }, inputKind: 'standing_instruction', captureReason: 'direct',
+      finding: 'Use adopted instructions with current live source context.', legacySections: [readLegacySection(memoryPath, '## Rules')],
+      evidence: [{ artifact: { uri: memoryPath, digest: digestText(memory) }, description: 'Source section evidence', observedAt: at }] });
+    flow.input.issuedAt = at;
+    const prepared = flow.prepare(); assert.equal(prepared.ok, true, JSON.stringify(prepared));
+    const context = flow.assignment().selectedContext.find((context) => context.source.uri === memoryPath); assert.ok(context);
+    assert.equal(context.extract, excerpt);
+    assert.deepEqual(context.originalRange, { start, end: start + excerpt.length });
+    const metadata = JSON.parse(readFileSync(prepared.sidecarPath, 'utf8'));
+    assert.deepEqual(metadata.contextPointers.find((pointer: { source: { uri: string } }) => pointer.source.uri === memoryPath).originalRange, context.originalRange);
+    const checked = flow.check(); assert.equal(checked.ok, true, JSON.stringify(checked));
+  } finally { flow.close(); rmSync(directory, { recursive: true, force: true }); }
+});

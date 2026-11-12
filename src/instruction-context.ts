@@ -176,6 +176,7 @@ export function selectAssignmentContext(records: FactoryRecord[], assignment: Pa
     const extract = selectedText.slice(0, end);
     if (!extract.trim()) { missing.push(missingContext(requirement)); continue; }
     selectedContext.push({ source, extract, truncated: extract !== text,
+      ...(!record && ranged ? { originalRange: { start: originalStart, end: originalEnd } } : {}),
       artifact: { uri, digest: digestText(original), ...(artifact?.revision ? { revision: artifact.revision } : {}) },
       ...(text !== original ? { projectedArtifact: projectedContextArtifact(uri, text) } : {}) });
   }

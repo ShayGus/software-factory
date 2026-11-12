@@ -162,6 +162,8 @@ export const TaskMappingSchema = record('task_mapping', {
 
 export const SelectedContextSchema = z.strictObject({
   source: SourceRefSchema, artifact: ArtifactSchema.optional(), projectedArtifact: ArtifactSchema.optional(), extract: TextSchema.optional(),
+  originalRange: z.strictObject({ start: z.number().int().nonnegative(), end: z.number().int().positive() })
+    .refine((range) => range.end > range.start, 'Source range end must follow its start').optional(),
   truncated: z.boolean(),
 }).refine((value) => !value.truncated || value.extract !== undefined,
   'Truncated context must retain the supplied extract and reachable source');

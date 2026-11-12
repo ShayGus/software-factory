@@ -58,9 +58,14 @@ function fileFindings(records: FactoryRecord[], assignment: Assignment): Instruc
       context.artifact && localText(context.artifact.uri);
     const visible = originalText && (record ? { text: workerContextText(records, record), sections: [] } : legacyContextSections(records, context.source.uri, originalText));
     const text = visible && visible.text;
-    if (visible && context.source.excerpt !== undefined) {
-      const start = originalText!.indexOf(context.source.excerpt);
-      if (!visible.text.includes(context.source.excerpt) || sourceRangeIsRetired(visible.sections, start, start + context.source.excerpt.length)) {
+    if (visible && (context.originalRange || context.source.excerpt !== undefined)) {
+      const start = context.originalRange?.start ?? originalText!.indexOf(context.source.excerpt!);
+      const end = context.originalRange?.end ?? start + context.source.excerpt!.length;
+      if (start < 0 || end > originalText!.length || !originalText!.slice(start, end).startsWith(context.extract ?? '')) {
+        findings.push({ code: 'missing_required_context', path: 'selectedContext', message: `Selected source range no longer matches its extract: ${context.source.uri}` });
+        continue;
+      }
+      if (context.source.excerpt !== undefined && !visible.text.includes(context.source.excerpt) || sourceRangeIsRetired(visible.sections, start, end)) {
         findings.push({ code: 'retired_section_excerpt', path: 'selectedContext', message: `Reconcile the excerpt with adopted guidance: ${context.source.uri}` });
         continue;
       }
