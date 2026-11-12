@@ -650,7 +650,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
         }
         if (record.answer.reusedFrom) {
           const source = ctx.get(record, record.answer.reusedFrom, 'decision_change', 'answer.reusedFrom');
-          if (source && (!reusableAnswer(record, source) || record.answer.text !== (source.answer?.text ?? source.rationale))) {
+          if (source && (!reusableAnswer(record, source) || record.answer.text !== source.answer?.text)) {
             ctx.add(record, 'invalid_answer_reuse', 'answer.reusedFrom', 'Reused answer must match the question, affected revisions and source text');
           }
         }

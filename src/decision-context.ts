@@ -4,6 +4,7 @@ import type { DecisionChange } from './records.js';
 export function reusableAnswer(question: DecisionChange, candidate: DecisionChange) {
   const context = (decision: DecisionChange) => decision.affectedRecords.map(({ id, revision }) => JSON.stringify([id, revision])).sort();
   return candidate.id !== question.id && candidate.choice?.kind === 'product' && candidate.choice.state === 'resolved' &&
+    !!candidate.answer?.text.trim() &&
     candidate.disposition === 'selected' && candidate.questionOrChange === question.questionOrChange &&
     JSON.stringify(context(candidate)) === JSON.stringify(context(question));
 }

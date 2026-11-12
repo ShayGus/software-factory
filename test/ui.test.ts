@@ -14,6 +14,7 @@ import {
   queueCorrection, deliverCorrection,
   consolidateLearning, nextLearningWindow,
   validateRecords,
+  guidanceForContext,
 } from '../src/index.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 import { fakeJudge } from './judge-helper.js';
@@ -1080,4 +1081,109 @@ test('BUILD-14 next consolidation preview respects future start seconds and DST 
   assert.equal(nextLearningWindow(base, '2026-11-12T08:30:00Z')?.scheduledFor, '2027-01-02T09:00:00.000Z');
   const fold = { ...base, timezone: 'America/New_York', hours: [1], startsAt: '2026-01-01T00:00:00Z' };
   assert.equal(nextLearningWindow(fold, '2026-11-01T05:30:00Z')?.scheduledFor, '2026-11-02T06:00:00.000Z');
+});
+
+test('review 1384 finding 1: answering an older feature question retains exact criteria and request context after an edit', async (t) => {
+  const flow = setup(t);
+  const feature = flow.store.get('project-1', 'feature-1', 1); assert.ok(feature?.kind === 'feature_revision');
+  const criterion = flow.store.get('project-1', feature.criteria[0]!.id, feature.criteria[0]!.revision); assert.ok(criterion?.kind === 'criterion');
+  const request = flow.store.get('project-1', feature.sourceRequests[0]!.id, feature.sourceRequests[0]!.revision); assert.ok(request?.kind === 'request');
+  const editPage = await flow.http('GET', '/projects/project-1/features/feature-1');
+  await sendEdit(flow, findEditor(editPage.body, 'criterion'), { expectedBehavior: 'Changed criterion that belongs only to feature revision two.' }, 'revision-context');
+  const page = await flow.http('GET', '/projects/project-1/decisions');
+  const question = page.body.match(/<article class="question"[\s\S]*?<\/article>/u)?.[0]; assert.ok(question);
+  const primary = question.split('Current feature context')[0]!;
+  assert.ok(primary.includes(criterion.expectedBehavior), 'Show the criterion wording referenced by the affected feature revision');
+  assert.ok(primary.includes(`/inspect/${criterion.id}?revision=${criterion.revision}`));
+  assert.ok(primary.includes(`/inspect/${feature.id}?revision=${feature.revision}`));
+  assert.ok(primary.includes(request.originalText));
+  assert.ok(primary.includes(`/inspect/${request.id}?revision=${request.revision}`));
+  assert.ok(!primary.includes('Changed criterion that belongs only to feature revision two.'));
+  assert.match(question, /Current feature context/);
+  assert.match(question, /feature-1\?revision=2/);
+  const answerEditor = findEditor(page.body, 'answer'); assert.ok(answerEditor.context.kind === 'answer');
+  assert.deepEqual(answerEditor.context.decision.affectedRecords, [{ id: feature.id, revision: feature.revision }]);
+  await sendEdit(flow, answerEditor, { answer: 'Answer for the original product scope.' }, 'historical-answer');
+});
+
+test('review 1384 finding 2: classified captures normalize omitted optional arrays before comparison and persistence', async (t) => {
+  const flow = setup(t);
+  const editor = findEditor((await flow.http('GET', '/projects/project-1/learning')).body, 'standing-instruction');
+  assert.ok(editor.context.kind === 'standing-instruction');
+  for (const inputKind of ['standing_instruction', 'inferred', 'operational'] as const) {
+    for (const omitted of ['legacy', 'supersedes', 'both']) {
+      const key = `omitted-${inputKind}-${omitted}`;
+      const command = buildEditCommand(editor.context, { identity: JSON.stringify(editor.context.identities[0]), topic: key,
+        instruction: 'Preserve this classified capture.', reason: 'Evidence from the user', evidenceUri: 'fixture:classified', evidenceRevision: '1' }, key, new Date().toISOString());
+      assert.ok(command.command === 'capture_consolidate_learning' && command.payload.action === 'capture' && command.payload.observation.learning);
+      command.payload.observation.learning.inputKind = inputKind;
+      command.payload.observation.consolidationState = inputKind === 'standing_instruction' ? 'consolidated' : 'pending';
+      const explicit = structuredClone(command);
+      if (omitted !== 'supersedes') delete command.payload.observation.legacySections;
+      if (omitted !== 'legacy') delete command.payload.supersedes;
+      const response = await flow.http('POST', '/canonical', command);
+      assert.equal(response.status, 200, `${inputKind}/${omitted}: ${response.body}`);
+      assert.deepEqual((await flow.http('POST', '/canonical', explicit)).json(), response.json());
+      const receipt = flow.store.receipt('project-1', key); assert.ok(receipt?.command.command === 'capture_consolidate_learning' && receipt.command.payload.action === 'capture');
+      assert.deepEqual(receipt.command.payload.observation.legacySections, []);
+      assert.deepEqual(receipt.command.payload.supersedes, []);
+    }
+  }
+});
+
+test('review 1384 finding 3: reuse requires explicit answer text and never substitutes legacy rationale or instruction', async (t) => {
+  const history = structuredClone(fixture);
+  const question = history.find((record) => record.id === 'decision-open'); assert.ok(question?.kind === 'decision_change');
+  const legacy = { ...question, id: 'legacy-decision', disposition: 'selected' as const, choice: { kind: 'product' as const, state: 'resolved' as const },
+    originalInstruction: 'Select the system named in the product instruction.', rationale: 'This rationale explains the tradeoff; it is not an answer.' };
+  history.push(legacy);
+  const flow = setup(t, history);
+  const page = await flow.http('GET', '/projects/project-1/decisions');
+  assert.equal(projectView(flow.store, { projectId: 'project-1' }).questions[0]!.answers.length, 0);
+  assert.match(page.body, /Legacy decision — no explicit answer recorded/);
+  assert.ok(page.body.includes(legacy.originalInstruction));
+  assert.ok(page.body.includes(legacy.rationale));
+  assert.throws(() => buildEditCommand({ kind: 'answer', decision: question, reuse: legacy }, { reason: 'Reuse source' }, 'legacy-reuse-builder', new Date().toISOString()), /explicit answer/);
+  const forged = buildEditCommand({ kind: 'answer', decision: question }, { answer: legacy.rationale, reason: 'Attempt legacy fallback' }, 'legacy-reuse-canonical', new Date().toISOString());
+  assert.ok(forged.command === 'record_decision_suggestion' && forged.payload.decision.answer);
+  forged.payload.decision.answer.reusedFrom = { id: legacy.id, revision: legacy.revision };
+  assert.equal((await flow.http('POST', '/canonical', forged)).status, 409);
+  const imported = validateRecords([...history, { ...question, id: 'invalid-legacy-reuse', disposition: 'selected', choice: { kind: 'product', state: 'resolved' },
+    answer: { text: legacy.rationale, reusedFrom: { id: legacy.id, revision: legacy.revision } } }]);
+  assert.ok(!imported.ok && imported.issues.some((issue) => issue.code === 'invalid_answer_reuse'));
+  const explicit = { ...legacy, id: 'explicit-answer', answer: { text: 'Use CRM Z for the second-system acceptance.' } };
+  const explicitFlow = setup(t, [...history, explicit]);
+  const explicitPage = await explicitFlow.http('GET', '/projects/project-1/decisions');
+  const reuse = editors(explicitPage.body).find(({ context }) => context.kind === 'answer' && context.reuse); assert.ok(reuse);
+  await sendEdit(explicitFlow, reuse, {}, 'explicit-reuse');
+  const result = explicitFlow.store.get('project-1', question.id); assert.ok(result?.kind === 'decision_change');
+  assert.equal(result.answer?.text, explicit.answer.text);
+});
+
+test('review 1384 finding 4: displayed current guidance agrees with canonical worker scope resolution', async (t) => {
+  const history = structuredClone(fixture);
+  const template = history.find((record) => record.id === 'guidance-current'); assert.ok(template?.kind === 'guidance_revision');
+  const { learning: _learning, ...legacy } = template;
+  history.push(
+    { ...legacy, id: 'opaque-legacy', text: 'Unclassifiable legacy guidance', supersededGuidance: [], scope: [{ uri: 'fixture:unclassified' }] },
+    { ...legacy, id: 'project-legacy', text: 'Resolved legacy project guidance', supersededGuidance: [], scope: [{ uri: 'factory:project/project-1', record: { id: 'project-1', revision: 1 } }] },
+    { ...legacy, id: 'feature-legacy', text: 'Resolved legacy feature guidance', supersededGuidance: [], scope: [{ uri: 'factory:feature/feature-1', record: { id: 'feature-1', revision: 1 } }] },
+    { ...legacy, id: 'mixed-legacy', text: 'Partially unclassified legacy guidance', supersededGuidance: [], scope: [{ uri: 'factory:project/project-1', record: { id: 'project-1', revision: 1 } }, { uri: 'fixture:unclassified' }] },
+    { ...template, id: 'project-default', text: 'Project default with a feature override', supersededGuidance: [], learning: { scope: { kind: 'project' }, topic: 'review-scope', authority: 'inferred' } },
+    { ...template, id: 'feature-override', text: 'Explicit feature override', supersededGuidance: [], learning: { scope: { kind: 'feature', featureId: 'feature-1' }, topic: 'review-scope', authority: 'explicit' } },
+  );
+  const flow = setup(t, history);
+  const view = projectView(flow.store, { projectId: 'project-1' });
+  const expected = new Set([undefined, ...view.features.map((item) => item.feature.id)].flatMap((featureId) => guidanceForContext(history, featureId).map((record) => record.id)));
+  assert.deepEqual(new Set(view.learning.active.map((record) => record.id)), expected);
+  for (const item of view.learning.guidance) assert.equal(item.active, expected.has(item.record.id));
+  assert.deepEqual(view.learning.guidance.find((item) => item.record.id === 'project-default')?.contexts, ['Project/default context']);
+  assert.deepEqual(view.learning.guidance.find((item) => item.record.id === 'feature-override')?.contexts, ['Feature feature-1']);
+  const page = await flow.http('GET', '/projects/project-1/learning');
+  const current = page.body.split('<h2>Current guidance</h2>')[1]!.split('<h3>Revision and supersession history</h3>')[0]!;
+  assert.ok(!current.includes('Unclassifiable legacy guidance'));
+  assert.ok(current.includes('Resolved legacy project guidance'));
+  assert.ok(current.includes('Resolved legacy feature guidance'));
+  const opaque = await flow.http('GET', '/projects/project-1/inspect/opaque-legacy?revision=1');
+  assert.match(opaque.body, /Inactive guidance/);
 });

@@ -269,11 +269,12 @@ function decisionRows(view: ProjectView) {
     <h3>${recordLink(projectId, decision, decision.questionOrChange)}</h3><p class="state">Open product question</p>${text(decision.rationale)}
     <p>Affects: ${links(projectId, decision.affectedRecords)}</p>
     ${requests.map((request) => `<details><summary>Original request · ${h(request.id)} r${request.revision}</summary><blockquote>${h(request.originalText)}</blockquote>${recordLink(projectId, request)}</details>`).join('') || empty('Unknown — no original request link resolves.')}
-    ${context.map((item) => `<p>Feature: <a href="${featureUrl(projectId, item.feature.id)}">${h(item.feature.outcome)}</a></p>
-      <p>Criteria: ${links(projectId, item.feature.criteria)} · Related work: ${links(projectId, item.tasks.map((task) => task.mapping))}</p>`).join('')}
+    ${context.map((item) => `<p>Affected feature revision: ${recordLink(projectId, item.feature, item.feature.outcome)}</p>
+      <p>Criteria: ${item.criteria.map(({ target, record }) => recordLink(projectId, target, record?.kind === 'criterion' ? record.expectedBehavior : 'Unknown criterion')).join(' · ')} · Related work: ${links(projectId, item.tasks)}</p>`).join('')}
     ${affected.map((record) => record.kind === 'criterion' ? text(record.expectedBehavior) : '').join('')}
+    ${context.flatMap((item) => item.currentFeature ? [`<p>Current feature context (separate from this question): ${recordLink(projectId, item.currentFeature, item.currentFeature.outcome)} · <a href="${featureUrl(projectId, item.currentFeature.id)}">Review current feature</a></p>`] : []).join('')}
     ${answerConflict ? '<p class="state">Unresolved conflict — matching previous answers disagree. Inspect decision history before answering.</p>' : ''}
-    ${answers.length ? `<p>Existing answer available for the same question and affected revisions:</p>${text(answers[0]!.answer?.text ?? answers[0]!.rationale)}
+    ${answers.length ? `<p>Existing answer available for the same question and affected revisions:</p>${text(answers[0]!.answer!.text)}
       <p>Source: ${links(projectId, answers)}</p>${edit({ kind: 'answer', decision, reuse: answers[0]! }, 'Use existing answer', empty('Reuse records the source answer in this decision revision.'))}` : ''}
     ${edit({ kind: 'answer', decision }, 'Answer product question', field('answer', 'Product answer', ''))}
     </article>`).join('') || empty('No material product questions need input.');
@@ -284,7 +285,7 @@ export function renderDecisions(view: ProjectView) {
   return shell(view, 'Needs input', `<h1>Product questions needing input</h1>
     ${text('Answer choices that affect the requested product outcome. Routine implementation continues through the existing work process.')}
     <section><h2>Open questions</h2>${decisionRows(view)}</section>
-    <section><h2>Existing answers</h2>${resolved.map((decision) => `<article><h3>${recordLink(projectId, decision, decision.questionOrChange)}</h3>${text(decision.answer?.text ?? decision.rationale)}
+    <section><h2>Existing answers</h2>${resolved.map((decision) => `<article><h3>${recordLink(projectId, decision, decision.questionOrChange)}</h3>${decision.answer ? text(decision.answer.text) : `<p>Legacy decision — no explicit answer recorded</p>${decision.originalInstruction ? text(decision.originalInstruction) : ''}${text(`Rationale: ${decision.rationale}`)}`}
       <p>Affected revisions: ${links(projectId, decision.affectedRecords)}</p>${decision.answer?.reusedFrom ? `<p>Reused from: ${recordLink(projectId, decision.answer.reusedFrom)}</p>` : ''}</article>`).join('') || empty('No resolved product answers recorded.')}</section>
     <section><h2>Technical questions · work context</h2>${view.input.filter((decision) => decision.choice?.kind === 'technical').map((decision) => `<p>${recordLink(projectId, decision, decision.questionOrChange)} — implementation question, handled with its work.</p>`).join('') || empty('No open technical questions recorded.')}</section>`);
 }
@@ -293,7 +294,8 @@ export function renderLearning(view: ProjectView) {
   const learning = view.learning;
   const sources = (values: { uri: string; record?: Ref | undefined }[]) => values.map((source) => source.record ? recordLink(projectId, source.record) : external(source.uri)).join(' · ');
   const scope = (record: Extract<FactoryRecord, { kind: 'guidance_revision' | 'observation' }>) => record.learning ?
-    `${record.learning.scope.kind === 'project' ? 'Project' : `Feature ${record.learning.scope.featureId}`} · topic ${record.learning.topic}` : 'Unclassified legacy scope';
+    `${record.learning.scope.kind === 'project' ? 'Project' : `Feature ${record.learning.scope.featureId}`} · topic ${record.learning.topic}` :
+    record.kind === 'guidance_revision' ? view.learning.guidance.find((item) => sameRef(item.record, record))?.contexts.join(' · ') || 'Unknown legacy scope' : 'Unclassified legacy scope';
   const observation = (record: Extract<FactoryRecord, { kind: 'observation' }>) => `<article><h3>${recordLink(projectId, record, record.finding)}</h3>
     <p>${h(record.consolidationState)} · ${h(scope(record))}</p><p>Scope sources: ${sources(record.affectedScope)}</p>
     ${record.proposedGeneralization ? text(`Possible lesson: ${record.proposedGeneralization}`) : ''}
@@ -315,9 +317,9 @@ export function renderLearning(view: ProjectView) {
     ${learning.guidanceConflicts.map((record) => `<article><h3>${recordLink(projectId, record, record.text)}</h3><p>${h(scope(record))}</p>${items(record.unresolvedConflicts)}</article>`).join('')}
     ${!learning.conflicts.length && !learning.guidanceConflicts.length ? empty('No unresolved learning conflicts recorded.') : ''}</section>
     <section id="guidance"><h2>Current guidance</h2>${learning.active.map((record) => `<article><h3>${recordLink(projectId, record, record.text)}</h3><p>Current · ${h(scope(record))} · ${h(record.learning?.authority ?? 'legacy authority')}</p>
-      ${text(record.applicability)}<p>Scope sources: ${sources(record.scope)}</p><p>Supporting observations: ${links(projectId, record.supportingObservations)}</p></article>`).join('') || empty('No active guidance recorded.')}
+      <p>Applies in worker context: ${h(learning.guidance.find((item) => sameRef(item.record, record))?.contexts.join(' · '))}</p>${text(record.applicability)}<p>Scope sources: ${sources(record.scope)}</p><p>Supporting observations: ${links(projectId, record.supportingObservations)}</p></article>`).join('') || empty('No active guidance recorded.')}
       ${standing}<h3>Revision and supersession history</h3>
-      ${learning.guidance.map(({ record, replacements, active }) => `<article><h4>${recordLink(projectId, record, record.text)}</h4><p>${active ? 'Current' : replacements.length ? 'Superseded' : 'Inactive — unresolved conflict or unclassified state'} · ${h(scope(record))}</p>
+      ${learning.guidance.map(({ record, replacements, active }) => `<article><h4>${recordLink(projectId, record, record.text)}</h4><p>${active ? 'Current' : replacements.length ? 'Superseded' : 'Inactive — scope unknown or unresolved conflict'} · ${h(scope(record))}</p>
       ${replacements.length ? `<p>Replaced by: ${links(projectId, replacements)}</p>` : ''}<p>Supersedes: ${links(projectId, record.supersededGuidance)}</p><p>Supporting observations: ${links(projectId, record.supportingObservations)}</p></article>`).join('') || empty('No guidance history recorded.')}</section>
     <section id="consolidation"><h2>Last consolidation diff</h2>${run ? `<p>${recordLink(projectId, run)} · Window ${h(run.scheduledWindowId)} · ${h(run.scheduledFor)} · ${h(run.timezone)}</p>
       ${run.verdict.decisions.map((decision) => `<article><h3>${h(decision.outcome)} · ${h(decision.groupId)}</h3>${text(decision.rationale)}<p>Observations: ${links(projectId, decision.observationRefs)}</p><p>Replaced guidance: ${links(projectId, decision.guidanceRefs)}</p>${decision.text ? text(`After: ${decision.text}`) : ''}</article>`).join('')}

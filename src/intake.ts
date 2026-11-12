@@ -213,7 +213,7 @@ export function recordDecisionSuggestion(store: ProjectStore, input: unknown) {
       if (decision.answer.reusedFrom) {
         const source = store.get(command.projectId, decision.answer.reusedFrom.id);
         if (source?.kind !== 'decision_change' || source.revision !== decision.answer.reusedFrom.revision ||
-          !reusableAnswer(previous, source) || decision.answer.text !== (source.answer?.text ?? source.rationale)) {
+          !reusableAnswer(previous, source) || decision.answer.text !== source.answer?.text) {
           throw new StoreError('conflict', 'reusable_answer_changed');
         }
       }

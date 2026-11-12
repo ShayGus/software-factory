@@ -2,19 +2,23 @@ import type { GuidanceRevision } from './records.js';
 import type { ProjectStore } from './store.js';
 import type { LearningIdentity } from './learning-contracts.js';
 import { LearningScheduleSchema } from './learning-contracts.js';
-import { activeGuidance } from './learning-context.js';
+import { guidanceForContext } from './learning-context.js';
 import { nextLearningWindow } from './learning-schedule.js';
 
 export function learningView(store: ProjectStore, projectId: string, schedule: unknown, now: string) {
   const history = store.history(projectId);
   const records = store.records(projectId);
-  const active = activeGuidance(records);
+  const selections = [{ label: 'Project/default context', featureId: undefined },
+    ...records.filter((record) => record.kind === 'feature_revision').map((feature) => ({ label: `Feature ${feature.id}`, featureId: feature.id }))]
+    .map((context) => ({ ...context, guidance: guidanceForContext(history, context.featureId) }));
+  const active = [...new Map(selections.flatMap((context) => context.guidance).map((record) => [record.id, record])).values()];
   const observations = records.filter((record) => record.kind === 'observation');
   const guidance = history.filter((record) => record.kind === 'guidance_revision').map((record) => ({ record,
     replacements: history.filter((candidate) => candidate.kind === 'guidance_revision' && (
       candidate.id === record.id && candidate.revision === record.revision + 1 ||
       candidate.supersededGuidance.some((target) => target.id === record.id && target.revision === record.revision))),
     active: active.some((candidate) => candidate.id === record.id && candidate.revision === record.revision),
+    contexts: selections.filter((context) => context.guidance.some((candidate) => candidate.id === record.id && candidate.revision === record.revision)).map((context) => context.label),
   }));
   const runs = records.filter((record) => record.kind === 'learning_run').sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.id.localeCompare(b.id));
   const lastRun = runs.at(-1);

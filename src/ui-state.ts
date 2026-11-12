@@ -144,12 +144,25 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
   const input = records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && record.choice?.state === 'open');
   const questions = input.filter((decision) => decision.choice?.kind === 'product').map((decision) => {
     const affected = decision.affectedRecords.flatMap((target) => { const record = lookup(target); return record ? [record] : []; });
-    const context = featureViews.filter((item) => affected.some((record) => record.id === item.feature.id ||
-      record.kind === 'criterion' && record.featureId === item.feature.id || 'feature' in record && record.feature?.id === item.feature.id));
-    const requestRefs = [...context.flatMap((item) => item.feature.sourceRequests), ...decision.sourceRefs.flatMap((source) => source.record ? [source.record] : []), ...decision.affectedRecords];
+    const exactFeatures = affected.flatMap((record) => {
+      const feature = record.kind === 'feature_revision' ? record : 'feature' in record && record.feature ? lookup(record.feature) : undefined;
+      return feature?.kind === 'feature_revision' ? [feature] : [];
+    });
+    // A criterion names a feature ID but no feature revision. Infer its owner
+    // only when that exact criterion revision has one unambiguous owner snapshot.
+    for (const record of affected) if (record.kind === 'criterion' && !exactFeatures.some((feature) => feature.id === record.featureId)) {
+      const owners = history.filter((feature): feature is FeatureRevision => feature.kind === 'feature_revision' && feature.id === record.featureId && feature.criteria.some((target) => sameRef(target, record)));
+      if (owners.length === 1) exactFeatures.push(owners[0]!);
+    }
+    const context = [...new Map(exactFeatures.map((feature) => [`${feature.id}@${feature.revision}`, feature])).values()].map((feature) => ({
+      feature, criteria: feature.criteria.map((target) => ({ target, record: lookup(target) })),
+      tasks: [...new Map(history.filter((record) => record.kind === 'task_mapping' && sameRef(record.feature, feature)).map((record) => [record.id, record])).values()],
+      currentFeature: features.find((current) => current.id === feature.id && !sameRef(current, feature)),
+    }));
+    const requestRefs = [...context.flatMap((item) => item.feature.sourceRequests), ...affected.flatMap((record) => 'sourceRefs' in record ? record.sourceRefs.flatMap((source) => source.record ? [source.record] : []) : []), ...decision.sourceRefs.flatMap((source) => source.record ? [source.record] : []), ...decision.affectedRecords];
     const requests = [...new Map(requestRefs.flatMap((target) => { const record = lookup(target); return record?.kind === 'request' ? [[`${record.id}@${record.revision}`, record] as const] : []; })).values()];
     const answers = records.filter((record): record is Extract<FactoryRecord, { kind: 'decision_change' }> => record.kind === 'decision_change' && reusableAnswer(decision, record));
-    const texts = new Set(answers.map((answer) => answer.answer?.text ?? answer.rationale));
+    const texts = new Set(answers.map((answer) => answer.answer!.text));
     return { decision, affected, context, requests, answers: texts.size === 1 ? answers : [], answerConflict: texts.size > 1 };
   });
   return { project, options, history, records, features: featureViews, suggestions, input, questions,

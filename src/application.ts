@@ -52,7 +52,9 @@ export function applyCommand(store: ProjectStore, input: unknown, tasks?: TaskAd
         evidence: observation.evidence, proposedGeneralization: observation.proposedGeneralization, learning: observation.learning, legacySections: [],
         affectedScope: [{ uri: identity.scope.kind === 'project' ? `factory:project/${encodeURIComponent(command.projectId)}` : `factory:feature/${encodeURIComponent(identity.scope.featureId)}` }],
         consolidationState: identity.inputKind === 'standing_instruction' ? 'consolidated' : 'pending' };
-      if (commandDigest(command) !== commandDigest({ ...command, payload: { action: 'capture', observation: expectedObservation, supersedes: command.payload.supersedes ?? [] } })) {
+      const normalized = { ...command, payload: { ...command.payload,
+        observation: { ...observation, legacySections: observation.legacySections ?? [] }, supersedes: command.payload.supersedes ?? [] } };
+      if (commandDigest(normalized) !== commandDigest({ ...command, payload: { action: 'capture', observation: expectedObservation, supersedes: command.payload.supersedes ?? [] } })) {
         throw new StoreError('validation', 'learning_capture_must_preserve_canonical_scope_and_state');
       }
       return captureLearning(store, { projectId: command.projectId, id: observation.id, idempotencyKey: command.idempotencyKey,

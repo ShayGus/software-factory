@@ -29,7 +29,8 @@ export function buildEditCommand(context: EditContext, values: EditValues, key: 
   if (context.kind === 'answer') {
     const decision = context.decision;
     if (decision.choice?.kind !== 'product' || decision.choice.state !== 'open') throw new Error('Only an open product question needs an answer.');
-    const answer = context.reuse ? context.reuse.answer?.text ?? context.reuse.rationale : values.answer?.trim();
+    if (context.reuse && !context.reuse.answer?.text.trim()) throw new Error('Reuse requires explicit answer text in the source decision.');
+    const answer = context.reuse ? context.reuse.answer?.text : values.answer?.trim();
     if (!answer) throw new Error('Enter an answer to the product question.');
     return { ...envelope, command: 'record_decision_suggestion', targetId: decision.id, expectedRevision: decision.revision,
       payload: { decision: { ...decision, revision: decision.revision + 1, updatedAt: at, rationale: reason,

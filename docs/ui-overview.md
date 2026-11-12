@@ -168,24 +168,34 @@ this UI runs no agent and invents no substitute review policy.
 BUILD-14 adds the needs-input and learning routes to this same server and client.
 Only open product questions have answer controls. Each question retains affected
 record revisions, original request text, related features, criteria and work.
+Question context resolves the exact affected feature and criterion revisions;
+a newer feature head appears separately as current context. A criterion-only
+reference does not establish a feature revision when its owner is ambiguous.
 Technical questions remain readable work context and have no approval control.
 An answer creates a new revision of the existing decision through
 `recordDecisionSuggestion`, preserving the question, sources and affected refs.
 The answer text is separate from its rationale. Expected revision and idempotency
 key use the same store receipts as the other editors.
 
-Existing selected, resolved product answers are offered for explicit reuse only
-when question wording and the complete set of affected revisions match exactly.
+Existing selected, resolved product decisions with explicit answer text are
+offered for reuse only when question wording and the complete set of affected
+revisions match exactly.
 Reuse records `answer.reusedFrom`; the canonical operation validates the current
 source revision and matching context. Conflicting matching answers are labeled
 and withheld from reuse controls. Reading a page never resolves a question or
 runs work. This makes no semantic claim about differently worded questions or
 changed product scope.
+Legacy decisions without explicit answers remain readable context, with their
+instruction and rationale labeled separately; neither is substituted for an answer.
 
 The learning view shows pending observations with evidence and scope, current
 guidance and all retained revisions, superseded text with replacement links,
-and unresolved observation/guidance conflicts. Rule inspection also labels
-supersession and links to the replacement. Explicit standing instructions use
+and unresolved observation/guidance conflicts. The view labels the worker
+contexts in which guidance applies, using the canonical
+`guidanceForContext` selector. Unclassifiable legacy guidance remains in history
+as inactive/unknown. The same canonical selector resolves legacy project/feature
+scope and explicit feature overrides; the UI defines no separate scope rules.
+Rule inspection also labels supersession and links to the replacement. Explicit standing instructions use
 BUILD-11 `captureLearning`, including its exact supersession checks; inferred
 rules are never promoted by this UI. The instruction editor captures evidence,
 scope and topic and uses the guidance revisions visible when the form loaded.
