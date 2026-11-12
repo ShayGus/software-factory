@@ -64,22 +64,21 @@ Selectively adopt the methodology. MIFAL also contains repeated confirmations an
 
 | Option | Relevant existing capability | Recommendation for this installation |
 |---|---|---|
-| **Piyaz** | Free AGPL self-hosting; grouped task list, graph, detail, notes, context and execution records | First UI reuse candidate, subject to the concrete integration check below [PY1] [PY2] [PY3] [PY4] |
+| **Beads + Scotty** | Chosen task/dependency store and existing local browser page | Reuse the tasks-axi Beads backend and Scotty list/graph; verify canonical edit routing in the bounded spike below |
 | **Focused custom UI** | Built directly over the toolkit and FirstMate observations | Default fallback if reuse requires extensive synchronization or incompatible workflow changes |
-| **Beads + Scotty** | MIT task/dependency store with an existing local browser UI | Later option; current tasks-axi mapping or migration adds work before solving intent loss [ALT1] |
 | **Paca** | Apache-2.0 full project application and extension surfaces | Broader alternative; additional application infrastructure needs a clear personal-use benefit [ALT2] |
 
 OpenProject is not the default for this use case. Multica is excluded from the eligible recommendation because its license adds use restrictions beyond the open-source license on which it is based. Free internal use alone does not satisfy the user's open-source requirement. [ALT3] Model and infrastructure charges remain separate from software licensing.
 
-### Piyaz adoption check
+### Beads + Scotty integration check
 
-Its documented UI is a grouped task list and graph with detail panels; a Kanban board is not established by the reviewed documentation. Its MCP connection supplies planning and execution instructions, so connecting the full plugin can introduce competing guidance. Composer also operates its own execution pipeline. The proposed integration leaves Composer unused and explicitly reconciles MCP guidance with FirstMate's workflow. [PY2] [PY3] [PY5]
+Beads is the chosen task and dependency store; Scotty is its existing local browser page. Piyaz is out. This check resolves how the chosen tools expose toolkit records and canonical operations, not another tool selection. Execution tasks use the existing FirstMate/tasks-axi operations with the Beads backend. Scotty supplies presentation, not a competing planning or execution workflow; model-assisted actions remain disabled in the spike.
 
-Use one feature, two execution tasks, one dependency, a correction, and a result. The early spike may use a stub canonical API to test layout and mutation routing; that produces a provisional choice. Final adoption requires real adapter round trips during UI integration. Piyaz must show original intent, remaining criteria, execution links, blockers, and decisions. Map every exposed MVP edit: features/criteria, task state, priority, dependencies, decisions and notes. Each must call its canonical operation or open the focused editor; no native editor may silently update only a projected copy.
+Use one feature, two execution tasks, one dependency, a correction, and a result. The early spike may use a stub canonical API to test layout and mutation routing; that produces a provisional choice. Final adoption requires real adapter round trips during UI integration. Beads + Scotty must show original intent, remaining criteria, execution links, blockers, and decisions as canonical links or read-only text. Map every exposed MVP edit: features/criteria, task state, priority, dependencies, decisions and notes. Each must call its canonical operation or open the focused editor; no native editor may silently update only a projected copy.
 
-**Adopt it only if** the integration avoids duplicate manual bookkeeping, does not require replacing FirstMate lifecycle logic, and has a manageable extension surface for these mutations. A read-only demonstration alone does not satisfy the management-UI requirement. If adoption requires broad mutation interception, generic bidirectional backlog synchronization or substantial remodelling of Piyaz, choose the focused custom UI. This check is a bounded engineering decision, not a new broad market survey.
+**Adopt it only if** the integration avoids duplicate manual bookkeeping, does not require replacing FirstMate lifecycle logic, and has a manageable extension surface for these mutations. A read-only demonstration alone does not satisfy the management-UI requirement. If adoption requires broad mutation interception, generic bidirectional backlog synchronization or substantial remodelling of Scotty, choose the focused custom UI. This check is a bounded engineering decision, not a new broad market survey.
 
-No ready-made FirstMate adapter or end-to-end Piyaz integration was verified. The task/feature hierarchy and mutation mapping remain integration questions. [PY2] [PY4]
+Reuse the existing tasks-axi Beads backend, not a second task synchronizer. Native Scotty edits must be read back by the canonical owner or refused/routed to a toolkit operation. Scotty read-only mode is a browser preference, so the spike must also enforce its mutation boundary. Independent clients must use the backend's supported server configuration; Scotty's per-process embedded queue is not a cross-client lock. The field/mutation mapping and actual round trips remain the integration checks.
 
 ## 3. Architecture and data ownership
 
@@ -240,7 +239,7 @@ Normal inferred-guidance writes use the consolidation operation. Existing direct
 
 ## 7. UI scope and wireframes
 
-The UI is for one person managing software outcomes. The screens below are proposed workflow illustrations, not screenshots or claims about Piyaz. All sample values are illustrative. Each record links back to original requests, related work and evidence. Loading, stale, unknown and incomplete states use text labels, not color alone.
+The UI is for one person managing software outcomes. The screens below are proposed workflow illustrations, not screenshots or claims about Scotty. All sample values are illustrative. Each record links back to original requests, related work and evidence. Loading, stale, unknown and incomplete states use text labels, not color alone.
 
 ### Overview and features
 
@@ -256,7 +255,7 @@ Make the original request, product design, detailed plan and their revisions dir
 
 ### Work and dependencies
 
-Provide a task list or board and a dependency view. Cards show feature links and blocking reasons. Task actions go through FirstMate. Include ready-since/review age and next action for PRs, plus execution versus waiting time where observed. A returned worker appears as returned even if the associated product behavior is incomplete. If Piyaz is selected, adapt the layout to its native list/graph where useful; the board is a proposed presentation option.
+Provide a task list or board and a dependency view. Cards show feature links and blocking reasons. Task actions go through FirstMate. Include ready-since/review age and next action for PRs, plus execution versus waiting time where observed. A returned worker appears as returned even if the associated product behavior is incomplete. Use the chosen Beads + Scotty list/graph where useful; focused toolkit editors handle product meaning and canonical mutations that Scotty cannot route. The board is a proposed presentation option.
 
 ![Proposed task board and dependency view](personal_wireframes/work.svg)
 
@@ -352,7 +351,8 @@ The tasks below are the current build baseline. They replace the prior 84-task b
 **Package:** UI  
 **Depends on:** BUILD-01, BUILD-02  
 **Covers:** NEED-01, NEED-05, NEED-09, NEED-11  
-**Deliverable:** One-feature Piyaz spike using a stub canonical API and a provisional reuse/custom decision covering field ownership, workflow guidance, dependencies and every exposed mutation.  
+**Deliverable:** One-feature Beads + Scotty spike using the existing tasks-axi Beads task operations, a stub canonical API and a provisional reuse/focused-editor decision covering field ownership, workflow guidance, dependencies and every exposed mutation. Beads and Scotty are already chosen; Piyaz is out.
+
 **Acceptance:** Identify a viable route for every exposed MVP edit and demonstrate stub round trips. Confirm actual canonical mutations in BUILD-12–14 and BUILD-17 before final adoption. If the section 2 criteria fail, choose the focused UI and close the spike; do not build a generic synchronization platform.
 
 ### BUILD-06 — Implement the staged design and planning method

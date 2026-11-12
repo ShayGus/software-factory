@@ -24,3 +24,4 @@ export * from './learning-contracts.js';
 export * from './learning-context.js';
 export * from './learning.js';
 export * from './learning-schedule.js';
+export * from './ui-spike.js';
