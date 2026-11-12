@@ -11,6 +11,7 @@ import {
   recordStage, checkPlanReadiness, planReadinessHistory, ref, validateRecords, validateAssignmentForDispatch, planReadinessFindings,
   type FactoryRecord, type StageRevision, type ImplementationPlanRevision, type Ref,
   prepareWorkerBrief, checkWorkerBrief, requiredAssignmentContext, recordSource,
+  projectView, workView,
 } from '../src/index.js';
 
 const time = '2026-11-10T10:36:43Z';
@@ -812,4 +813,27 @@ for (const narrow of [false, true]) test(`BUILD-07 prepares ${narrow ? 'a correc
     }
     assert.equal(checkWorkerBrief(flow.store, base.projectId, ref(assignment), briefPath, fakeJudge).ok, true);
   } finally { flow.store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('review 1377 finding 3: checked reuse remains selected after priority and workflow edits before assignment', () => {
+  const flow = setup();
+  const display = new ProjectStore(':memory:');
+  try {
+    flow.start(); flow.finish();
+    const reused = reuseForCurrentFeature(flow, { additionalRequest: true });
+    const ready = reused.check(); assert.ok(ready.readyPlan);
+    const task = flow.detailedTasks[0]!;
+    const template = baseline.find((record) => record.kind === 'task_mapping'); assert.ok(template?.kind === 'task_mapping');
+    const mapping = { ...template, id: 'mapping-reused', firstMateTaskId: 'execution-reused', feature: ref(reused.current),
+      detailedPlanTask: ref(task), criteria: task.criteria, dependencies: [] };
+    const prioritized = { ...reused.current, revision: 3, previousRevision: 2, priority: 4,
+      state: 'in_progress' as const, changeReason: 'Prioritize checked work without changing scope' };
+    display.importProject({ schemaVersion: 1, projectId: base.projectId,
+      history: [...flow.store.history(base.projectId), mapping, prioritized], receipts: [] });
+    const view = projectView(display, { projectId: base.projectId });
+    assert.deepEqual(view.features[0]!.plan && ref(view.features[0]!.plan), ref(ready.readyPlan));
+    const row = workView(view).rows[0]!;
+    assert.deepEqual(row.reasons.filter((reason) => reason.startsWith('Product readiness')), []);
+    assert.equal(row.unknowns.includes('Unknown — selected product plan unavailable'), false);
+  } finally { display.close(); flow.store.close(); }
 });

@@ -2,7 +2,7 @@ import { FirstMateTaskSchema } from './firstmate.js';
 import { ref, requestCoverage, unclassifiedRequests } from './intake.js';
 import type { Ref } from './primitives.js';
 import type { FactoryRecord, FeatureRevision, DesignRevision, ImplementationPlanRevision, TaskMapping } from './records.js';
-import { hasUnchangedFeatureScope, validateReviewForCompletion } from './rules.js';
+import { hasUnchangedFeatureScope, hasDispatchCompatibleFeatureScope, validateReviewForCompletion } from './rules.js';
 import { ProjectStore, StoreError } from './store.js';
 import { currentAssignmentAttempts } from './task-readiness.js';
 import { outstandingTaskCorrections } from './correction-state.js';
@@ -49,7 +49,7 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
     plans.sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
     const assignments = records.filter((record): record is Extract<FactoryRecord, { kind: 'assignment' }> => record.kind === 'assignment' && record.feature?.id === feature.id);
     const stages = records.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> =>
-      record.kind === 'stage_revision' && sameRef(record.feature, feature))
+      record.kind === 'stage_revision' && (sameRef(record.feature, feature) || hasDispatchCompatibleFeatureScope(history, record.feature, feature)))
       .sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
     const currentPlanStage = stages.filter((stage) => stage.stage === 'plan').at(-1);
     const detailStage = stages.filter((stage) => stage.stage === 'detail' && currentPlanStage &&

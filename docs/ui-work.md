@@ -34,11 +34,25 @@ existing preservation behavior.
 
 Task rows show canonical readiness reasons, dependency states, holds, unresolved
 correction deliveries/incorporation, product readiness and review waits as text.
+Undelivered operational corrections (including resume and status) stay visible
+with their operation state and recipient/delivery observations even though they
+require no incorporation. Delivered operational corrections need no fabricated
+incorporation step. Native observed blocked-by edges augment prerequisites and
+consumers for display, with their ownership, capture time and freshness retained;
+they are not copied into the editable toolkit dependency list.
 The dependency view includes product prerequisites and unmapped/unknown producers;
 a missing observation never establishes a fulfilled prerequisite. A returned
 worker is labeled `returned`; feature completeness still comes exclusively from
 BUILD-12's current product-review validation. Neither reading a snapshot nor
 cancelling or returning a worker changes the feature.
+
+Readiness and selected-stage continuity share dispatch's scope-compatibility and
+checked-design-reuse rules. Priority and workflow-state revisions retain eligible
+plans and mappings while their exact historical feature references stay linked.
+Product-scope changes still require checked planning. Standalone maintenance
+shows its explicit objective, exact task/design/plan references and original
+requests resolved through those records and matching assignments. Its absent
+feature is intentional; genuinely unlinked legacy work remains Unknown.
 
 ## Observational boundary
 
@@ -72,7 +86,8 @@ are not queried. Branch identities are readable text.
 `staleAfterMs` configures freshness, default 60 seconds. `npm run ui` accepts
 `SF_UI_STALE_AFTER_MS` as a positive millisecond value. Snapshot age uses its
 capture time, not the HTTP read time. The browser relabels that timestamp stale
-without fetching or overwriting drafts. Reload re-reads the provider and local
+on the summary and every ready-work card without fetching or overwriting drafts.
+Reload re-reads the provider and local
 records; reads never retry mutations.
 
 The fixture launcher additionally loads `fixtures/ui-work-snapshot.json`.

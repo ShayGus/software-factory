@@ -104,6 +104,18 @@ function featureContent(feature: FeatureRevision) {
   return content;
 }
 
+/** Dispatch permits priority and workflow-state edits without changing scope.
+ * Shared with observational UIs; product-evidence continuity remains stricter. */
+export function hasDispatchCompatibleFeatureScope(records: FactoryRecord[], from: Ref, to: Ref): boolean {
+  const assigned = records.find((record) => record.kind === 'feature_revision' && sameRef(record, from));
+  const current = records.find((record) => record.kind === 'feature_revision' && sameRef(record, to));
+  if (assigned?.kind !== 'feature_revision' || current?.kind !== 'feature_revision' || assigned.id !== current.id ||
+    current.disposition.state !== 'active') return false;
+  const { priority: _assignedPriority, ...assignedScope } = featureContent(assigned);
+  const { priority: _currentPriority, ...currentScope } = featureContent(current);
+  return canonical(assignedScope) === canonical(currentScope);
+}
+
 /** A workflow-state revision preserves product evidence only if every intervening
  * revision has the same content and remains active. A changed-and-reverted scope
  * is not silently treated as uninterrupted evidence. */
@@ -210,7 +222,7 @@ function checkAssignment(ctx: Context, assignment: Assignment) {
   ctx.sources(assignment, assignment.instructionFidelity, [
     ...(feature?.sourceRequests ?? designRequests(ctx, design)), assignment.design, assignment.plan, assignment.detailedPlanTask,
   ]);
-  if (design && !reusedDesign(ctx, design, assignment.feature)) ctx.equal(assignment, design.feature, assignment.feature, 'design.feature');
+  if (design && !hasCheckedDesignReuse(ctx.records, design, assignment.feature)) ctx.equal(assignment, design.feature, assignment.feature, 'design.feature');
   if (plan) {
     ctx.equal(assignment, plan.design, assignment.design, 'plan.design');
     ctx.equal(assignment, plan.feature, assignment.feature, 'plan.feature');
@@ -236,7 +248,7 @@ function checkReview(ctx: Context, review: ProductReview) {
   const feature = review.feature ? ctx.get(review, review.feature, 'feature_revision', 'feature') : undefined;
   const design = ctx.get(review, review.design, 'design_revision', 'design');
   const plan = ctx.get(review, review.plan, 'implementation_plan_revision', 'plan');
-  if (design && !reusedDesign(ctx, design, review.feature)) ctx.equal(review, design.feature, review.feature, 'design.feature');
+  if (design && !hasCheckedDesignReuse(ctx.records, design, review.feature)) ctx.equal(review, design.feature, review.feature, 'design.feature');
   if (plan) {
     ctx.equal(review, plan.design, review.design, 'plan.design');
     ctx.equal(review, plan.feature, review.feature, 'plan.feature');
@@ -384,8 +396,8 @@ function checkCompletion(ctx: Context, review: ProductReview) {
   }
 }
 
-function reusedDesign(ctx: Context, design: Ref, feature: Ref | null): boolean {
-  return feature !== null && ctx.records.some((record) => record.kind === 'stage_revision' && record.stage === 'design' &&
+export function hasCheckedDesignReuse(records: FactoryRecord[], design: Ref, feature: Ref | null): boolean {
+  return feature !== null && records.some((record) => record.kind === 'stage_revision' && record.stage === 'design' &&
     record.reuse && record.reuse.check.result === 'passed' && sameRef(record.artifact, design) && sameRef(record.feature, feature));
 }
 
@@ -515,7 +527,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
     case 'implementation_plan_revision': {
       const feature = record.feature ? ctx.get(record, record.feature, 'feature_revision', 'feature') : undefined;
       const design = ctx.get(record, record.design, 'design_revision', 'design');
-      if (design && !reusedDesign(ctx, design, record.feature)) ctx.equal(record, design.feature, record.feature, 'design.feature');
+      if (design && !hasCheckedDesignReuse(ctx.records, design, record.feature)) ctx.equal(record, design.feature, record.feature, 'design.feature');
       const covered = new Set<string>();
       const seen = new Set<string>();
       for (const ref of record.deliverySequence) {
@@ -595,7 +607,7 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
         ctx.equal(record, record.feature, plan.feature, 'feature');
         ctx.equal(record, record.design, plan.design, 'design');
       }
-      if (design && !reusedDesign(ctx, design, record.feature)) ctx.equal(record, record.feature, design.feature, 'design.feature');
+      if (design && !hasCheckedDesignReuse(ctx.records, design, record.feature)) ctx.equal(record, record.feature, design.feature, 'design.feature');
       if (plan && !plan.deliverySequence.some((ref) => sameRef(ref, record))) {
         ctx.add(record, 'unplanned_task', 'plan', 'Task is absent from its plan delivery sequence');
       }
@@ -844,10 +856,8 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
     const assigned = ctx.get(owner, owner.feature, 'feature_revision', 'feature');
     const current = ctx.current.get(owner.feature.id);
     if (assigned && current?.kind === 'feature_revision') {
-      const { priority: _assignedPriority, ...assignedScope } = featureContent(assigned);
-      const { priority: _currentPriority, ...currentScope } = featureContent(current);
       if (current.disposition.state !== 'active') ctx.add(owner, 'inactive_feature', 'feature', 'Feature is deferred or cancelled');
-      else if (canonical(assignedScope) !== canonical(currentScope)) ctx.add(owner, 'superseded_feature', 'feature',
+      else if (!hasDispatchCompatibleFeatureScope(ctx.records, assigned, current)) ctx.add(owner, 'superseded_feature', 'feature',
         'The current feature content supersedes this assignment');
     }
   }

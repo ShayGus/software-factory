@@ -99,11 +99,19 @@ export function renderOverview(view: ProjectView) {
 }
 const workUrl = (projectId: string, id: string) => `/projects/${enc(projectId)}/work/${enc(id)}`;
 function workContext(view: ProjectView, row: WorkView['rows'][number]) {
-  const { mapping, feature } = row;
-  return `<p>Feature: ${feature ? `<a href="${featureUrl(mapping.projectId, feature.feature.id)}">${h(feature.feature.outcome)}</a> · ${recordLink(mapping.projectId, mapping.feature!, 'Mapped feature revision')}` : 'Unknown — feature not linked'}
+  const { mapping, feature, maintenance } = row;
+  return `<p>Feature: ${feature ? `<a href="${featureUrl(mapping.projectId, feature.feature.id)}">${h(feature.feature.outcome)}</a> · ${recordLink(mapping.projectId, mapping.feature!, 'Mapped feature revision')}` : maintenance ? 'Standalone maintenance — no feature by design' : 'Unknown — feature not linked'}
     · Plan task: ${mapping.detailedPlanTask ? recordLink(mapping.projectId, mapping.detailedPlanTask) : 'Unknown'}</p>
+    ${maintenance ? `<p>Maintenance objective: ${h(maintenance.objective)}</p><p>Design: ${maintenance.design?.kind === 'design_revision' ? recordLink(mapping.projectId, maintenance.design) : 'Unknown'}
+      · Plan: ${maintenance.plan?.kind === 'implementation_plan_revision' ? recordLink(mapping.projectId, maintenance.plan) : 'Unknown'}</p>` : ''}
     <p>Assignments: ${row.assignments.length ? links(mapping.projectId, row.assignments) : 'Unknown — no assignment recorded'}
-    · Original requests: ${feature ? links(view.options.projectId, feature.feature.sourceRequests) : 'Unknown'}</p>`;
+    · Original requests: ${feature ? links(view.options.projectId, feature.feature.sourceRequests) : row.sourceRequests.length ? links(mapping.projectId, row.sourceRequests) : 'Unknown'}</p>`;
+}
+function edgeOrigin(edge: WorkView['rows'][number]['dependencies'][number] | WorkView['rows'][number]['consumers'][number]['edge']) {
+  return `${h(edge.source)}${edge.observedAt ? ` · ${edge.stale ? 'Stale — edge observed at' : 'Edge observed at'} ${h(edge.observedAt)}` : ''}`;
+}
+function snapshotFreshness(work: WorkView) {
+  return `<p${work.snapshot ? ` data-snapshot-at="${h(work.snapshot.observedAt)}" data-stale-after-ms="${work.threshold}"` : ''}>${h(work.snapshotLabel)}</p>`;
 }
 function workRow(view: ProjectView, row: WorkView['rows'][number], dependencies: boolean) {
   const { mapping, observation } = row;
@@ -111,14 +119,15 @@ function workRow(view: ProjectView, row: WorkView['rows'][number], dependencies:
     ${workContext(view, row)}
     <p>${h(row.label)} · ${h(row.observedAt ?? 'Observed at: Unknown')} · Priority: ${h(row.priority ?? 'Unknown')}</p>
     <p>Worker: ${h(observation?.workerState ?? 'Unknown')} · Execution: ${h(durationLabel(observation?.executionMs))} · Waiting: ${h(durationLabel(observation?.waitingMs))}</p>
-    <p>Feature completeness: ${h(row.feature?.completeness ?? 'Unknown — product review unavailable')}</p>
+    <p>Feature completeness: ${h(row.feature?.completeness ?? (row.maintenance ? 'Not applicable — standalone maintenance' : 'Unknown — product review unavailable'))}</p>
     <h3>Blocking reasons and review waits</h3>${row.reasons.length ? items(row.reasons) : empty('No blocking reason recorded. Missing observations below still need inspection.')}
     ${row.corrections.length ? `<p>Correction evidence: ${links(mapping.projectId, row.corrections)}</p>` : ''}
+    ${row.correctionOperations.map(({ correction, operation }) => `<p>${h(correction.correction.action)} · ${h(operation.state)} · ${recordLink(mapping.projectId, operation, 'Correction delivery operation')}</p>`).join('')}
     <h3>Unknowns</h3>${row.unknowns.length ? items(row.unknowns) : empty('No missing fields in these observations.')}
     <h3>${dependencies ? 'Dependency view — this task needs' : 'Prerequisites'}</h3>
-    ${row.dependencies.length ? `<ul>${row.dependencies.map((entry) => `<li>${entry.mapping ? `<a href="${workUrl(mapping.projectId, entry.mapping.id)}">${h(entry.id)}</a>` : h(entry.id)} — ${h(entry.label)}</li>`).join('')}</ul>` : empty('No execution prerequisites recorded.')}
+    ${row.dependencies.length ? `<ul>${row.dependencies.map((entry) => `<li>${entry.mapping ? `<a href="${workUrl(mapping.projectId, entry.mapping.id)}">${h(entry.id)}</a>` : h(entry.id)} — ${h(entry.label)} · ${edgeOrigin(entry)}</li>`).join('')}</ul>` : empty('No execution prerequisites recorded.')}
     ${row.requirements.length ? `<ul>${row.requirements.map(({ requirement, producer }) => `<li>Product prerequisite ${h(requirement.prerequisiteTaskId)} (${h(requirement.needs.kind)}): ${h(requirement.reason)} — ${producer ? recordLink(mapping.projectId, producer) : 'Unknown — producer mapping unresolved'}</li>`).join('')}</ul>` : ''}
-    ${dependencies ? `<p>Needed by: ${row.consumers.map((entry) => `<a href="${workUrl(mapping.projectId, entry.id)}">${h(entry.firstMateTaskId)}</a>`).join(' · ') || 'No consumers recorded'}</p>` : ''}
+    ${dependencies ? `<p>Needed by: ${row.consumers.map((entry) => `<a href="${workUrl(mapping.projectId, entry.id)}">${h(entry.firstMateTaskId)}</a> (${edgeOrigin(entry.edge)})`).join(' · ') || 'No consumers recorded'}</p>` : ''}
     <p>${recordLink(mapping.projectId, mapping, 'Canonical task mapping')}${row.operation ? ` · ${recordLink(mapping.projectId, row.operation, 'Operation and observation evidence')}` : ''}</p>
     ${taskActions(row)}</article>`;
 }
@@ -130,14 +139,14 @@ export function renderWork(view: ProjectView, dependencies = false, focusId?: st
   return shell(view, focusId ? 'Focused work' : dependencies ? 'Dependencies' : 'Work', `<h1>${focusId ? 'Focused work' : dependencies ? 'Work dependencies' : 'Work and waiting'}</h1>
     <p><a href="/projects/${enc(projectId)}/work">All work</a> · <a href="/projects/${enc(projectId)}/dependencies">Dependency view</a></p>
     <section aria-labelledby="snapshot-heading"><h2 id="snapshot-heading">Snapshot freshness</h2>
-    <p${work.snapshot ? ` data-snapshot-at="${h(work.snapshot.observedAt)}" data-stale-after-ms="${work.threshold}"` : ''}>${h(work.snapshotLabel)}</p>
+    ${snapshotFreshness(work)}
     <p>Provenance: ${h(work.snapshot?.provenance ?? 'Unknown')} · Stale after ${h(durationLabel(work.threshold))}</p>
     <h3>Omissions</h3>${work.snapshot ? items(work.snapshot.omissions.length ? work.snapshot.omissions.map((entry) => `Unknown — omitted: ${entry}`) : ['No omissions declared by the snapshot source.']) : empty('Unknown — snapshot coverage unavailable.')}</section>
     <section aria-labelledby="ready-heading"><h2 id="ready-heading">Ready PRs and branches</h2>
     ${work.ready.length ? work.ready.map((entry) => `<article><h3>${entry.kind === 'pr' ? 'Ready PR' : 'Ready branch'} · ${external(entry.reference)}</h3>
       <p>Age since ready: ${h(entry.age)} · Ready since: ${h(entry.readySince ?? 'Unknown')} · Next action: ${h(entry.nextAction ?? 'Unknown')}</p>
       <p>${entry.row ? `<a href="${workUrl(projectId, entry.row.mapping.id)}">${h(entry.firstMateTaskId)}</a>` : `${h(entry.firstMateTaskId)} — Unknown task mapping`}</p>${entry.row ? workContext(view, entry.row) : ''}
-      <p>${h(work.snapshotLabel)}</p></article>`).join('') : empty(work.readyKnown ? 'No ready PR or branch reported in this snapshot. Coverage is limited to its supplied tasks.' : 'Unknown — ready-work observations unavailable.')}</section>
+      ${snapshotFreshness(work)}</article>`).join('') : empty(work.readyKnown ? 'No ready PR or branch reported in this snapshot. Coverage is limited to its supplied tasks.' : 'Unknown — ready-work observations unavailable.')}</section>
     <section aria-labelledby="work-heading"><h2 id="work-heading">${focusId ? 'Task context and actions' : dependencies ? 'Prerequisites and consumers' : 'Execution tasks'}</h2>
       ${rows.map((row) => workRow(view, row, dependencies)).join('') || empty('Unknown — no execution mappings recorded. This does not establish an empty FirstMate fleet.')}</section>`);
 }

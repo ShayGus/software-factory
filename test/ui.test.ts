@@ -6,10 +6,12 @@ import { Readable } from 'node:stream';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
+import { runInNewContext } from 'node:vm';
 import {
   ProjectStore, RecordsSchema, ToolkitApi, buildEditCommand, createToolkitRequestHandler, projectView, renderFeature,
   type EditContext, type EditValues, type FactoryRecord, captureRequest, validateAssignmentForDispatch, checkPlanReadiness,
   workView, WorkSnapshotSchema, type UiOptions,
+  queueCorrection, deliverCorrection,
 } from '../src/index.js';
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 
@@ -810,4 +812,109 @@ test('snapshot content and ready references stay escaped text rather than execut
   assert.match(page.body, /&lt;script&gt;untrusted\(\)&lt;\/script&gt;/u);
   assert.match(page.body, /&lt;img src=x onerror=untrusted\(\)&gt;/u);
   assert.doesNotMatch(page.body, /href="javascript:|<img|<script>untrusted/u);
+});
+
+test('review 1377 finding 1: an undelivered operational correction retains its recipient problem and operation', async (t) => {
+  const flow = setup(t, baseline);
+  const at = new Date().toISOString();
+  const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'resume-unknown', projectId: 'project-1', issuedAt: at,
+    idempotencyKey: 'resume-unknown', command: 'deliver_correction', targetId: 'resume-correction', expectedRevision: 0,
+    payload: { affectedRevision: { id: 'feature-1', revision: 1 }, assignment: { id: 'assignment-1', revision: 1 },
+      originalCorrection: 'Resume the exact returned attempt after checking its recipient', action: 'resume', sequence: 2, supersedes: [], sourceRefs: [{ uri: 'fixture://resume' }] } });
+  const operation = deliverCorrection(flow.store, 'project-1', queued.correction.id, { fmHome: flow.directory,
+    sendExecutable: flow.backend.executable, controlExecutable: flow.backend.executable,
+    recipients: [{ assignment: { id: 'assignment-1', revision: 1 }, attemptId: 'attempt-1', firstMateTaskId: 'pilot-build', state: 'unknown', observedAt: at }] });
+  assert.equal(operation.state, 'pending');
+  for (const path of ['/projects/project-1/work', '/projects/project-1/dependencies', '/projects/project-1/work/mapping-1']) {
+    const page = await flow.http('GET', path);
+    assert.ok(page.body.includes('resume-correction'), 'Unresolved resume must remain visible');
+    assert.ok(page.body.includes(`/inspect/${operation.id}?revision=${operation.revision}`));
+    assert.match(page.body, /resume.*pending/iu);
+    assert.match(page.body, /Unresolved recipient/u);
+  }
+  assert.equal(flow.backend.read().calls.length, 0, 'Unknown recipient must never invoke the wrapper');
+});
+
+test('review 1377 finding 2: native observed dependency edges appear in both directions without becoming managed edits', async (t) => {
+  const history = structuredClone(fixture);
+  const mapping = history.find((record) => record.id === 'mapping-2'); assert.ok(mapping?.kind === 'task_mapping');
+  mapping.dependencies = [];
+  const flow = setup(t, history);
+  flow.backend.edit((state) => { state.tasks['pilot-build']!.state = 'queued'; state.tasks['pilot-verify']!.deps = [
+    { id: 'pilot-build', type: 'blocked-by' }, { id: 'unrelated-parent', type: 'parent' },
+  ]; });
+  await sendEdit(flow, findEditor((await flow.http('GET', '/projects/project-1/work')).body, 'task', 'set_priority'), { priority: '0' }, 'observe-native-edge');
+  const model = workView(projectView(flow.store, flow.api.options));
+  assert.ok(model.rows.find((row) => row.mapping.id === 'mapping-2')!.dependencies.some((edge) => edge.id === 'pilot-build'));
+  assert.ok(model.rows.find((row) => row.mapping.id === 'mapping-1')!.consumers.some((row) => row.id === 'mapping-2'));
+  assert.equal(model.rows.find((row) => row.mapping.id === 'mapping-2')!.dependencies.some((edge) => edge.id === 'unrelated-parent'), false);
+  const calls = flow.backend.read().calls.length;
+  const page = await flow.http('GET', '/projects/project-1/dependencies');
+  assert.match(page.body, /Native observed blocked-by/u);
+  const edit = findEditor(page.body, 'task', 'edit_dependencies');
+  assert.equal(edit.values.dependencies, '', 'Observed native edges are not copied into managed dependency intent');
+  const stale = workView(projectView(flow.store, flow.api.options, Date.now() + 120000));
+  assert.ok(stale.rows.find((row) => row.mapping.id === 'mapping-2')!.dependencies.some((edge) => edge.id === 'pilot-build'));
+  assert.equal(flow.backend.read().calls.length, calls);
+});
+
+test('review 1377 finding 3: priority-only feature revisions retain displayed canonical readiness', async (t) => {
+  const flow = setup(t, baseline);
+  const target = { id: 'assignment-1', revision: 1 };
+  assert.equal(validateAssignmentForDispatch(flow.store.history('project-1'), target).ok, true);
+  await sendEdit(flow, findEditor((await flow.http('GET', '/')).body, 'feature'), { priority: '4' }, 'work-priority-only');
+  assert.equal(validateAssignmentForDispatch(flow.store.history('project-1'), target).ok, true);
+  const model = workView(projectView(flow.store, flow.api.options));
+  assert.deepEqual(model.rows[0]!.reasons.filter((reason) => reason.startsWith('Product readiness')), []);
+  const page = await flow.http('GET', '/projects/project-1/work/mapping-1');
+  assert.doesNotMatch(page.body, /Product readiness — selected plan is incomplete or stale|Product readiness — mapping names an earlier feature revision/u);
+  assert.match(page.body, /Mapped feature revision[\s\S]*r1/u);
+  await sendEdit(flow, findEditor((await flow.http('GET', '/')).body, 'feature'), { priority: '4', outcome: 'Changed product scope needs a new dispatch check' }, 'work-scope-change');
+  assert.equal(validateAssignmentForDispatch(flow.store.history('project-1'), target).ok, false);
+  assert.ok(workView(projectView(flow.store, flow.api.options)).rows[0]!.reasons.some((reason) => reason.startsWith('Product readiness')));
+});
+
+test('review 1377 finding 4: every rendered snapshot label ages together while retaining the open draft', async (t) => {
+  const snapshot = structuredClone(workSnapshot);
+  snapshot.observedAt = new Date().toISOString();
+  const flow = setup(t, fixture, { readSnapshot: () => snapshot, staleAfterMs: 120000 });
+  const page = await flow.http('GET', '/projects/project-1/work');
+  const labels = [...page.body.matchAll(/<p([^>]*)>(Observed — FirstMate snapshot taken[^<]*)<\/p>/gu)].map((match) => ({
+    textContent: match[2]!, dataset: { snapshotAt: match[1]!.match(/data-snapshot-at="([^"]+)"/u)?.[1],
+      staleAfterMs: match[1]!.match(/data-stale-after-ms="([^"]+)"/u)?.[1] },
+  }));
+  assert.equal(labels.length, 2, 'Summary and ready-work card each have a freshness label');
+  assert.ok(labels.every((label) => label.dataset.snapshotAt === snapshot.observedAt && label.dataset.staleAfterMs === '120000'));
+  let now = Date.parse(snapshot.observedAt);
+  let tick = () => {};
+  const draft = { value: 'Keep this unsaved priority change', querySelector: () => ({}), addEventListener() {} };
+  const pageState = { textContent: '' };
+  const source = readFileSync(new URL('../src/ui-client.js', import.meta.url), 'utf8').replace(/^import .*;\n/gmu, '');
+  runInNewContext(source, { buildEditCommand,
+    document: { querySelector: (selector: string) => selector === 'main' ? { dataset: { staleAfterMs: '120000' } } : pageState,
+      querySelectorAll: (selector: string) => selector === '[data-snapshot-at]' ? labels : [draft] },
+    Date: class extends Date { static now() { return now; } }, window: { addEventListener() {} }, setInterval(callback: () => void) { tick = callback; },
+  });
+  now += 120001; tick();
+  assert.ok(labels.every((label) => label.textContent.startsWith('Stale — FirstMate snapshot taken')));
+  assert.equal(draft.value, 'Keep this unsaved priority change');
+});
+
+test('review 1377 finding 5: standalone maintenance keeps its objective and exact source context', async (t) => {
+  const history = structuredClone(baseline.filter((record) => ['project-1', 'request-1', 'design-1', 'plan-1', 'task-1', 'mapping-1', 'assignment-1'].includes(record.id)));
+  for (const record of history) {
+    if (record.kind === 'request') record.interpretationRefs = [];
+    if (['design_revision', 'implementation_plan_revision', 'detailed_plan_task', 'task_mapping', 'assignment'].includes(record.kind) && 'feature' in record) record.feature = null;
+    if (record.kind === 'detailed_plan_task') { record.criteria = []; record.maintenanceObjective = 'Remove the obsolete cache without changing product behavior'; }
+    if (record.kind === 'task_mapping' || record.kind === 'assignment') record.criteria = [];
+  }
+  const flow = setup(t, history);
+  assert.equal(validateAssignmentForDispatch(flow.store.history('project-1'), { id: 'assignment-1', revision: 1 }).ok, true);
+  for (const path of ['/projects/project-1/work', '/projects/project-1/dependencies', '/projects/project-1/work/mapping-1']) {
+    const page = await flow.http('GET', path);
+    assert.match(page.body, /Standalone maintenance — no feature by design/u);
+    assert.match(page.body, /Remove the obsolete cache without changing product behavior/u);
+    for (const id of ['request-1', 'design-1', 'plan-1', 'task-1', 'assignment-1']) assert.ok(page.body.includes(`/inspect/${id}?revision=1`), `Missing exact ${id} context`);
+    assert.doesNotMatch(page.body, /Unknown — feature context unavailable|Feature: Unknown|Original requests: Unknown/u);
+  }
 });
