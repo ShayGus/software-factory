@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { applyCommand } from './application.js';
-import { backupProject, restoreProjectBackup, reconcileProject, disableProject, importLegacyTasks, verifyRestoredArtifact } from './recovery.js';
+import { backupProject, restoreProjectBackup, reconcileProject, disableProject, importLegacyTasks, verifyRestoredArtifact, resolveRestoredReference } from './recovery.js';
 import { startManagedWorker, RuntimeAdapterSchema } from './runtime.js';
 import { captureLearning, consolidateLearning, readLegacySection } from './learning.js';
 import { learningContext } from './learning-context.js';
@@ -12,7 +12,7 @@ import { parseArgs } from 'node:util';
 import { z } from 'zod';
 import { captureChannelCoverage, chatHookCommand, chatHookSettings } from './capture-coverage.js';
 import { captureChatPrompt } from './chat-hook.js';
-import { queueCorrection, deliverCorrection, recordCorrectionFact, correctionDeliveryStatus, CorrectionAdapterOptionsSchema } from './corrections.js';
+import { queueCorrection, deliverCorrection, recoverTaskCorrection, recordCorrectionFact, correctionDeliveryStatus, CorrectionAdapterOptionsSchema } from './corrections.js';
 import { deliverRequest } from './delivery.js';
 import { prepareWorkerBrief, checkWorkerBrief } from './briefs.js';
 import { captureRequest, initializeProject, mapRequest, requestCoverage, unclassifiedRequests } from './intake.js';
@@ -27,6 +27,9 @@ All commands print JSON; chat-hook is silent on success. No settings are install
   apply-command  --db <sqlite> --input <CommandEnvelope JSON file> [--adapter-config <TaskAdapterOptions JSON file>]
   backup         --db <sqlite> --project <id> [--artifact-base <absolute source base>]
   verify-restored-artifact --db <sqlite> --input <projectId, path, digest, evidence JSON>
+  resolve-restored-reference --db <sqlite> --input <projectId, reference, base, digest, evidence JSON>
+  recover-task-correction --db <sqlite> --input <projectId, correctionId, idempotencyKey JSON>
+                 --adapter-config <CorrectionAdapterOptions JSON>
   restore        --db <empty sqlite> --input <backup JSON> --artifact-root <absolute root>
                  --adapter-config <TaskAdapterOptions JSON with snapshotExecutable>
   reconcile-project --db <sqlite> --project <id> --adapter-config <TaskAdapterOptions JSON>
@@ -97,6 +100,8 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   'apply-command': { db: valueOption, input: valueOption, 'adapter-config': valueOption },
   backup: { db: valueOption, project: valueOption, 'artifact-base': valueOption },
   'verify-restored-artifact': { db: valueOption, input: valueOption },
+  'resolve-restored-reference': { db: valueOption, input: valueOption },
+  'recover-task-correction': { db: valueOption, input: valueOption, 'adapter-config': valueOption },
   restore: { db: valueOption, input: valueOption, 'artifact-root': valueOption, 'adapter-config': valueOption },
   'reconcile-project': { db: valueOption, project: valueOption, 'adapter-config': valueOption },
   'disable-project': { db: valueOption, project: valueOption, mode: valueOption, 'adapter-config': valueOption },
@@ -160,6 +165,11 @@ export function runCli(args: string[]): number {
         case 'apply-command': output(applyCommand(store, jsonFile('input'), optional('adapter-config') ? TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')) : undefined)); break;
         case 'backup': output(backupProject(store, required('project'), optional('artifact-base'))); break;
         case 'verify-restored-artifact': output(verifyRestoredArtifact(store, jsonFile('input'))); break;
+        case 'resolve-restored-reference': output(resolveRestoredReference(store, jsonFile('input'))); break;
+        case 'recover-task-correction': {
+          const result = recoverTaskCorrection(store, jsonFile('input'), CorrectionAdapterOptionsSchema.parse(jsonFile('adapter-config')));
+          output(result); return result.state === 'succeeded' ? 0 : 1;
+        }
         case 'restore': {
           const backup = jsonFile('input'); const projectId = storeProjectId(backup);
           const adapter = TaskAdapterOptionsSchema.parse(jsonFile('adapter-config'));

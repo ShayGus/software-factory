@@ -1,13 +1,13 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readFleetSnapshot, runtimeTask, endpointAlive, observedEndpointCessation } from './runtime.js';
+import { readFleetSnapshot, runtimeTask, recordOperationObservation } from './runtime.js';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { earlierCorrectionPending, intendedCorrectionRecipient, correctionTargetsAttempt, currentCorrections, correctionDeliverySnapshot, correctionOrder, hasCorrectionFact, correctionRequiresIncorporation } from './correction-state.js';
 import { DeliverCorrectionCommandSchema } from './commands.js';
-import { executionStateToken, parseFirstMateInboxBody } from './firstmate.js';
+import { executionStateToken, parseFirstMateInboxBody, interruptAcknowledged } from './firstmate.js';
 import { ref, stableId } from './intake.js';
 import { EvidenceSchema, RefSchema, TimestampSchema, type CorrectionAction, type Ref } from './primitives.js';
 import { ObservationSchema, type Assignment, type FactoryRecord, type Observation, type Operation } from './records.js';
@@ -281,11 +281,16 @@ function decisionRecord(projectId: string, at: string, text: string, proof: z.in
 
 /** One ordered delivery. Unknown outcomes inspect durable messages and runtime
  * generations; they never authorize a blind fm-send/fm-control retry. */
-export function deliverCorrection(store: ProjectStore, projectId: string, correctionId: string, input: CorrectionAdapterOptions): Operation {
+function correctionAdapter(input: CorrectionAdapterOptions) {
   const options = CorrectionAdapterOptionsSchema.parse(input);
   for (const path of [options.fmHome, options.sendExecutable, options.controlExecutable, ...(options.stateExecutable ? [options.stateExecutable] : []), ...(options.snapshotExecutable ? [options.snapshotExecutable] : [])]) {
     if (!isAbsolute(path)) throw new StoreError('validation', 'absolute_correction_adapter_paths_required');
   }
+  return options;
+}
+
+export function deliverCorrection(store: ProjectStore, projectId: string, correctionId: string, input: CorrectionAdapterOptions): Operation {
+  const options = correctionAdapter(input);
   // Task management has its own project lock. This outer lock coordinates the
   // steering queue; task calls below execute outside it using their existing lock.
   const initial = observation(store, projectId, correctionId);
@@ -303,6 +308,70 @@ export function deliverCorrection(store: ProjectStore, projectId: string, correc
       throw new StoreError('conflict', 'operation_permanently_suspended');
     }
     return deliverSteering(store, projectId, correctionId, options);
+  });
+}
+
+/** Explicit recovery permission for a retired BUILD-08 correction. The original
+ * correction/task identities and payload are immutable; only an interrupted,
+ * retired child operation gets a new durable intent for that same native task. */
+export function recoverTaskCorrection(store: ProjectStore, input: unknown, adapter: CorrectionAdapterOptions): Operation {
+  const data = z.strictObject({ projectId: z.string().min(1), correctionId: z.string().min(1), idempotencyKey: z.string().min(1) }).parse(input);
+  const options = correctionAdapter(adapter);
+  const recoveryId = stableId('task-correction-recovery', data.projectId, data.idempotencyKey);
+  const prepared = store.withTaskLock(data.projectId, () => {
+    store.assertExternalOperationsAllowed(data.projectId);
+    const record = observation(store, data.projectId, data.correctionId);
+    const source = deliveryIntent(store, data.projectId, record);
+    if (!['cancellation', 'new_work'].includes(record.correction.action) || !source.operation.suspended || record.correction.supersededBy) {
+      throw new StoreError('validation', 'explicit_recovery_requires_suspended_task_correction');
+    }
+    const task = source.command.payload.taskCommand;
+    if (!task || !options.taskAdapter) throw new StoreError('validation', 'BUILD08_task_adapter_required_for_recovery');
+    const descriptor = JSON.stringify({ correctionId: record.id, sourceOperationId: source.operation.id, taskDigest: commandDigest(task) });
+    const receipt = store.receipt(data.projectId, data.idempotencyKey);
+    if (receipt && (receipt.command.command !== 'record_decision_suggestion' || receipt.command.targetId !== recoveryId ||
+      receipt.command.payload.decision.rationale !== descriptor)) throw new StoreError('conflict', 'task_correction_recovery_intent_conflict');
+    if (!receipt) {
+      const at = new Date().toISOString();
+      const decision = { kind: 'decision_change' as const, id: stableId('task-correction-recovery-decision', recoveryId),
+        projectId: data.projectId, schemaVersion: 1 as const, revision: 1, createdAt: at, updatedAt: at,
+        questionOrChange: 'Explicitly recover the original suspended BUILD-08 correction', affectedRecords: [ref(record), ref(source.operation)],
+        rationale: descriptor, disposition: 'selected' as const, sourceRefs: [{ uri: `factory:operation/${source.operation.id}`, record: ref(source.operation) }], scopeChanges: [] };
+      const command = { schemaVersion: 1, id: recoveryId, projectId: data.projectId, issuedAt: at, idempotencyKey: data.idempotencyKey,
+        command: 'record_decision_suggestion', targetId: recoveryId, expectedRevision: 0, payload: { decision } };
+      store.mutate(command, () => [decision, pendingOperation(command, recoveryId)]);
+    }
+    const recovery = store.get(data.projectId, recoveryId);
+    if (recovery?.kind !== 'operation') throw new StoreError('not_found', 'task_correction_recovery_missing');
+    store.assertExternalOperationsAllowed(data.projectId, recovery);
+    if (recovery.state === 'succeeded') return { recovery, task };
+    const originalTaskId = stableId('task-operation', data.projectId, task.idempotencyKey);
+    const original = store.get(data.projectId, originalTaskId);
+    if (original?.kind !== 'operation' || !original.suspended) return { recovery, task };
+    const childKey = stableId('recovered-task-key', recoveryId);
+    const childId = stableId('task-operation', data.projectId, childKey);
+    const mapping = store.get(data.projectId, task.targetId);
+    if (mapping?.kind !== 'task_mapping' || mapping.firstMateTaskId !== task.payload.task.firstMateTaskId ||
+      ![originalTaskId, childId].includes(mapping.management?.operationId ?? '')) {
+      throw new StoreError('conflict', 'task_correction_recovery_superseded');
+    }
+    const prior = store.receipt(data.projectId, childKey);
+    if (prior) {
+      if (prior.command.command !== 'map_manage_execution_task' || JSON.stringify(prior.command.payload) !== JSON.stringify(task.payload)) {
+        throw new StoreError('conflict', 'task_correction_recovery_payload_conflict');
+      }
+      return { recovery, task: prior.command };
+    }
+    return { recovery, task: { ...task, id: childId, idempotencyKey: childKey, expectedRevision: mapping.revision, issuedAt: new Date().toISOString() } };
+  });
+  if (prepared.recovery.state === 'succeeded') return prepared.recovery;
+  // BUILD-08 owns the task lock, native-ID read-before-retry and outcome receipt.
+  const result = deliverTaskCorrection(store, data.projectId, observation(store, data.projectId, data.correctionId), options, prepared.task, recoveryId);
+  return store.withTaskLock(data.projectId, () => {
+    const latest = store.get(data.projectId, recoveryId);
+    if (latest?.kind !== 'operation') throw new StoreError('not_found', 'task_correction_recovery_missing');
+    return recordOperationObservation(store, latest, result.state, JSON.stringify({ recoveredCorrection: data.correctionId, sourceOperationId: result.id,
+      taskId: prepared.task.payload.task.firstMateTaskId, taskKey: prepared.task.idempotencyKey, result: result.reconciliation }));
   });
 }
 
@@ -396,7 +465,6 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
   // Durable in-flight marker prevents retry after an ambiguous call or interruption.
   const recipient = { assignment: ref(assignment), attemptId: assignment.attemptId, firstMateTaskId: assignment.firstMateTaskId };
   let generation: string | null | undefined;
-  let baselineEndpointAlive = false;
   // Lifecycle recovery needs the pre-action generation. Steering carries its own
   // unique operation identity in the durable message, so old inbox records cannot match.
   if (action !== 'steer' && action !== 'read_status') {
@@ -404,14 +472,13 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
       const snapshot = readFleetSnapshot({ fmHome: options.fmHome,
         ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
         ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), maxObservationAgeMs: options.maxObservationAgeMs });
-      generation = runtimeTask(snapshot, assignment.firstMateTaskId)?.spawn_gen;
-      baselineEndpointAlive = endpointAlive(snapshot, assignment.firstMateTaskId) === true;
+      generation = runtimeTask(snapshot, assignment.firstMateTaskId, false)?.spawn_gen;
       if (!generation) throw new Error('lifecycle_requires_observed_generation');
     } catch (error) { return unresolved(store, projectId, record, operation, 'pending', String(error)); }
   }
   const started = unresolved(store, projectId, record, operation, 'unknown', 'External delivery started; outcome unconfirmed', false, recipient,
     { action, firstMateTaskId: assignment.firstMateTaskId, assignment: ref(assignment), attemptId: assignment.attemptId,
-      payload: text, ...(generation !== undefined ? { baselineGeneration: generation, baselineEndpointAlive } : {}), startedAt: new Date().toISOString() });
+      payload: text, ...(generation !== undefined ? { baselineGeneration: generation } : {}), startedAt: new Date().toISOString() });
   if (started.reconciliation?.note !== 'External delivery started; outcome unconfirmed') return started;
   try {
     const args = action === 'steer' ? [assignment.firstMateTaskId, text] : action === 'read_status' ? [assignment.firstMateTaskId] : [assignment.firstMateTaskId, action];
@@ -423,10 +490,16 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
         observedAt: new Date().toISOString(), sampleRef: `factory:operation/${operation.id}` });
       if (state === 'unknown') return unresolved(store, projectId, record, started, 'unknown', 'Runtime status is unknown');
     }
-    // Wrapper exit zero confirms acceptance only; acknowledgement remains independent.
+    if (action === 'interrupt' && !interruptAcknowledged(stdout, assignment.firstMateTaskId)) {
+      return unresolved(store, projectId, record, started, 'unknown', JSON.stringify({ action, stdout, reason: 'Interrupt acknowledgement unavailable' }), false, recipient);
+    }
+    // Steering acceptance and worker acknowledgement/incorporation remain independent.
     return unresolved(store, projectId, record, started, 'succeeded', JSON.stringify({ action, recipient: binding, stdout, payloadDigest: digest(text) }), true, recipient);
   } catch (error) {
-    const failure = error as NodeJS.ErrnoException;
+    const failure = error as NodeJS.ErrnoException & { stdout?: unknown };
+    if (action === 'interrupt' && typeof failure.stdout === 'string' && interruptAcknowledged(failure.stdout, assignment.firstMateTaskId)) {
+      return unresolved(store, projectId, record, started, 'succeeded', JSON.stringify({ action, stdout: failure.stdout }), true, recipient);
+    }
     return unresolved(store, projectId, record, started, failure.code === 'ENOENT' || failure.code === 'EACCES' ? 'failed' : 'unknown', String(error), false, recipient);
   }
 }
@@ -440,7 +513,8 @@ function recoverCorrectionDelivery(store: ProjectStore, projectId: string, recor
     const snapshot = readFleetSnapshot({ fmHome: options.fmHome,
       ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
       ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}), maxObservationAgeMs: options.maxObservationAgeMs });
-    const task = runtimeTask(snapshot, recipient.firstMateTaskId);
+    // Exact inbox evidence does not depend on runtime inventory completeness.
+    const task = attempt.action === 'steer' ? undefined : runtimeTask(snapshot, recipient.firstMateTaskId, false);
     if (attempt.action === 'steer' && attempt.payload) {
       const inbox = join(options.fmHome, 'state', `${recipient.firstMateTaskId}.inbox`);
       const matches: { path: string; digest: string }[] = [];
@@ -466,8 +540,7 @@ function recoverCorrectionDelivery(store: ProjectStore, projectId: string, recor
       if (matches.length) return unresolved(store, projectId, record, operation, 'succeeded',
         JSON.stringify({ recovered: 'durable_steering', matches, snapshot }), true, recipient);
     } else if (task?.spawn_gen && Date.parse(snapshot.generated) >= Date.parse(attempt.startedAt)) {
-      const accepted = attempt.action === 'relaunch' ? task.spawn_gen !== attempt.baselineGeneration :
-        attempt.action === 'interrupt' && observedEndpointCessation(snapshot, attempt);
+      const accepted = attempt.action === 'relaunch' && task.spawn_gen !== attempt.baselineGeneration;
       if (accepted) return unresolved(store, projectId, record, operation, 'succeeded',
         JSON.stringify({ recovered: 'lifecycle', snapshot }), true, recipient);
     }
@@ -475,13 +548,13 @@ function recoverCorrectionDelivery(store: ProjectStore, projectId: string, recor
       JSON.stringify({ reason: 'Delivery outcome unresolved; no retry authorized', snapshot }), false, recipient);
   } catch (error) { return unresolved(store, projectId, record, operation, 'unknown', String(error), false, recipient); }
 }
-function deliverTaskCorrection(store: ProjectStore, projectId: string, record: Correction, options: z.output<typeof CorrectionAdapterOptionsSchema>): Operation {
+function deliverTaskCorrection(store: ProjectStore, projectId: string, record: Correction, options: z.output<typeof CorrectionAdapterOptionsSchema>, recoveredTask?: TaskCommand, permitOperationId?: string): Operation {
   const { operation, command } = deliveryIntent(store, projectId, record);
-  if (operation.state === 'succeeded' || operation.state === 'failed') return operation;
+  if (operation.state === 'succeeded' || (operation.state === 'failed' && !recoveredTask)) return operation;
   if (!record.correction.urgentStop && earlierCorrectionPending(store.records(projectId), record)) {
     return unresolved(store, projectId, record, operation, 'pending', 'Waiting for earlier correction delivery');
   }
-  const task = command.payload.taskCommand;
+  const task = recoveredTask ?? command.payload.taskCommand;
   if (!task || !options.taskAdapter) return unresolved(store, projectId, record, operation, 'pending', 'BUILD-08 task adapter required');
   let recipient: DeliveryRecipient | undefined;
   if (record.correction.action === 'cancellation') {
@@ -493,7 +566,7 @@ function deliverTaskCorrection(store: ProjectStore, projectId: string, record: C
     if (started.reconciliation?.note !== 'Task cancellation started; recipient captured') return started;
   }
   if (resolve(options.taskAdapter.fmHome) !== resolve(options.fmHome)) throw new StoreError('validation', 'task_adapter_home_must_match_correction_home');
-  const result = manageExecutionTask(store, task, options.taskAdapter);
+  const result = manageExecutionTask(store, task, options.taskAdapter, permitOperationId);
   return unresolved(store, projectId, observation(store, projectId, record.id), store.get(projectId, operation.id) as Operation,
     result.operation.state, `BUILD-08 operation ${result.operation.id}: ${result.operation.state}`, result.operation.state === 'succeeded', recipient);
 }

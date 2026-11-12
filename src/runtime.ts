@@ -23,7 +23,10 @@ export const FleetSnapshotSchema = z.object({
     z.object({ id: z.null(), structured: z.literal(false) }).passthrough(),
   ])) }).passthrough(),
   tasks: z.array(z.object({ id: z.string().min(1), spawn_gen: z.string().nullable(),
-    project: z.string().nullable(), current_state: z.object({ state: z.string().min(1),
+    project: z.string().nullable(), endpoint: z.object({ exists: z.boolean().nullable(),
+      agent_alive: z.enum(['alive', 'dead', 'unknown', 'not_checked']), observed_at: TimestampSchema,
+      freshness: z.string(), target: z.string().nullable().optional(), status: z.string().optional(),
+    }).passthrough().optional(), current_state: z.object({ state: z.string().min(1),
       observed_at: TimestampSchema, freshness: z.string() }).passthrough(),
   }).passthrough()),
 }).passthrough();
@@ -46,29 +49,29 @@ export function readFleetSnapshot(input: RuntimeAdapter): FleetSnapshot {
   }
   return snapshot;
 }
-export function runtimeTask(snapshot: FleetSnapshot, id: string) {
+export function runtimeTask(snapshot: FleetSnapshot, id: string, requireCrewState = true) {
   const task = snapshot.tasks.find((entry) => entry.id === id);
   const inventory = snapshot.main_inventory as { valid?: boolean; orphan_in_flight?: unknown[] } | undefined;
   const orphaned = inventory?.orphan_in_flight?.some((entry) => entry === id ||
     (!!entry && typeof entry === 'object' && 'id' in entry && entry.id === id));
   const inFlight = snapshot.backlog.records.some((entry) => entry.id === id && entry.state === 'in_flight');
   if (orphaned || (!task?.spawn_gen && (inventory?.valid === false || inFlight))) throw new Error('target_inventory_metadata_incomplete');
-  if (task && (task.current_state.freshness !== 'fresh' || task.current_state.state === 'unknown' ||
+  if (requireCrewState && task && (task.current_state.freshness !== 'fresh' || task.current_state.state === 'unknown' ||
     task.current_state.observed_at !== snapshot.generated)) throw new Error('runtime_task_unknown_or_stale');
   return task;
 }
 /** Endpoint evidence is separate from crew/pipeline state. Unknown is not dead. */
 export function endpointAlive(snapshot: FleetSnapshot, id: string): boolean | undefined {
   const task = snapshot.tasks.find((entry) => entry.id === id);
-  const endpoint = task?.endpoint as { exists?: boolean; agent_alive?: unknown; observed_at?: string; freshness?: string } | undefined;
+  const endpoint = task?.endpoint;
   if (!endpoint || endpoint.freshness !== 'fresh' || endpoint.observed_at !== snapshot.generated) return undefined;
-  if (endpoint.exists === true && [true, 'yes'].includes(endpoint.agent_alive as boolean | string)) return true;
-  if (endpoint.exists === false && [false, 'no'].includes(endpoint.agent_alive as boolean | string)) return false;
+  if (endpoint.agent_alive === 'alive') return true;
+  if (endpoint.agent_alive === 'dead') return false;
   return undefined;
 }
-export function observedEndpointCessation(snapshot: FleetSnapshot, attempt: NonNullable<Operation['externalAttempt']>): boolean {
-  const task = runtimeTask(snapshot, attempt.firstMateTaskId);
-  return attempt.baselineEndpointAlive === true && task?.spawn_gen === attempt.baselineGeneration &&
+export function observedAgentStopped(snapshot: FleetSnapshot, attempt: NonNullable<Operation['externalAttempt']>): boolean {
+  const task = runtimeTask(snapshot, attempt.firstMateTaskId, false);
+  return task?.spawn_gen === attempt.baselineGeneration &&
     Date.parse(snapshot.generated) >= Date.parse(attempt.startedAt) && endpointAlive(snapshot, attempt.firstMateTaskId) === false;
 }
 export function recordOperationObservation(store: ProjectStore, operation: Operation, state: Operation['state'], note: string,

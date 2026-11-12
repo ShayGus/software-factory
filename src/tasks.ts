@@ -1,4 +1,4 @@
-import { readFleetSnapshot, runtimeTask, endpointAlive, observedEndpointCessation, recordOperationObservation } from './runtime.js';
+import { readFleetSnapshot, runtimeTask, observedAgentStopped, recordOperationObservation } from './runtime.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, resolve } from 'node:path';
@@ -352,16 +352,16 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
         ...(options.snapshotExecutable ? { snapshotExecutable: options.snapshotExecutable } : {}),
         ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
         ...(options.maxObservationAgeMs ? { maxObservationAgeMs: options.maxObservationAgeMs } : {}) });
-      const runtime = runtimeTask(snapshot, observed.id);
+      const runtime = runtimeTask(snapshot, observed.id, false);
       if (operation.externalAttempt) {
-        if (!observedEndpointCessation(snapshot, operation.externalAttempt)) {
+        if (!observedAgentStopped(snapshot, operation.externalAttempt)) {
           throw new Error('cancellation_outcome_unknown_no_retry');
         }
       } else {
         if (!runtime?.spawn_gen) throw new Error('cancellation_requires_observed_worker_generation');
         operation = recordOperationObservation(store, operation, 'unknown', JSON.stringify({ action: 'exit', snapshot }), {
           externalAttempt: { action: 'exit', firstMateTaskId: observed.id,
-            baselineGeneration: runtime.spawn_gen, baselineEndpointAlive: endpointAlive(snapshot, observed.id) === true, startedAt: new Date().toISOString() } });
+            baselineGeneration: runtime.spawn_gen, startedAt: new Date().toISOString() } });
         wrapper.mutationAttempted = true;
         wrapper.run([observed.id, 'exit'], options.controlExecutable);
       }
@@ -390,10 +390,17 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
   }
 }
 
-export function manageExecutionTask(store: ProjectStore, input: unknown, options: TaskAdapterOptions) {
+export function manageExecutionTask(store: ProjectStore, input: unknown, options: TaskAdapterOptions, permitOperationId?: string) {
   const command = MapManageExecutionTaskCommandSchema.parse(input);
   validateCommand(command);
   return store.withTaskLock(command.projectId, () => {
+    // Explicit recovery permission shares the same lock as its child effect, so
+    // disable/re-enable cannot revive a retired permission between these steps.
+    if (permitOperationId) {
+      const permit = store.get(command.projectId, permitOperationId);
+      if (permit?.kind !== 'operation') throw new StoreError('not_found', 'task_recovery_permission_missing');
+      store.assertExternalOperationsAllowed(command.projectId, permit);
+    }
     const intent = queueTaskIntent(store, command);
     const operation = reconcileTaskIntent(store, intent.mapping.projectId, intent.operation.id, options);
     const latest = store.get(command.projectId, intent.mapping.id);

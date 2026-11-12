@@ -29,7 +29,30 @@ task's durable `.inbox/*.msg` and `.inbox/handled/*.msg` records for that exact
 payload. A matching message proves delivery, not acknowledgement or incorporation.
 Acknowledgement and artifact incorporation still require their existing separate
 evidence. Missing records keep the outcome unknown and never cause an automatic
-resend. Lifecycle actions record the pre-action generation and endpoint liveness. Relaunch requires a new generation; interruption and cancellation recovery require a previously observed live endpoint to be freshly confirmed absent on the same generation. Crew `done` or `failed` states can describe quality jobs and never prove endpoint cessation. Cancellation uses the same observation rule before any repeated exit request; it never fabricates `done`.
+resend. Runtime inventory completeness checks apply to launch and lifecycle
+operations. An orphaned or missing worker metadata entry does not invalidate an
+exact durable inbox record for the captured steering recipient.
+
+Lifecycle actions record the pre-action generation. FirstMate's endpoint record
+separates terminal presence (`exists`) from agent liveness (`agent_alive`: `alive`,
+`dead`, `unknown`, `not_checked`). A preserved terminal can contain a dead agent;
+an absent terminal with an unknown liveness classification is not proof of stop.
+The installed fleet snapshot checks agent liveness only for local secondmates;
+other workers can legitimately report `not_checked`, which remains unknown.
+
+Interrupt keeps the agent running. Its own `fm-control` receipt must name the
+recorded task and contain an adapter cancellation acknowledgement
+(`interrupt-delivered ... verified=agent-alive|endpoint cancel=confirmed`). A
+receipt remains useful even on nonzero process exit. A delivered key with
+`cancel=unconfirmed`, endpoint changes, or crew/busy state alone cannot confirm an
+interrupt. When a response is lost and no such acknowledgement is available,
+recovery stays unknown and never sends another interrupt.
+
+Cancellation recovery instead requires a fresh `agent_alive: dead` observation
+on the recorded generation after the exit attempt; endpoint disappearance is
+unnecessary because FirstMate exit preserves the terminal. Relaunch requires a
+new generation. Crew `done` or `failed` can describe quality jobs and never prove
+agent stop. None of these observations fabricates native task completion.
 
 Adapters explicitly name their home and executable paths. `FM_*` and
 `TASKS_AXI_*` addressing overrides are stripped. Fleet observations retain all
@@ -75,6 +98,37 @@ mapping/assignment/external-attempt ID through the backlog wrapper before liftin
 the gate. No pending mutation runs during these reads. The restore CLI invokes
 this observational reconciliation automatically; it never invokes a pending mutation. Once reconciliation succeeds, the temporary restore artifact gate is retired; verification remains in history and normal regenerated briefs are not compared against old backup bytes on a later re-enable. A backup of a disabled project remains disabled until an explicit re-enable. Commands return nonzero when restoration/reconciliation remains incomplete, a start is unknown, or handback reports an error.
 
+### Resolving an imported relative reference
+
+If restore reports `unresolved_reference`, supply and verify that source, then run
+`resolve-restored-reference --db <restored-db> --input <resolution.json>` for each
+reported reference. The input contains the exact `projectId` and `reference`, an
+absolute source `base`, the expected SHA-256 `digest`, and nonempty verification
+`evidence` (artifact identity, description and observation time). For example:
+
+```json
+{
+  "projectId": "project-1",
+  "reference": "evidence/spec.txt",
+  "base": "/project/source",
+  "digest": "sha256:<64 hex digits>",
+  "evidence": [{
+    "artifact": {"uri": "/project/source/evidence/spec.txt", "digest": "sha256:<64 hex digits>"},
+    "description": "Recovered bytes checked against the retained source revision",
+    "observedAt": "2026-11-12T13:00:00Z"
+  }]
+}
+```
+
+The operation verifies the file at `base/reference`, records that base and the
+verified file identity, and removes only the resolved reference from the restore
+gate. The recorded base must remain consistent across resolutions; a wrong digest
+cannot release the gate. Historical source URIs remain intact. After every
+reported reference is resolved, use `reconcile-project` with the existing task and
+snapshot adapter to inspect live FirstMate state and lift the gate. This procedure
+works on the already imported database and does not require deleting or replacing
+its history.
+
 ## Disable and handback
 
 `disable-project --db <db> --project <id> --mode pause` commits disable and retires
@@ -94,7 +148,18 @@ execution remains available. Restoring/reconciling projects fail closed. Re-enab
 uses `reconcile-project` and always observes both FirstMate interfaces before
 allowing fresh explicit operations. Retired intents remain permanently suspended;
 they do not replay on re-enable. A new task intent may explicitly replace a retired
-intent. For a suspended, unattempted steering or lifecycle correction, explicitly queue the existing correction ID with a new idempotency key, its current expected revision, the same payload/recipient/order and `readdress: true`. This archives the retired delivery intent and creates a replacement without changing the correction identity. Task-producing and cancellation corrections retain BUILD-08 task reconciliation and cannot use this transport replacement. An ambiguous prior send cannot be replaced: after re-enable, `deliver-correction` only observes its recorded payload/generation, with no external retry, so a confirmed prior delivery can satisfy incorporation normally. Existing product evidence and correction incorporation requirements remain.
+intent. For a suspended, unattempted steering or lifecycle correction, explicitly queue the existing correction ID with a new idempotency key, its current expected revision, the same payload/recipient/order and `readdress: true`. This archives the retired delivery intent and creates a replacement without changing the correction identity. Task-producing and cancellation corrections cannot use this generic transport
+replacement. After re-enable, explicitly run `recover-task-correction --db <db>
+--input <recovery.json> --adapter-config <correction-adapter.json>`. The input is
+`{"projectId":"...","correctionId":"...","idempotencyKey":"new-explicit-recovery-key"}`;
+the adapter supplies the existing BUILD-08 `taskAdapter` and, for cancellation,
+the exact fresh recipient binding. This records explicit recovery permission,
+retains the original correction ID, task ID and payload, and reconciles through
+BUILD-08 before any retry. An interrupted retired child operation receives a
+fresh durable intent for the same native task; an already confirmed result is
+reused. Repeat the recovery key to resume safely after another lost result.
+Disable retires that recovery permission too, and it is checked inside the child
+task lock so re-enable cannot replay it late. An ambiguous prior send cannot be replaced: after re-enable, `deliver-correction` only observes its recorded payload/generation, with no external retry, so a confirmed prior delivery can satisfy incorporation normally. Existing product evidence and correction incorporation requirements remain.
 
 ## Compatibility and validation
 

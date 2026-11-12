@@ -25,7 +25,7 @@ const fs = require('node:fs'); const path = require('node:path');
 const home = process.env.FM_HOME;
 fs.appendFileSync(path.join(home, 'calls'), JSON.stringify({ args: process.argv.slice(2), env: Object.keys(process.env).filter(k => k.startsWith('FM_')) }) + '\\n');
 if (fs.existsSync(path.join(home, 'fail'))) process.exit(1);
-process.stdout.write('accepted');
+process.stdout.write(process.argv[3] === 'interrupt' ? 'interrupt-delivered pilot-build harness=codex backend=tmux verified=agent-alive cancel=confirmed\\n' : 'accepted');
 `);
   chmodSync(executable, 0o755);
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });

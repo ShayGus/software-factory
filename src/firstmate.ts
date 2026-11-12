@@ -98,3 +98,11 @@ export function parseFirstMateInboxBody(raw: string): string {
   }
   return body;
 }
+
+
+/** fm-control's own adapter cancellation acknowledgement, distinct from endpoint
+ * or crew state. A delivered key with cancel=unconfirmed is not acknowledgement. */
+export function interruptAcknowledged(stdout: string, taskId: string): boolean {
+  const receipt = /^interrupt-delivered ([A-Za-z0-9._-]+) harness=[^ \r\n]+ backend=[^ \r\n]+ verified=(?:agent-alive|endpoint) cancel=confirmed(?: revert-picker=[^ \r\n]+)?$/u.exec(stdout.trimEnd());
+  return receipt?.[1] === taskId;
+}

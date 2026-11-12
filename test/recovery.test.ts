@@ -215,12 +215,12 @@ for (const mode of ['pause', 'hand_back'] as const) test(`disable ${mode} leaves
 test('lost cancellation exit result observes the recorded generation before completing without a second exit', t => {
   const flow = setup(t);
   flow.tasks.edit((state) => { state.tasks['active-task'] = fakeTask('active-task', { state: 'in_flight' }); });
-  flow.runtime.save([{ id: 'active-task', spawn_gen: 'active-generation', project: flow.home, endpoint: { exists: true, agent_alive: 'yes', freshness: 'fresh', observed_at: '' },
+  flow.runtime.save([{ id: 'active-task', spawn_gen: 'active-generation', project: flow.home, endpoint: { exists: true, agent_alive: 'alive', freshness: 'fresh', observed_at: '' },
     current_state: { state: 'active', freshness: 'fresh', observed_at: '' } }]);
   const queued = queueManagedTask(flow.store, taskCommand('active-task', 'cancel'));
   const control = flow.executable('control-crash.cjs', `const fs=require('node:fs');
 fs.appendFileSync(${JSON.stringify(join(flow.home, 'exits'))},'exit\\n');
-const tasks=JSON.parse(fs.readFileSync(${JSON.stringify(flow.runtime.statePath)},'utf8'));tasks[0].current_state.state='stopped';tasks[0].endpoint.exists=false;tasks[0].endpoint.agent_alive='no';
+const tasks=JSON.parse(fs.readFileSync(${JSON.stringify(flow.runtime.statePath)},'utf8'));tasks[0].current_state.state='unknown';tasks[0].endpoint.exists=true;tasks[0].endpoint.agent_alive='dead';
 fs.writeFileSync(${JSON.stringify(flow.runtime.statePath)},JSON.stringify(tasks));process.kill(process.ppid,'SIGKILL');`);
   const adapter = { ...flow.adapter, controlExecutable: control };
   const result = spawnSync(process.execPath, [cli, 'reconcile-task', '--db', flow.database, '--project', projectId,
@@ -229,6 +229,8 @@ fs.writeFileSync(${JSON.stringify(flow.runtime.statePath)},JSON.stringify(tasks)
   flow.reopen();
   assert.equal(reconcileManagedTask(flow.store, projectId, queued.operation.id, adapter).state, 'succeeded');
   assert.equal(readFileSync(join(flow.home, 'exits'), 'utf8'), 'exit\n');
+  assert.equal(flow.runtime.read()[0]!.endpoint?.exists, true);
+  assert.equal(flow.runtime.read()[0]!.endpoint?.agent_alive, 'dead');
   assert.equal(flow.tasks.read().tasks['active-task']!.state, 'in_flight');
 });
 
@@ -343,7 +345,7 @@ test('review 1299-3: unchanged failed crew state with a live endpoint cannot pro
     idempotencyKey: 'stop', command: 'deliver_correction', targetId: 'stop-correction', expectedRevision: 0,
     payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Stop immediately', action: 'clarification', urgentStop: true,
       sequence: 1, supersedes: [] } });
-  flow.runtime.save([{ id: a.firstMateTaskId, spawn_gen: 'same-gen', project: flow.home, endpoint: { exists: true, agent_alive: 'yes', freshness: 'fresh', observed_at: '' },
+  flow.runtime.save([{ id: a.firstMateTaskId, spawn_gen: 'same-gen', project: flow.home, endpoint: { exists: true, agent_alive: 'alive', freshness: 'fresh', observed_at: '' },
     current_state: { state: 'failed', freshness: 'fresh', observed_at: '' } }]);
   const control = flow.executable('refused.cjs', 'process.exit(2);');
   const options: CorrectionAdapterOptions = { fmHome: flow.home, snapshotExecutable: flow.runtime.executable,
@@ -542,4 +544,205 @@ test('review 1299-5: transport replacement cannot authorize a task-producing cor
     payload: { affectedRevision: c.affectedRevision, assignment: c.assignment, originalCorrection: c.originalText, action: c.action,
       sequence: c.sequence, supersedes: c.supersedes, sourceRefs: c.sourceRefs, readdress: true, taskCommand: taskCommand('different-extra-work') } }),
     /suspended_delivery_outcome/);
+});
+
+// Review 1321: these regressions are added before the assigned fixes.
+test('review 1321-2: FirstMate alive/dead observations are independent of endpoint presence', async () => {
+  const { FleetSnapshotSchema, endpointAlive } = await import('../src/index.js');
+  const now = new Date().toISOString();
+  const snapshot = FleetSnapshotSchema.parse({ schema: 'fm-fleet-snapshot.v1', generated: now, fm_home: '/fake',
+    backlog: { present: true, records: [] }, tasks: [{ id: 'task', spawn_gen: 'gen', project: '/fake',
+      current_state: { state: 'failed', observed_at: now, freshness: 'fresh' },
+      endpoint: { target: 'terminal', exists: true, agent_alive: 'alive', status: 'alive', observed_at: now, freshness: 'fresh' } }] });
+  assert.equal(endpointAlive(snapshot, 'task'), true);
+  snapshot.tasks[0]!.endpoint = { target: 'terminal', exists: true, agent_alive: 'dead', status: 'dead', observed_at: now, freshness: 'fresh' };
+  assert.equal(endpointAlive(snapshot, 'task'), false);
+  for (const state of ['unknown', 'not_checked'] as const) {
+    snapshot.tasks[0]!.endpoint = { exists: false, agent_alive: state, status: 'absent', observed_at: now, freshness: 'fresh' };
+    assert.equal(endpointAlive(snapshot, 'task'), undefined);
+  }
+});
+
+test('review 1321-3: interrupt delivery without its own cancellation acknowledgement remains unknown', t => {
+  const flow = setup(t); const a = assignment(flow);
+  const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'interrupt-unconfirmed', projectId, issuedAt: new Date().toISOString(),
+    idempotencyKey: 'interrupt-unconfirmed', command: 'deliver_correction', targetId: 'interrupt-unconfirmed', expectedRevision: 0,
+    payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Interrupt this turn', action: 'clarification', urgentStop: true,
+      sequence: 1, supersedes: [] } });
+  flow.runtime.save([{ id: a.firstMateTaskId, spawn_gen: 'interrupt-generation', project: flow.home,
+    endpoint: { exists: true, agent_alive: 'alive', freshness: 'fresh', observed_at: '' },
+    current_state: { state: 'active', freshness: 'fresh', observed_at: '' } }]);
+  const control = flow.executable('interrupt-unconfirmed.cjs', `require('node:fs').appendFileSync(${JSON.stringify(join(flow.home, 'interrupts'))},'interrupt\\n');
+process.stdout.write('interrupt-delivered pilot-build harness=codex backend=tmux verified=agent-alive cancel=unconfirmed\\n');`);
+  const options: CorrectionAdapterOptions = { fmHome: flow.home, snapshotExecutable: flow.runtime.executable,
+    sendExecutable: control, controlExecutable: control, recipients: [{ assignment: ref(a), attemptId: a.attemptId,
+      firstMateTaskId: a.firstMateTaskId, state: 'active', observedAt: new Date().toISOString() }] };
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'unknown');
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'unknown');
+  assert.equal(readFileSync(join(flow.home, 'interrupts'), 'utf8'), 'interrupt\n');
+});
+
+for (const action of ['cancellation', 'new_work'] as const) for (const afterTask of [false, true]) {
+  test(`review 1321-4: explicit recovery of suspended ${action} (${afterTask ? 'after' : 'before'} task effect) retains identities`, async t => {
+    const flow = setup(t); const a = assignment(flow);
+    flow.tasks.edit((state) => { state.tasks[a.firstMateTaskId] = fakeTask(a.firstMateTaskId); });
+    const task = taskCommand(action === 'new_work' ? 'recovered-work' : a.firstMateTaskId, action === 'new_work' ? 'create' : 'cancel');
+    if (action === 'cancellation') { task.targetId = 'mapping-1'; task.expectedRevision = 1; }
+    const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'task-recovery', projectId, issuedAt: new Date().toISOString(),
+      idempotencyKey: 'task-recovery', command: 'deliver_correction', targetId: 'task-recovery', expectedRevision: 0,
+      payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Apply the original planned task action', action,
+        sequence: 1, supersedes: [], taskCommand: task } });
+    if (afterTask) {
+      flow.tasks.edit((state) => { state.failure = { action: action === 'new_work' ? 'add' : 'hold', when: 'after' }; });
+      assert.equal(manageExecutionTask(flow.store, task, flow.adapter).operation.state, 'unknown');
+    }
+    disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+    const api = await import('../src/index.js');
+    const recover = (api as unknown as Record<string, unknown>).recoverTaskCorrection;
+    assert.equal(typeof recover, 'function', 'explicit BUILD-08 task-correction recovery must be available');
+    if (typeof recover !== 'function') assert.fail();
+    const control = flow.executable('recovery-no-control.cjs', 'throw new Error("queued tasks do not invoke control");');
+    const options: CorrectionAdapterOptions = { fmHome: flow.home, sendExecutable: control, controlExecutable: control, taskAdapter: flow.adapter,
+      recipients: [{ assignment: ref(a), attemptId: a.attemptId, firstMateTaskId: a.firstMateTaskId, state: 'active', observedAt: new Date().toISOString() }] };
+    const request = { projectId, correctionId: queued.correction.id, idempotencyKey: 'explicit-task-recovery' };
+    if (action === 'new_work' && !afterTask) {
+      const result = spawnSync(process.execPath, [cli, 'recover-task-correction', '--db', flow.database,
+        '--input', flow.save('recover-task.json', request), '--adapter-config', flow.save('recover-task-adapter.json', options)], { encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).state, 'succeeded');
+    } else assert.equal(recover(flow.store, request, options).state, 'succeeded');
+    assert.equal(recover(flow.store, request, options).state, 'succeeded');
+    const saved = flow.store.get(projectId, queued.correction.id); assert.ok(saved?.kind === 'observation' && saved.correction);
+    assert.equal(saved.id, queued.correction.id); assert.equal(saved.correction.operationId, queued.operation.id);
+    assert.ok(saved.correction.facts.some((fact) => fact.fact === 'delivered'));
+    const effect = action === 'new_work' ? 'add' : 'hold';
+    assert.equal(flow.tasks.read().calls.filter((call) => call.args[0] === effect && call.args[1] !== '--help').length, 1);
+  });
+}
+
+test('review 1321-9: orphaned runtime inventory cannot hide exact durable steering delivery', t => {
+  const flow = setup(t); const queued = correction(flow); const a = assignment(flow);
+  const inbox = join(flow.home, 'state', 'pilot-build.inbox'); mkdirSync(inbox, { recursive: true });
+  const send = flow.executable('orphan-send.cjs', `const fs=require('node:fs');fs.appendFileSync(${JSON.stringify(join(flow.home, 'orphan-sends'))},'send\\n');
+fs.writeFileSync(${JSON.stringify(join(inbox, '001.msg'))},'schema=fm-task-inbox.v1\\nbody-terminator=1\\n--\\n'+process.argv[3]+'\\n');process.exit(2);`);
+  const snapshot = flow.executable('orphan-snapshot.cjs', `process.stdout.write(JSON.stringify({schema:'fm-fleet-snapshot.v1',generated:new Date().toISOString(),fm_home:${JSON.stringify(flow.home)},
+backlog:{present:true,records:[{id:'pilot-build',state:'in_flight'}]},tasks:[],main_inventory:{valid:false,orphan_in_flight:['pilot-build']}}));`);
+  const options: CorrectionAdapterOptions = { fmHome: flow.home, snapshotExecutable: snapshot, sendExecutable: send, controlExecutable: send,
+    recipients: [{ assignment: ref(a), attemptId: a.attemptId, firstMateTaskId: a.firstMateTaskId, state: 'active', observedAt: new Date().toISOString() }] };
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'unknown');
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'succeeded');
+  assert.equal(readFileSync(join(flow.home, 'orphan-sends'), 'utf8'), 'send\n');
+});
+
+test('review 1321-11: explicit reference resolution releases an imported unresolved-reference gate with verified bytes', async t => {
+  const flow = setup(t, true); const file = join(flow.home, 'resolvable.txt'); writeFileSync(file, 'Resolved source bytes');
+  captureRequest(flow.store, { projectId, clientRequestId: 'resolve', channel: 'cli', source: { uri: 'fixture:request' }, originalText: 'Retain source',
+    attachments: [{ uri: 'resolvable.txt', revision: 'original' }] });
+  const bundle = backupProject(flow.store, projectId); const restored = new ProjectStore(join(flow.home, 'resolved-reference.sqlite'));
+  try {
+    restoreProjectBackup(restored, bundle, flow.home); assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'reconciling');
+    const api = await import('../src/index.js'); const resolveReference = (api as unknown as Record<string, unknown>).resolveRestoredReference;
+    assert.equal(typeof resolveReference, 'function', 'an explicit imported-reference resolution must be available');
+    if (typeof resolveReference !== 'function') assert.fail();
+    for (const reference of bundle.unresolvedReferences) {
+      const digest = digestText(readFileSync(join(flow.home, reference), 'utf8'));
+      const input = { projectId, reference, base: flow.home, digest,
+        evidence: [{ artifact: { uri: join(flow.home, reference), digest }, description: 'Operator verified recovered source against the retained revision', observedAt: new Date().toISOString() }] };
+      assert.throws(() => resolveReference(restored, { ...input, digest: digestText('wrong bytes') }), /digest_mismatch/);
+      if (reference === 'resolvable.txt') {
+        const result = spawnSync(process.execPath, [cli, 'resolve-restored-reference', '--db', join(flow.home, 'resolved-reference.sqlite'),
+          '--input', flow.save('resolve-reference.json', input)], { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr); assert.equal(JSON.parse(result.stdout).path, file);
+      } else resolveReference(restored, input);
+    }
+    assert.equal(reconcileProject(restored, projectId, flow.adapter).state, 'enabled');
+  } finally { restored.close(); }
+});
+
+test('review 1321-4: retiring explicit recovery permission before the child task lock prevents late replay', async t => {
+  const flow = setup(t); const a = assignment(flow); const task = taskCommand('permission-work');
+  const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'permission-correction', projectId, issuedAt: new Date().toISOString(),
+    idempotencyKey: 'permission-correction', command: 'deliver_correction', targetId: 'permission-correction', expectedRevision: 0,
+    payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Do the original task', action: 'new_work',
+      sequence: 1, supersedes: [], taskCommand: task } });
+  disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+  const api = await import('../src/index.js'); const recover = (api as unknown as Record<string, unknown>).recoverTaskCorrection;
+  if (typeof recover !== 'function') assert.fail();
+  const lock = flow.store.withTaskLock.bind(flow.store); let calls = 0;
+  flow.store.withTaskLock = (id, body) => lock(id, () => {
+    if (++calls === 2) {
+      const permit = flow.store.get(projectId, api.stableId('task-correction-recovery', projectId, 'permission-recovery'));
+      assert.ok(permit?.kind === 'operation');
+      const at = new Date().toISOString();
+      const decision = { kind: 'decision_change', id: 'retired-recovery', projectId, schemaVersion: 1, revision: 1, createdAt: at, updatedAt: at,
+        questionOrChange: 'Recovery was disabled and integration re-enabled before child lock', affectedRecords: [ref(permit)], rationale: 'Retire the existing explicit permission',
+        disposition: 'selected', sourceRefs: [{ uri: 'fixture:retirement' }], scopeChanges: [] };
+      flow.store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
+        command: 'record_decision_suggestion', targetId: permit.id, expectedRevision: permit.revision, payload: { decision } }, () =>
+        [decision, { ...permit, revision: permit.revision + 1, updatedAt: at, suspended: { at, reason: 'Disabled before child execution' } }]);
+    }
+    return body();
+  });
+  const executable = flow.executable('unused-permission.cjs', 'throw new Error("not a steering action");');
+  assert.throws(() => recover(flow.store, { projectId, correctionId: queued.correction.id, idempotencyKey: 'permission-recovery' },
+    { fmHome: flow.home, sendExecutable: executable, controlExecutable: executable, taskAdapter: flow.adapter, recipients: [] }), /permanently_suspended/);
+  assert.equal(flow.tasks.read().tasks['permission-work'], undefined);
+});
+
+
+test('review 1321-3: the control acknowledgement confirms interruption while its agent remains alive, even after a nonzero exit', t => {
+  const flow = setup(t); const a = assignment(flow);
+  const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'acknowledged-interrupt', projectId, issuedAt: new Date().toISOString(),
+    idempotencyKey: 'acknowledged-interrupt', command: 'deliver_correction', targetId: 'acknowledged-interrupt', expectedRevision: 0,
+    payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Interrupt this turn', action: 'clarification', urgentStop: true,
+      sequence: 1, supersedes: [] } });
+  flow.runtime.save([{ id: a.firstMateTaskId, spawn_gen: 'ack-generation', project: flow.home,
+    endpoint: { exists: true, agent_alive: 'alive', freshness: 'fresh', observed_at: '' }, current_state: { state: 'active', freshness: 'fresh', observed_at: '' } }]);
+  const control = flow.executable('acknowledged-interrupt.cjs', `require('node:fs').appendFileSync(${JSON.stringify(join(flow.home, 'ack-interrupts'))},'interrupt\\n');
+process.stdout.write('interrupt-delivered pilot-build harness=codex backend=tmux verified=agent-alive cancel=confirmed\\n');process.exitCode=2;`);
+  const options: CorrectionAdapterOptions = { fmHome: flow.home, snapshotExecutable: flow.runtime.executable, sendExecutable: control, controlExecutable: control,
+    recipients: [{ assignment: ref(a), attemptId: a.attemptId, firstMateTaskId: a.firstMateTaskId, state: 'active', observedAt: new Date().toISOString() }] };
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'succeeded');
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'succeeded');
+  assert.equal(readFileSync(join(flow.home, 'ack-interrupts'), 'utf8'), 'interrupt\n');
+  assert.equal(flow.runtime.read()[0]!.endpoint?.agent_alive, 'alive');
+});
+
+test('review 1321-3: a lost interruption response leaves the live agent and unknown outcome without repeating the interrupt', t => {
+  const flow = setup(t); const a = assignment(flow);
+  const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'lost-interrupt', projectId, issuedAt: new Date().toISOString(),
+    idempotencyKey: 'lost-interrupt', command: 'deliver_correction', targetId: 'lost-interrupt', expectedRevision: 0,
+    payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Interrupt the current turn', action: 'clarification', urgentStop: true,
+      sequence: 1, supersedes: [] } });
+  flow.runtime.save([{ id: a.firstMateTaskId, spawn_gen: 'lost-ack-generation', project: flow.home,
+    endpoint: { exists: true, agent_alive: 'alive', freshness: 'fresh', observed_at: '' }, current_state: { state: 'active', freshness: 'fresh', observed_at: '' } }]);
+  const control = flow.executable('lost-interrupt.cjs', `require('node:fs').appendFileSync(${JSON.stringify(join(flow.home, 'lost-interrupts'))},'interrupt\\n');
+process.stdout.write('interrupt-delivered pilot-build harness=codex backend=tmux verified=agent-alive cancel=confirmed\\n');process.kill(process.ppid,'SIGKILL');`);
+  const options: CorrectionAdapterOptions = { fmHome: flow.home, snapshotExecutable: flow.runtime.executable, sendExecutable: control, controlExecutable: control,
+    recipients: [{ assignment: ref(a), attemptId: a.attemptId, firstMateTaskId: a.firstMateTaskId, state: 'active', observedAt: new Date().toISOString() }] };
+  const result = spawnSync(process.execPath, [cli, 'deliver-correction', '--db', flow.database, '--project', projectId,
+    '--correction', queued.correction.id, '--adapter-config', flow.save('lost-interrupt-adapter.json', options)], { encoding: 'utf8' });
+  assert.equal(result.signal, 'SIGKILL', result.stderr); flow.reopen();
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'unknown');
+  assert.equal(readFileSync(join(flow.home, 'lost-interrupts'), 'utf8'), 'interrupt\n');
+  assert.equal(flow.runtime.read()[0]!.endpoint?.exists, true);
+  assert.equal(flow.runtime.read()[0]!.endpoint?.agent_alive, 'alive');
+});
+
+test('review 1321-4: a suspended failed task correction can recover explicitly once the wrapper is available', async t => {
+  const flow = setup(t); const a = assignment(flow); const task = taskCommand('failed-task-recovery');
+  const queued = queueCorrection(flow.store, { schemaVersion: 1, id: 'failed-task-correction', projectId, issuedAt: new Date().toISOString(),
+    idempotencyKey: 'failed-task-correction', command: 'deliver_correction', targetId: 'failed-task-correction', expectedRevision: 0,
+    payload: { affectedRevision: a.feature, assignment: ref(a), originalCorrection: 'Create the planned task', action: 'new_work',
+      sequence: 1, supersedes: [], taskCommand: task } });
+  const unused = flow.executable('unused-failed-task.cjs', 'throw new Error("task action only");');
+  const options: CorrectionAdapterOptions = { fmHome: flow.home, sendExecutable: unused, controlExecutable: unused,
+    taskAdapter: { ...flow.adapter, tasksExecutable: join(flow.home, 'wrapper-not-installed') }, recipients: [] };
+  assert.equal(deliverCorrection(flow.store, projectId, queued.correction.id, options).state, 'failed');
+  disableProject(flow.store, projectId, 'pause'); reconcileProject(flow.store, projectId, flow.adapter);
+  const api = await import('../src/index.js'); const recover = (api as unknown as Record<string, unknown>).recoverTaskCorrection;
+  if (typeof recover !== 'function') assert.fail();
+  const request = { projectId, correctionId: queued.correction.id, idempotencyKey: 'failed-task-explicit-recovery' };
+  assert.equal(recover(flow.store, request, { ...options, taskAdapter: flow.adapter }).state, 'succeeded');
+  assert.equal(recover(flow.store, request, { ...options, taskAdapter: flow.adapter }).state, 'succeeded');
+  assert.equal(flow.tasks.read().calls.filter((call) => call.args[0] === 'add' && call.args[1] !== '--help').length, 1);
 });
