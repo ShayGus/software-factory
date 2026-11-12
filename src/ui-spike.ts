@@ -1,3 +1,4 @@
+import { BundleRefsSchema } from './ui-bundle.js';
 import { z } from 'zod';
 import { CommandEnvelopeSchema } from './commands.js';
 import { IdSchema } from './primitives.js';
@@ -50,7 +51,8 @@ export class ToolkitApi {
         const options = { ...this.options, projectId: parts[1] };
         if (parts.length === 3 && parts[2] === 'overview') return { status: 200, body: projectView(this.store, options) };
         if (parts.length === 4 && parts[2] === 'features') {
-          const view = projectView(this.store, options);
+          const raw = url.searchParams.get('bundle');
+          const view = projectView(this.store, raw === null ? options : { ...options, bundle: { featureId: parts[3]!, refs: BundleRefsSchema.parse(JSON.parse(raw)) } });
           return { status: 200, body: renderFeature(view, featureView(view, parts[3]!)), contentType: 'text/html; charset=utf-8' };
         }
         if (parts.length === 4 && parts[2] === 'inspect') {

@@ -1,3 +1,4 @@
+import { bundleUrl } from './ui-bundle.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { DesignPlanFeatureCommandSchema } from './commands.js';
@@ -163,7 +164,7 @@ export function designPlanFeature(store: ProjectStore, input: unknown) {
   }
   const writes = [payload.design, payload.plan, ...payload.tasks];
   if (!writes.some((record) => record.id === command.targetId)) throw new StoreError('validation', 'command_must_target_written_record');
-  return store.mutate(command, (history) => {
+  const result = store.mutate(command, (history) => {
     if (payload.plan.readiness.ready) throw new StoreError('validation', 'use_readiness_check_to_record_ready_plan');
     if (payload.feature) {
       const current = history.filter((entry) => entry.id === payload.feature!.id).at(-1);
@@ -182,4 +183,6 @@ export function designPlanFeature(store: ProjectStore, input: unknown) {
     }
     return writes;
   });
+  const bundle = { design: ref(payload.design), plan: ref(payload.plan), tasks: payload.plan.deliverySequence };
+  return { ...result, bundle, ...(payload.feature ? { resumeUrl: bundleUrl(command.projectId, payload.feature.id, bundle) } : {}) };
 }

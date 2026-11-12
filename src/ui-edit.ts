@@ -4,8 +4,7 @@ import type { Ref } from './primitives.js';
 import type { Criterion, DesignRevision, DetailedPlanTask, FeatureRevision, ImplementationPlanRevision, TaskMapping } from './records.js';
 
 type ProductContext = { feature: FeatureRevision; design: DesignRevision; plan: ImplementationPlanRevision; tasks: DetailedPlanTask[];
-  selectedDesign?: Ref; expectedRevisions?: Ref[]; criterionMap?: { existing: Ref; current: Ref }[] };
-export const editBaseSourceUri = 'factory:editor-base/design';
+  expectedRevisions?: Ref[]; criterionMap?: { existing: Ref; current: Ref }[] };
 export type EditContext =
   | { kind: 'feature'; feature: FeatureRevision }
   | { kind: 'criterion'; feature: FeatureRevision; criterion: Criterion }
@@ -107,7 +106,6 @@ export function buildEditCommand(context: EditContext, values: EditValues, key: 
   }
   return { ...envelope, command: 'design_plan_feature', targetId: context.kind === 'design' ? context.design.id : context.plan.id,
     expectedRevision: head(context.kind === 'design' ? context.design : context.plan).revision,
-    payload: { feature: ref(feature), sourceRefs: design.sourceRefs,
-      existingDesignRefs: [{ uri: editBaseSourceUri, record: context.selectedDesign ?? ref(context.design) }],
+    payload: { feature: ref(feature), sourceRefs: design.sourceRefs, existingDesignRefs: [],
       expectedRevisions, design, plan, tasks } };
 }

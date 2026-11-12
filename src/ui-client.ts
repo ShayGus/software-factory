@@ -58,11 +58,15 @@ for (const form of forms) {
       state.busy = false;
       state.dirty = state.version !== state.submittedVersion;
       output.textContent = 'Saved — reload to inspect the current records.';
+      if (result.resumeUrl) {
+        const link = document.createElement('a');
+        link.href = result.resumeUrl; link.textContent = ' Inspect/Resume saved bundle'; output.append(link);
+      }
       if (protectedEdits()) {
         pageState.textContent = 'Saved — drafts or unresolved commands remain on this page. Reload after preserving them.';
       } else {
         pageState.textContent = 'Saved — reloading current records…';
-        location.reload();
+        if (result.resumeUrl) location.assign(result.resumeUrl); else location.reload();
       }
     } catch (error) {
       output.textContent = state.pending ? 'Unknown — response unavailable. Retry sends the exact same idempotency key and payload; keep this page open.' :

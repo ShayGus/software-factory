@@ -366,23 +366,23 @@ test('review 1314 finding 1: design-save, reload and plan-save resume the same c
   const flow = setup(t);
   const path = '/projects/project-1/features/feature-1';
   const originalAssignment = flow.store.get('project-1', 'assignment-1');
-  await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'design'), { productBehavior: 'Saved design behavior must survive the next plan edit' }, 'continuous-design');
-  const reloaded = await flow.http('GET', path);
-  await sendEdit(flow, findEditor(reloaded.body, 'plan'), { integrationApproach: 'Saved plan change must preserve the design draft' }, 'continuous-plan');
+  const designSave = await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'design'), { productBehavior: 'Saved design behavior must survive the next plan edit' }, 'continuous-design');
+  const reloaded = await flow.http('GET', designSave.first.json().resumeUrl);
+  const planSave = await sendEdit(flow, findEditor(reloaded.body, 'plan'), { integrationApproach: 'Saved plan change must preserve the design draft' }, 'continuous-plan');
   const design = flow.store.get('project-1', 'design-1'); assert.ok(design?.kind === 'design_revision');
   const plan = flow.store.get('project-1', 'plan-1'); assert.ok(plan?.kind === 'implementation_plan_revision');
   assert.equal(design.productBehavior, 'Saved design behavior must survive the next plan edit');
   assert.equal(plan.integrationApproach, 'Saved plan change must preserve the design draft');
   assert.deepEqual(plan.design, { id: design.id, revision: design.revision });
-  await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'plan-task'), { outputs: 'Keep this saved task draft output' }, 'continuous-task-output');
-  await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'plan-task'), { verificationMethod: 'Verify without discarding the saved output' }, 'continuous-task-verification');
+  const outputSave = await sendEdit(flow, findEditor((await flow.http('GET', planSave.first.json().resumeUrl)).body, 'plan-task'), { outputs: 'Keep this saved task draft output' }, 'continuous-task-output');
+  const verificationSave = await sendEdit(flow, findEditor((await flow.http('GET', outputSave.first.json().resumeUrl)).body, 'plan-task'), { verificationMethod: 'Verify without discarding the saved output' }, 'continuous-task-verification');
   const task = flow.store.get('project-1', 'task-1'); assert.ok(task?.kind === 'detailed_plan_task');
   assert.deepEqual(task.outputs, ['Keep this saved task draft output']);
   assert.equal(task.verificationMethod, 'Verify without discarding the saved output');
   const selected = projectView(flow.store, { projectId: 'project-1' }).features[0]!;
   assert.equal(selected.design?.revision, 1, 'Draft edits do not silently select the new design');
   assert.equal(selected.plan?.revision, 1, 'Draft edits do not silently select the new plan');
-  const nextEditor = findEditor((await flow.http('GET', path)).body, 'plan'); assert.ok(nextEditor.context.kind === 'plan');
+  const nextEditor = findEditor((await flow.http('GET', verificationSave.first.json().resumeUrl)).body, 'plan'); assert.ok(nextEditor.context.kind === 'plan');
   assert.equal(nextEditor.context.design.productBehavior, design.productBehavior);
   assert.equal(nextEditor.values.integrationApproach, plan.integrationApproach);
   assert.deepEqual(flow.store.get('project-1', 'assignment-1'), originalAssignment);
@@ -445,11 +445,11 @@ for (const oldDraft of [false, true]) test(`review 1328 finding 1: selecting D2 
   assert.equal(editor.values.productBehavior, 'Explicitly selected D2 behavior must survive');
   assert.equal(editor.context.design.revision, 2);
   if (oldDraft) {
-    assert.match(page.body, /Conflict — draft.*different design/u);
+    assert.doesNotMatch(page.body, /Conflict/u);
     assert.equal(editor.context.plan.revision, 1, 'The incompatible old draft is not a save base');
   }
-  await sendEdit(flow, editor, { technicalDesign: 'Technical change based on selected D2' }, 'selected-D2-design');
-  await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'plan'), { integrationApproach: 'Plan change retains selected D2' }, 'selected-D2-plan');
+  const designSave = await sendEdit(flow, editor, { technicalDesign: 'Technical change based on selected D2' }, 'selected-D2-design');
+  await sendEdit(flow, findEditor((await flow.http('GET', designSave.first.json().resumeUrl)).body, 'plan'), { integrationApproach: 'Plan change retains selected D2' }, 'selected-D2-plan');
   const current = flow.store.get('project-1', design.id); assert.ok(current?.kind === 'design_revision');
   assert.equal(current.productBehavior, 'Explicitly selected D2 behavior must survive');
   assert.equal(current.technicalDesign, 'Technical change based on selected D2');
@@ -478,18 +478,119 @@ for (const replace of [false, true]) test(`review 1328 finding 2: ${replace ? 'r
   payload.plan.deliverySequence = payload.tasks.map((task) => ({ id: task.id, revision: task.revision }));
   payload.plan.priorities = payload.tasks.map((task, priority) => ({ taskId: task.id, priority }));
   const created = await flow.http('POST', '/canonical', command); assert.equal(created.status, 200, created.body);
-  const page = await flow.http('GET', path);
+  const page = await flow.http('GET', created.json().resumeUrl);
   const taskEditors = editors(page.body).filter((editor) => editor.context.kind === 'plan-task');
   assert.deepEqual(taskEditors.map((editor) => editor.context.kind === 'plan-task' && editor.context.taskId), payload.tasks.map((task) => task.id));
   const target = replace ? 'draft-task-1' : 'draft-added-task';
   const taskEditor = taskEditors.find((editor) => editor.context.kind === 'plan-task' && editor.context.taskId === target); assert.ok(taskEditor);
-  await sendEdit(flow, taskEditor, { outputs: 'Persist this new task draft output' }, 'edit-new-task');
+  const edited = await sendEdit(flow, taskEditor, { outputs: 'Persist this new task draft output' }, 'edit-new-task');
   const saved = flow.store.get('project-1', target); assert.ok(saved?.kind === 'detailed_plan_task');
   assert.deepEqual(saved.outputs, ['Persist this new task draft output']);
-  const next = await flow.http('GET', path);
+  const next = await flow.http('GET', edited.first.json().resumeUrl);
   const resumed = editors(next.body).find((editor) => editor.context.kind === 'plan-task' && editor.context.taskId === target); assert.ok(resumed);
   assert.equal(resumed.values.outputs, 'Persist this new task draft output');
   const historical = next.body.match(/<div id="historical-plan-tasks">([\s\S]*?)<\/div>/u)?.[1]; assert.ok(historical);
   assert.doesNotMatch(historical, /<form/u);
   assert.match(historical, /inspect\/assignment-1\?revision=1/u);
+});
+
+test('review 1335: explicit saved-bundle URLs preserve design, plan and task edits in sequence', async (t) => {
+  const flow = setup(t);
+  const path = '/projects/project-1/features/feature-1';
+  const designSave = await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'design'), { productBehavior: 'Design saved in the explicitly named bundle' }, 'named-design');
+  const first = designSave.first.json();
+  assert.equal(typeof first.resumeUrl, 'string');
+  assert.deepEqual(first.bundle.design, { id: 'design-1', revision: 2 });
+  assert.deepEqual(first.bundle.plan, { id: 'plan-1', revision: 2 });
+  const planSave = await sendEdit(flow, findEditor((await flow.http('GET', first.resumeUrl)).body, 'plan'), { integrationApproach: 'Plan saved after the named design' }, 'named-plan');
+  const taskSave = await sendEdit(flow, findEditor((await flow.http('GET', planSave.first.json().resumeUrl)).body, 'plan-task'), { outputs: 'Task saved after the named plan' }, 'named-task');
+  const named = await flow.http('GET', taskSave.first.json().resumeUrl);
+  const designEditor = findEditor(named.body, 'design');
+  const planEditor = findEditor(named.body, 'plan');
+  const taskEditor = findEditor(named.body, 'plan-task');
+  assert.equal(designEditor.values.productBehavior, 'Design saved in the explicitly named bundle');
+  assert.equal(planEditor.values.integrationApproach, 'Plan saved after the named design');
+  assert.equal(taskEditor.values.outputs, 'Task saved after the named plan');
+  const selected = findEditor((await flow.http('GET', path)).body, 'plan'); assert.ok(selected.context.kind === 'plan');
+  assert.equal(selected.context.plan.revision, 1);
+  assert.equal(selected.context.design.revision, 1);
+});
+
+test('review 1335: selecting another plan cannot automatically resume the previous plan draft', async (t) => {
+  const flow = setup(t);
+  const path = '/projects/project-1/features/feature-1';
+  await sendEdit(flow, findEditor((await flow.http('GET', path)).body, 'design'), { productBehavior: 'Draft of the previous plan' }, 'previous-plan-draft');
+  const original = flow.store.get('project-1', 'plan-1', 1); assert.ok(original?.kind === 'implementation_plan_revision');
+  const stage = flow.store.get('project-1', 'stage-plan'); assert.ok(stage?.kind === 'stage_revision');
+  const at = new Date().toISOString();
+  const tasks = original.deliverySequence.map((ref) => {
+    const task = flow.store.get('project-1', ref.id, ref.revision); assert.ok(task?.kind === 'detailed_plan_task');
+    return { ...task, id: `alternative-${task.id}`, plan: { id: 'alternative-plan', revision: 1 } };
+  });
+  const plan = { ...original, id: 'alternative-plan', updatedAt: '2026-11-11T00:00:00Z',
+    deliverySequence: tasks.map((task) => ({ id: task.id, revision: task.revision })),
+    priorities: tasks.map((task, priority) => ({ taskId: task.id, priority })),
+    workflow: { ...original.workflow!, slices: original.workflow!.slices.map((slice) => ({ ...slice,
+      tasks: slice.tasks.map((task) => ({ ...task, id: `alternative-${task.id}` })) })) } };
+  const select = await flow.http('POST', '/canonical', { schemaVersion: 1, id: 'select-alternative', projectId: 'project-1',
+    issuedAt: at, idempotencyKey: 'select-alternative', command: 'design_plan_feature', targetId: stage.id, expectedRevision: stage.revision,
+    payload: { action: 'record_stage', stage: { ...stage, revision: stage.revision + 1, updatedAt: at, artifact: { id: plan.id, revision: 1 } }, records: [plan, ...tasks] } });
+  assert.equal(select.status, 200, select.body);
+  const page = await flow.http('GET', path);
+  for (const editor of editors(page.body).filter((editor) => ['design', 'plan', 'plan-task'].includes(editor.context.kind))) {
+    assert.ok('plan' in editor.context); assert.equal(editor.context.plan.id, plan.id);
+  }
+  assert.doesNotMatch(page.body, /Conflict/u);
+});
+
+test('review 1335: old-format drafts resume only through their explicit Inspect/Resume link', async (t) => {
+  const flow = setup(t);
+  const path = '/projects/project-1/features/feature-1';
+  const editor = findEditor((await flow.http('GET', path)).body, 'design');
+  const command = buildEditCommand(editor.context, { ...editor.values, productBehavior: 'Legacy draft behavior', reason: 'Old-format draft without base metadata' }, 'old-format-draft', new Date().toISOString());
+  assert.ok(command.command === 'design_plan_feature' && 'plan' in command.payload);
+  command.payload.existingDesignRefs = [];
+  const first = await flow.http('POST', '/canonical', command); assert.equal(first.status, 200, first.body);
+  const oldUrl = first.json().resumeUrl; assert.equal(typeof oldUrl, 'string');
+  const newer = await sendEdit(flow, findEditor((await flow.http('GET', oldUrl)).body, 'plan'), { integrationApproach: 'Newer explicitly saved plan draft' }, 'newer-format-draft');
+  const page = await flow.http('GET', path);
+  assert.match(page.body, /Inspect\/Resume/u);
+  assert.ok(page.body.includes(`href="${oldUrl}"`));
+  assert.ok(page.body.includes(`href="${newer.first.json().resumeUrl}"`));
+  const selected = findEditor(page.body, 'plan'); assert.ok(selected.context.kind === 'plan'); assert.equal(selected.context.plan.revision, 1);
+  const old = findEditor((await flow.http('GET', oldUrl)).body, 'plan'); assert.ok(old.context.kind === 'plan');
+  assert.equal(old.context.plan.revision, 2);
+  assert.equal(old.context.design.productBehavior, 'Legacy draft behavior');
+  await sendEdit(flow, old, { integrationApproach: 'Explicitly continued old draft' }, 'resume-old-draft');
+  const current = flow.store.get('project-1', 'design-1'); assert.ok(current?.kind === 'design_revision'); assert.equal(current.productBehavior, 'Legacy draft behavior');
+  const unavailable = `${path}?bundle=${encodeURIComponent(JSON.stringify({ ...first.json().bundle, plan: { id: 'missing-plan', revision: 1 } }))}`;
+  const missing = await flow.http('GET', unavailable);
+  assert.match(missing.body, /Conflict — named bundle no longer exists/u);
+  assert.equal(editors(missing.body).filter((editor) => ['design', 'plan', 'plan-task'].includes(editor.context.kind)).length, 0);
+});
+
+test('review 1335: legacy assignment references select the bundle instead of a newer unstaged revision', async (t) => {
+  const flow = setup(t, baseline);
+  const path = '/projects/project-1/features/feature-1';
+  const selected = findEditor((await flow.http('GET', path)).body, 'design');
+  const saved = await sendEdit(flow, selected, { productBehavior: 'Explicit legacy draft remains separate from assigned work' }, 'legacy-unselected');
+  const bare = findEditor((await flow.http('GET', path)).body, 'plan'); assert.ok(bare.context.kind === 'plan');
+  assert.equal(bare.context.plan.revision, 1);
+  assert.equal(bare.context.design.revision, 1);
+  const resumed = findEditor((await flow.http('GET', saved.first.json().resumeUrl)).body, 'design'); assert.ok(resumed.context.kind === 'design');
+  assert.equal(resumed.context.design.revision, 2);
+  assert.equal(resumed.values.productBehavior, 'Explicit legacy draft remains separate from assigned work');
+});
+
+test('review 1335: an explicit saved bundle is editable without any selected stage or assignment', async (t) => {
+  const history = baseline.filter((record) => ['project', 'request', 'feature_revision', 'criterion', 'design_revision', 'implementation_plan_revision', 'detailed_plan_task'].includes(record.kind));
+  const flow = setup(t, history);
+  const path = '/projects/project-1/features/feature-1';
+  const page = await flow.http('GET', path);
+  assert.equal(editors(page.body).filter((editor) => ['design', 'plan', 'plan-task'].includes(editor.context.kind)).length, 0);
+  const href = page.body.match(/href="([^"]+\?bundle=[^"]+)">Inspect\/Resume/u)?.[1]; assert.ok(href);
+  const named = await flow.http('GET', decode(href));
+  const editor = findEditor(named.body, 'design'); assert.ok(editor.context.kind === 'design');
+  assert.equal(editor.context.design.revision, 1);
+  await sendEdit(flow, editor, { productBehavior: 'Explicitly edited without guessing a selection' }, 'explicit-unselected');
 });

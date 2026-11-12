@@ -23,14 +23,15 @@ function client(fetch: (url: string, options: { body: string }) => Promise<unkno
     return { form, output, button, values, listeners };
   });
   let reloads = 0;
+  const assigned: string[] = [];
   let sequence = 0;
   const source = readFileSync(new URL('../src/ui-client.js', import.meta.url), 'utf8').replace(/^import .*;\n/gmu, '');
   runInNewContext(source, { buildEditCommand, fetch,
     document: { querySelector: () => pageState, querySelectorAll: () => surfaces.map((surface) => surface.form), createElement: () => ({ href: '', textContent: '' }) },
     FormData: class { constructor(readonly form: { values: Map<string, string> }) {} get(key: string) { return this.form.values.get(key); } entries() { return this.form.values.entries(); } },
     crypto: { randomUUID: () => `key-${++sequence}` }, window: { addEventListener(name: string, listener: Listener) { windows.set(name, listener); } }, setInterval() {},
-    location: { reload: () => { reloads++; } }, confirm: () => true });
-  return { output: surfaces[0]!.output, button: surfaces[0]!.button, values: surfaces[0]!.values, surfaces, pageState, reloads: () => reloads,
+    location: { reload: () => { reloads++; }, assign: (url: string) => { assigned.push(url); } }, confirm: () => true });
+  return { output: surfaces[0]!.output, button: surfaces[0]!.button, values: surfaces[0]!.values, surfaces, pageState, assigned, reloads: () => reloads,
     edit(index: number, key: string, value: string) { surfaces[index]!.values.set(key, value); surfaces[index]!.listeners.get('input')!({ preventDefault() {} }); },
     guarded() { let prevented = false; windows.get('beforeunload')!({ preventDefault() { prevented = true; } }); return prevented; },
     submit: async (index = 0) => { await surfaces[index]!.listeners.get('submit')!({ preventDefault() {} }); } };
@@ -104,4 +105,13 @@ test('review 2: input entered during a pending save is retained after that save 
   await saving;
   assert.equal(form.reloads(), 0);
   assert.equal(form.guarded(), true);
+});
+
+
+test('review 1335: an artifact save reloads with its exact returned bundle URL', async () => {
+  const resumeUrl = '/projects/project-1/features/feature-1?bundle=exact-saved-revisions';
+  const form = client(async () => ({ status: 200, ok: true, json: async () => ({ records: [], resumeUrl }) }));
+  await form.submit();
+  assert.deepEqual(form.assigned, [resumeUrl]);
+  assert.equal(form.reloads(), 0);
 });

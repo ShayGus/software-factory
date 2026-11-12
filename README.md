@@ -79,10 +79,13 @@ away other drafts or input entered during the save. Design,
 plan and task-detail edits create a coherent revisioned artifact set through
 `design_plan_feature` and clear draft readiness for rechecking with BUILD-06.
 Stage and reuse selections remain explicit; newer unselected drafts are labeled
-separately from the selected design and plan. Editors share the newest compatible draft bundle built on the selected design,
-falling back to the selected bundle. Incompatible drafts show a text conflict and
-stay read-only. Every task in the bundle has an editor, preserving previous draft
-edits across saves and reloads. Prior assignments retain their old revision links. Task edits use BUILD-08 and its
+separately from the selected design and plan. Without a bundle URL, editors start
+from the selected bundle. A successful artifact save returns exact design, plan
+and task revisions plus a Resume URL; the browser reloads that URL. Saved bundles
+have explicit Inspect/Resume links, including old drafts. Named bundles load
+exactly those revisions, with no automatic draft selection or compatibility
+inference. A missing named bundle shows a text conflict and disables its artifact
+editors. Every task in the chosen bundle has an editor. Prior assignments retain their old revision links. Task edits use BUILD-08 and its
 existing reconciliation/receipt records. Unknown outcomes stay visible and block
 further edits; explicit reconciliation uses the existing CLI operation.
 

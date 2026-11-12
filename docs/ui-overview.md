@@ -32,7 +32,7 @@ the single TypeScript request handler; it contains no independent stub server.
 | Route | Purpose |
 | --- | --- |
 | `GET /` | Feature overview and focused feature/task editors |
-| `GET /projects/:project/features/:feature` | Feature detail, original request, revisions, plan tasks, briefs, criteria/evidence and corrections |
+| `GET /projects/:project/features/:feature[?bundle=encoded-ref-JSON]` | Selected or explicitly named bundle, original request, revisions, plan tasks, briefs, criteria/evidence and corrections |
 | `GET /projects/:project/overview` | Read model, records and freshness metadata as JSON |
 | `GET /projects/:project/inspect/:id?revision=N` | Readable record, revision history and related links |
 | `GET /projects/:project/records/:id?revision=N` | Existing read-only canonical record JSON |
@@ -75,16 +75,27 @@ older selected design or plan with newer drafts. Readiness-check revisions remai
 linked to the selected detail stage. A Detail selection applies only when it
 refines the current Plan-stage revision; earlier detailed plans remain linked
 as historical context. Newer drafts are labeled unselected. Every artifact editor
-uses one edit bundle: the newest unstaged draft built on the currently selected
-design, or the selected bundle if no compatible draft exists. Saved commands pin
-that selected-design base in their existingDesignRefs; the canonical receipt
-retains it across subsequent saves. Unmarked drafts use their declared plan.design
-reference as the base. A draft based on a different selected design is labeled
-Conflict and remains read-only. All task editors come directly from the edit
-bundle, including newly added or replaced IDs; selected historical tasks and their
-assignment links are read-only context. Successive design, plan and task saves
-preserve earlier draft edits across reloads without changing stage selections. Saves allocate revisions after current heads,
-retaining every intervening draft. Assignments keep their exact historical links.
+uses one explicitly chosen edit bundle. Without a `bundle` query parameter,
+editors use the selected design, selected logical plan and its task revisions.
+Legacy records use an unambiguous existing assignment plan reference when no
+stage selection exists; absent or ambiguous references stay Unknown rather than
+selecting a newer draft.
+After a save, the response includes `bundle` with exact design/plan/task refs and
+`resumeUrl`; the browser navigates to that URL when no other edits need protection.
+If other drafts remain, the save offers the same explicit Inspect/Resume link.
+
+Every saved plan revision has an Inspect/Resume link naming its complete artifact
+bundle. This includes older-format drafts with no base metadata. A named URL
+loads exactly those immutable revisions, even when newer drafts or stage selections
+exist. No automatic resumption, compatibility inference or receipt-based edit-base
+detection runs. Only a missing or incomplete named bundle shows Conflict and
+withholds artifact saves. Current revision heads still guard each new write;
+resuming an old bundle creates a new revision rather than overwriting history.
+
+All task editors come directly from the chosen bundle, including added or
+replaced IDs. Selected historical tasks and assignment links are read-only
+context. Successful sequential design, plan and task saves retain earlier edits
+by following their returned URLs. Assignments keep their exact historical links.
 An edit never claims a product review or silently upgrades worker instructions.
 
 All mutations carry expected revision and idempotency key. Product command

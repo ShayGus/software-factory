@@ -6,9 +6,9 @@ import { hasUnchangedFeatureScope, validateReviewForCompletion } from './rules.j
 import { ProjectStore, StoreError } from './store.js';
 import { currentAssignmentAttempts } from './task-readiness.js';
 import { outstandingTaskCorrections } from './correction-state.js';
-import { editBaseSourceUri } from './ui-edit.js';
+import { bundleUrl, type BundleRefs } from './ui-bundle.js';
 
-export interface UiOptions { projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string }
+export interface UiOptions { bundle?: { featureId: string; refs: BundleRefs }; projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string }
 export const sameRef = (a: Ref | null | undefined, b: Ref | null | undefined) => !!a && !!b && a.id === b.id && a.revision === b.revision;
 export function projectView(store: ProjectStore, options: UiOptions, now = Date.now()) {
   const history = store.history(options.projectId);
@@ -17,7 +17,6 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
   if (!project) throw new StoreError('not_found', 'project_not_found');
   const features = records.filter((record): record is FeatureRevision => record.kind === 'feature_revision');
   const lookup = (target: Ref) => history.find((record) => sameRef(record, target));
-  const receipts = store.exportProject(options.projectId).receipts;
   const bundle = (design: DesignRevision, plan: ImplementationPlanRevision) => {
     const tasks = plan.deliverySequence.flatMap((target) => {
       const task = lookup(target);
@@ -30,6 +29,7 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
     designs.sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
     const plans = history.filter((record): record is Extract<FactoryRecord, { kind: 'implementation_plan_revision' }> => record.kind === 'implementation_plan_revision' && record.feature?.id === feature.id);
     plans.sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
+    const assignments = records.filter((record): record is Extract<FactoryRecord, { kind: 'assignment' }> => record.kind === 'assignment' && record.feature?.id === feature.id);
     const stages = records.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> =>
       record.kind === 'stage_revision' && sameRef(record.feature, feature))
       .sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt) || a.revision - b.revision);
@@ -45,31 +45,35 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
       return candidate.readiness.ready && check?.kind === 'plan_readiness_revision' && check.ready &&
         sameRef(check.detailStage, detailStage) && sameRef(check.plan, detailStage.artifact);
     }).at(-1);
-    const plan = readyPlan || (selectedPlan?.kind === 'implementation_plan_revision' ? selectedPlan : plans.at(-1));
+    // Legacy records can name a selected plan through existing assignments.
+    // Ambiguous or absent references stay unknown; newer drafts are never a fallback.
+    const assignedPlans = [...new Map(assignments.map((assignment) => [JSON.stringify(assignment.plan), assignment.plan])).values()];
+    const assignedPlan = assignedPlans.length === 1 ? lookup(assignedPlans[0]!) : undefined;
+    const plan = readyPlan || (selectedPlan?.kind === 'implementation_plan_revision' ? selectedPlan :
+      assignedPlan?.kind === 'implementation_plan_revision' ? assignedPlan : undefined);
     const designStage = stages.filter((stage) => stage.stage === 'design').at(-1);
     const selectedDesign = designStage ? lookup(designStage.artifact) : plan && lookup(plan.design);
-    const design = selectedDesign?.kind === 'design_revision' ? selectedDesign : designs.at(-1);
+    const design = selectedDesign?.kind === 'design_revision' ? selectedDesign : undefined;
     const newer = (candidate: Ref & { updatedAt: string }, selected: (Ref & { updatedAt: string }) | undefined) => selected &&
       !sameRef(candidate, selected) && (Date.parse(candidate.updatedAt) > Date.parse(selected.updatedAt) ||
         (candidate.id === selected.id && candidate.revision > selected.revision));
     const designDrafts = designs.filter((candidate) => newer(candidate, design));
     const planDrafts = plans.filter((candidate) => newer(candidate, plan));
-    const drafts = planDrafts.filter((candidate) => !candidate.readiness.ready && sameRef(candidate.feature, feature) &&
-      !history.some((record) => record.kind === 'stage_revision' && sameRef(record.artifact, candidate))).map((candidate) => {
-      const receipt = receipts.find((entry) => entry.command.command === 'design_plan_feature' &&
-        'plan' in entry.command.payload && sameRef(entry.command.payload.plan, candidate));
-      const command = receipt?.command;
-      const baseDesign = command?.command === 'design_plan_feature' && 'plan' in command.payload ?
-        command.payload.existingDesignRefs.find((source) => source.uri === editBaseSourceUri)?.record ?? candidate.design : candidate.design;
-      const sourceDesign = lookup(candidate.design);
-      return { baseDesign, plan: candidate, bundle: sourceDesign?.kind === 'design_revision' ? bundle(sourceDesign, candidate) : undefined };
+    const named = options.bundle?.featureId === feature.id ? options.bundle.refs : undefined;
+    let editBundle = design && plan ? bundle(design, plan) : undefined;
+    if (named) {
+      const namedDesign = lookup(named.design);
+      const namedPlan = lookup(named.plan);
+      editBundle = namedDesign?.kind === 'design_revision' && namedPlan?.kind === 'implementation_plan_revision' &&
+        namedPlan.feature?.id === feature.id && sameRef(namedPlan.design, named.design) &&
+        named.tasks.length === namedPlan.deliverySequence.length && named.tasks.every((task, index) => sameRef(task, namedPlan.deliverySequence[index])) ?
+        bundle(namedDesign, namedPlan) : undefined;
+    }
+    const missingBundle = !!named && !editBundle;
+    const savedBundles = plans.map((candidate) => {
+      const refs = { design: candidate.design, plan: ref(candidate), tasks: candidate.deliverySequence };
+      return { refs, url: bundleUrl(options.projectId, feature.id, refs) };
     });
-    // One edit base for every artifact editor. A draft must identify the selected
-    // design it was built on; incompatible drafts remain read-only context.
-    const editBundle = drafts.filter((draft) => sameRef(draft.baseDesign, design) && draft.bundle).at(-1)?.bundle ??
-      (design && plan ? bundle(design, plan) : undefined);
-    const conflictingDrafts = drafts.filter((draft) => !sameRef(draft.baseDesign, design)).map((draft) => draft.plan);
-    const assignments = records.filter((record): record is Extract<FactoryRecord, { kind: 'assignment' }> => record.kind === 'assignment' && record.feature?.id === feature.id);
     const reviews = records.filter((record): record is Extract<FactoryRecord, { kind: 'product_review' }> => record.kind === 'product_review' && record.feature?.id === feature.id);
     const passedReviews = reviews.filter((review) => validateReviewForCompletion(history, ref(review)).ok &&
       sameRef(review.design, design) && sameRef(review.plan, plan));
@@ -119,7 +123,7 @@ export function projectView(store: ProjectStore, options: UiOptions, now = Date.
         label: operation?.kind === 'operation' && operation.state === 'unknown' ? 'Unknown outcome — reconciliation required' :
           !task ? 'Unknown — execution observation unavailable' : stale ? `Stale — last observed ${task.state}` : `Observed — ${task.state}` };
     });
-    return { feature, designs, design, designDrafts, plans, plan, planDrafts, editBundle, conflictingDrafts, historicalDetails, assignments, reviews, criteria, decisions, corrections, tasks,
+    return { feature, designs, design, designDrafts, plans, plan, planDrafts, editBundle, missingBundle, savedBundles, historicalDetails, assignments, reviews, criteria, decisions, corrections, tasks,
       stages: history.filter((record): record is Extract<FactoryRecord, { kind: 'stage_revision' }> => record.kind === 'stage_revision' && record.feature.id === feature.id),
       requests: feature.sourceRequests.map((target) => ({ target, record: lookup(target),
         coverage: requestCoverage(store, options.projectId, target.id) })),

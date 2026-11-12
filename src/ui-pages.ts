@@ -94,14 +94,14 @@ function evidence(view: ProjectView, item: FeatureView['criteria'][number]) {
     ${items(result.limitations)}</li>`).join('') || '<li>Missing evidence — no result recorded for this criterion.</li>';
 }
 function artifacts(view: ProjectView, feature: FeatureView) {
-  const design = feature.design?.kind === 'design_revision' ? feature.design : undefined;
-  const plan = feature.plan?.kind === 'implementation_plan_revision' ? feature.plan : undefined;
-  const tasks = plan?.deliverySequence.flatMap((target) => {
+  const design = feature.design ?? feature.editBundle?.design;
+  const plan = feature.plan ?? feature.editBundle?.plan;
+  const tasks = feature.plan?.deliverySequence.flatMap((target) => {
     const task = view.history.find((record) => sameRef(record, target));
     return task?.kind === 'detailed_plan_task' ? [task] : [];
   }) ?? [];
   const base = feature.editBundle;
-  const context = base && design ? { feature: feature.feature, ...base, selectedDesign: { id: design.id, revision: design.revision },
+  const context = base && design ? { feature: feature.feature, ...base,
     expectedRevisions: [feature.feature, base.design, base.plan, ...base.tasks].map((record) => {
       const head = view.records.find((candidate) => candidate.id === record.id) ?? record;
       return { id: head.id, revision: head.revision };
@@ -117,9 +117,9 @@ function artifacts(view: ProjectView, feature: FeatureView) {
     <h4>Verification cases</h4>${items(task.verificationCases ?? [])}<h4>Return requirements</h4>${items(task.returnRequirements ?? [])}
     <p>Produced assignments: ${links(view.options.projectId, feature.assignments.filter((assignment) => sameRef(assignment.detailedPlanTask, task)))}</p>
     ${editable ? taskEditor(task) : ''}</li>`;
-  return `${feature.conflictingDrafts.length ? `<p role="status">Conflict — draft bundles were built on a different design than the selected design. These drafts are read-only: ${links(view.options.projectId, feature.conflictingDrafts)}. Editors use the compatible bundle or the selected bundle.</p>` : ''}<section id="design"><h2>Product design</h2><p>Revision history: ${links(view.options.projectId, feature.designs)}</p>
+  return `${feature.missingBundle ? `<p role="status">Conflict — named bundle no longer exists or is incomplete. <a href="${featureUrl(view.options.projectId, feature.feature.id)}">Open the selected bundle</a>.</p>` : ''}<section id="design"><h2>Product design</h2><p>Revision history: ${links(view.options.projectId, feature.designs)}</p>
     ${feature.designDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.designDrafts)}. Stage selection stays unchanged.</p>` : ''}
-    ${context && !sameRef(context.design, design) ? `<p>Resuming saved design draft in the editors: ${recordLink(view.options.projectId, context.design)}.</p>` : ''}
+    ${context && !sameRef(context.design, design) ? `<p>Explicit design bundle in the editors: ${recordLink(view.options.projectId, context.design)}.</p>` : ''}
     ${design ? `<p>${recordLink(view.options.projectId, design)} · ${sameRef(design.feature, feature.feature) ? 'Current feature revision' : 'Stale — design names an earlier feature revision'}</p>
       <h3>Product behavior</h3>${text(design.productBehavior)}<h3>Technical design</h3>${text(design.technicalDesign)}<h3>Data flow</h3>${text(design.dataFlow)}
       <h3>Reuse findings</h3>${items(design.reuseFindings)}<h3>Interfaces</h3>${items(design.interfaces)}<h3>Examples</h3>${items(design.examples)}
@@ -129,9 +129,10 @@ function artifacts(view: ProjectView, feature: FeatureView) {
         (['productBehavior', 'technicalDesign', 'dataFlow', 'testingApproach'] as const).map((name) => field(name, name.replace(/[A-Z]/gu, (letter) => ` ${letter.toLowerCase()}`), context.design[name])).join('') +
         (['reuseFindings', 'interfaces', 'examples', 'alternatives', 'exclusions', 'unresolvedQuestions'] as const).map((name) => field(name, `${labelName(name)} (one per line)`, context.design[name].join('\n'))).join('')) : empty('Incomplete — a coherent design, plan and task set is required before editing.')}` : empty('Unknown — product design not recorded.')}</section>
     <section id="plan"><h2>Detailed plan</h2><p>Revision history: ${links(view.options.projectId, feature.plans)}</p>
+    <h3>Saved artifact bundles</h3><ul>${feature.savedBundles.map((saved) => `<li><a href="${h(saved.url)}">Inspect/Resume ${h(saved.refs.design.id)} r${saved.refs.design.revision} · ${h(saved.refs.plan.id)} r${saved.refs.plan.revision} · ${saved.refs.tasks.length} tasks</a></li>`).join('')}</ul>
     ${feature.planDrafts.length ? `<p>Newer draft — not selected: ${links(view.options.projectId, feature.planDrafts)}. Stage selection stays unchanged.</p>` : ''}
     ${feature.historicalDetails.length ? `<p>Historical detailed plans: ${links(view.options.projectId, feature.historicalDetails.map((stage) => stage.artifact))}.</p>` : ''}
-    ${context && !sameRef(context.plan, plan) ? `<p>Resuming saved plan draft in the editors: ${recordLink(view.options.projectId, context.plan)}.</p>` : ''}
+    ${context && !sameRef(context.plan, plan) ? `<p>Explicit plan bundle in the editors: ${recordLink(view.options.projectId, context.plan)}.</p>` : ''}
     ${plan ? `<p>${recordLink(view.options.projectId, plan)} · ${plan.readiness.ready && sameRef(plan.feature, feature.feature) && sameRef(plan.design, design) ? 'Recorded ready — see readiness evidence' : 'Incomplete or stale — readiness needs checking'}</p>
       <p>Strategy: ${h(plan.strategy)} · ${h(plan.strategyReason)}</p>${text(plan.integrationApproach)}
       <h3>Integration steps</h3>${items(plan.workflow?.integrationSteps ?? [])}<h3>Final verification</h3>${items(plan.workflow?.finalVerification ?? [])}
