@@ -105,7 +105,7 @@ if(step==='product_review') {
  findings:mode.badDelivery?['instructionFidelity','planConformance'].map(check=>({check,type:'narrowed_generality',message:'ERPNext only violates original generality',quotes:[{source:'original_request',text:${JSON.stringify(original)}},{source:'delivery',text:code.trim()}]})):[],suggestions:[],unresolvedQuestions:[]};
 }
 process.stdout.write(JSON.stringify(out));`);
-  const profiles = Object.fromEntries(['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'product_review', 'build']
+  const profiles = Object.fromEntries(['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'product_review', 'build', 'learning_consolidation']
     .map((step) => [step, { harness: 'codex', provider: 'codex', model: step, effort: step.includes('check') || step === 'product_review' ? 'high' : 'medium' }]));
   const agentConfig = join(root, 'agents.json'); save(agentConfig, { schemaVersion: 1, projectId: 'project-1', steps: profiles, executables: { codex: agent } });
   const wrapper = fakeTaskWrapper(root, true, database);

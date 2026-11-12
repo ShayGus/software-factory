@@ -80,8 +80,10 @@ generated designs and tasks need matching local snapshots for brief preparation.
 Set `agentConfig` using `fixtures/workflow-agents.json`, with the matching project
 ID and absolute installed harness executables. `understand`, `design`, `plan`,
 `detail`, `plan_check`, `instruction_check`, `build` and `product_review` each select
-their own harness, provider, model and effort. The run path requires all eight;
-older callers of the individual commands can continue using the original six.
+their own harness, provider, model and effort. The run path requires all eight.
+The shared configuration also requires BUILD-11's `learning_consolidation` profile;
+this feature run does not execute it. Individual commands retain the seven base
+profile entries, with `plan_check` and `build` added for the connected run path.
 Supported native harnesses are Codex and Claude, with the existing effort/provider
 validation. Unsupported profiles fail before capture or dispatch. Build flags go to
 real `fm-spawn.sh`; planning and review use fresh one-shot processes. All review
