@@ -8,7 +8,7 @@ BUILD-04 adds CLI intake, source mapping, a standalone Claude Code chat hook,
 configuration-based capture coverage and an explicit FirstMate inbox delivery adapter.
 BUILD-06 adds staged understanding, design, planning, detail, reuse and readiness checks.
 BUILD-08 connects managed tasks and product prerequisites to FirstMate's existing task wrappers.
-It does not schedule workers or implement a UI, HTTP service, tasks-axi changes or Beads.
+It does not schedule workers or implement a production UI/HTTP service, tasks-axi changes or a Beads backend.
 
 Node.js 22.13.0 or later is required. Install and verify with:
 
@@ -24,6 +24,14 @@ The package entry point is `dist/src/index.js`. The only runtime dependency is
 path-specific errors and inferred TypeScript types from the same schema, avoiding
 separate interface and validator definitions. It is MIT licensed and runs locally.
 No network, paid service or database server is required at runtime or for tests.
+
+The BUILD-05 canonical-routing tests are self-contained. The additional local
+backend check is opt-in: `npm run test:beads-spike` uses a fake bd process with
+the existing tasks-axi main source at
+`/home/shayg/fm-homes/linux-mate/projects/tasks-axi` and the runtime dependencies
+from a `tasks-axi` install on `PATH`. Those are optional prerequisites, not
+requirements for `npm ci`, `npm test`, or type checking. This check never opens
+a real Beads database or starts Docker. See [the UI spike report](docs/ui-beads-scotty.md).
 
 ## Record contracts
 

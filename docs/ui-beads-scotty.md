@@ -28,7 +28,7 @@ UiSpikeApi /canonical
 Scotty -> read-only bd wrapper -> same server database (no task synchronizer)
 ```
 
-The tests compile the **read-only tasks-axi repository's main**, recording its
+The opt-in integration test compiles the **read-only tasks-axi repository's main**, recording its
 commit in the scratch `source.json`; they do not modify or build in that
 repository. Only already-installed runtime dependencies are reused. The global
 tasks-axi install at inspection lacked the Beads backend and is not used for task
@@ -116,12 +116,24 @@ decision, correction and result. There is no independently editable feature row
 in Beads. The second-system criterion still needs current evidence; the fixture
 does not claim a complete feature or an independent review of this change.
 
-`test/ui-spike.test.ts` runs the scenario against the real tasks-axi main CLI and
-BeadsStore with a fake process implementing only the backend's bd SQL/version
-transport contract. It exercises real command validation, ID mapping and
-metadata decoding. It checks all twelve projection routes, historical GET,
-stale revisions, idempotency conflicts and unknown-outcome reconciliation after
-a lost committed response. `test/scotty-reader.test.ts` checks native mutations,
+`test/ui-spike.test.ts` runs the canonical-routing scenario through BUILD-08 with
+the repository's self-contained fake task wrapper. It checks all twelve projection
+routes, historical GET, stale revisions, idempotency conflicts and unknown-outcome
+reconciliation after a lost committed response. `test/spike-portability.test.ts`
+also runs it with only Node on PATH, so it cannot use git or a global tasks-axi.
+The default suite requires only this checkout and `npm ci` dependencies.
+
+`npm run test:beads-spike` explicitly enables `test/ui-spike.integration.test.ts`.
+This additional test needs the inspected tasks-axi source and an installed
+tasks-axi's runtime dependencies; it runs the same scenario against the real
+main CLI/BeadsStore with a fake bd SQL/version process. It exercises real command
+validation, ID mapping and metadata decoding and records the source commit.
+It is skipped by default and never uses a real Beads database.
+
+`test/ui-spike-http.test.ts` drives the actual demo HTTP handler with in-memory
+byte chunks, verifies a split multibyte canonical note is persisted intact, and
+checks the byte limit. No listener or network request is needed.
+`test/scotty-reader.test.ts` checks native mutations,
 workspace overrides, cookie-resistant HTTP policy and model/update route refusal
 without starting Docker or making network requests. This proves stub routing,
 not Dolt transactions, actual bd behavior, browser rendering or live mutation
@@ -169,8 +181,11 @@ When firstmate elects to run it later:
 
 ## What remains unproven
 
-Local validation: `npm run typecheck` and `npm test` passed (332 tests, zero
-failures). The live runner and external shell launcher passed syntax checks.
+Local validation commands are `npm run typecheck`, `npm test`, and the optional
+`npm run test:beads-spike`. The live runner and external shell launcher are
+syntax-checked without execution.
+After the review fixes, type checking passed, the default suite reported 335
+passes and one opt-in skip, and the separate fake-bd integration test passed.
 Validation logs are under `/home/shayg/fm-homes/linux-mate/data/sf-build-05/`.
 
 Scotty supplies the useful task list/graph, but no verified extension hook routes

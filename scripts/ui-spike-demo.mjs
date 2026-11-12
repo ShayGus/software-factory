@@ -11,6 +11,7 @@ const repo = resolve(process.argv[2] ?? '');
 const { prepareTasksAxi } = await import(pathToFileURL(join(repo, 'scripts/prepare-spike-tasks-axi.mjs')).href);
 const { seedSpike, exerciseSpike } = await import(pathToFileURL(join(repo, 'scripts/ui-spike-scenario.mjs')).href);
 const { writeScottyReader, writeScottyLauncher } = await import(pathToFileURL(join(repo, 'scripts/scotty-spike-reader.mjs')).href);
+const { createSpikeRequestHandler } = await import(pathToFileURL(join(repo, 'scripts/ui-spike-http.mjs')).href);
 const parent = '/home/shayg/fm-homes/linux-mate/data/sf-build-05';
 const root = mkdtempSync(join(parent, 'live-'));
 const suffix = `${process.pid}-${Date.now()}`;
@@ -72,21 +73,7 @@ process.exit(r.status ?? 1);
   writeFileSync(join(root, 'round-trips.json'), JSON.stringify(transcript, null, 2));
   writeFileSync(join(root, 'toolkit-export.json'), JSON.stringify(store.exportProject('project-1'), null, 2));
   // API listens only locally. This is a JSON contract spike, not the final editor.
-  server = createServer(async (request, response) => {
-    try {
-      if (request.headers.origin && request.headers.origin !== 'http://127.0.0.1:3185') {
-        response.writeHead(403).end(); return;
-      }
-      let body = '';
-      for await (const chunk of request) {
-        body += chunk;
-        if (Buffer.byteLength(body) > 1024 * 1024) { response.writeHead(413).end(); return; }
-      }
-      const result = seeded.api.handle(request.method, request.url, body ? JSON.parse(body) : undefined);
-      response.writeHead(result.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      response.end(JSON.stringify(result.body, null, 2));
-    } catch { response.writeHead(400).end(); }
-  });
+  server = createServer(createSpikeRequestHandler(seeded.api));
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(3185, '127.0.0.1', resolve); });
   const reader = join(root, 'scotty-bd.cjs');
   writeScottyReader(reader, { workspace: join(workspace, '.beads'), socket, database, canonicalUrl });
