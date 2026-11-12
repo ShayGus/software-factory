@@ -13,7 +13,7 @@ import { planningRecord } from './planning-checks.js';
 import { assignmentCriteria, digestText, recordSource, requiredAssignmentContext,
   sameSource, sameArtifactIdentity, selectAssignmentContext } from './instruction-context.js';
 import { assignmentMetadataFindings, instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, workerAssignmentBlock, type InstructionFinding } from './instructions.js';
-import { validateAssignmentForDispatch } from './rules.js';
+import { hasUnchangedFeatureScope, validateAssignmentForDispatch } from './rules.js';
 import { judgeWorkerInstructions } from './instruction-judge.js';
 import { ProjectStore, StoreError } from './store.js';
 
@@ -97,6 +97,7 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   const briefPath = resolve(data.briefPath);
   const sidecarPath = resolve(data.sidecarPath ?? `${dirname(briefPath)}/${parse(briefPath).name}.sf.json`);
   if (briefPath === sidecarPath) throw new StoreError('validation', 'brief_and_sidecar_paths_must_differ');
+  const design = planningRecord(records, plan.design);
   const previous = store.get(data.projectId, data.assignmentId);
   if (previous && previous.kind !== 'assignment') throw new StoreError('validation', 'assignment_identity_conflict');
   if (existsSync(sidecarPath) && previous?.brief?.sidecarPath !== sidecarPath) {
@@ -109,12 +110,28 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
   const scaffold = previous?.brief?.path === briefPath ? previous.brief.scaffold : readFileSync(briefPath, 'utf8');
   scaffoldParts(scaffold); // Reject ambiguous templates before persisting anything.
   const sourceFiles = data.sourceFiles.map((entry) => ({ ...entry, path: resolve(entry.path) }));
+  const sameAttempt = previous?.attemptId === data.attemptId && previous.firstMateTaskId === data.firstMateTaskId;
+  const pendingCorrections = sameAttempt ? [...new Map(records.map((record) => [record.id, record])).values()].filter((record) => {
+    if (record.kind !== 'observation' || !record.correction || record.correction.supersededBy ||
+      !['clarification', 'amended_scope'].includes(record.correction.action) || record.correction.assignment.id !== previous.id) return false;
+    const intended = planningRecord(records, record.correction.assignment);
+    return intended?.kind === 'assignment' && intended.attemptId === previous.attemptId;
+  }).map((record) => ({ id: record.id, revision: 1 })) : [];
+  const retainedCorrections = [...new Map([...(sameAttempt ? previous?.correctionContext?.corrections ?? [] : []),
+    ...pendingCorrections].map((record) => [record.id, record])).values()];
   let assignment = AssignmentSchema.parse({ kind: 'assignment', id: data.assignmentId, projectId: data.projectId,
     schemaVersion: 1, revision: data.expectedRevision + 1, createdAt: previous?.createdAt ?? data.issuedAt, updatedAt: data.issuedAt,
     attemptId: data.attemptId, feature: plan.feature, design: plan.design, plan: ref(plan), detailedPlanTask: ref(task),
     firstMateTaskId: data.firstMateTaskId, sourceRefs: [recordSource(task)],
     selectedContext: [{ source: recordSource(task), truncated: false }],
     criteria: assignmentCriteria(records, plan, task), prerequisiteArtifacts: [], returnLocation: data.returnLocation,
+    ...(retainedCorrections.length ? {
+      correctionContext: { feature: previous?.correctionContext?.feature ?? plan.feature, corrections: retainedCorrections,
+        requiresReplan: !!previous?.correctionContext?.requiresReplan &&
+          !(previous.correctionContext.feature && plan.feature &&
+            hasUnchangedFeatureScope(records, previous.correctionContext.feature, plan.feature) &&
+            design?.kind === 'design_revision' && design.sourceComparison.result === 'passed') },
+    } : {}),
     instructionText: 'Preparation in progress', instructionFidelity: { result: 'untested', sourceRefs: [recordSource(task)],
       findings: [], reviewerSession: 'factory:structural-instruction-checks', comparedAt: data.issuedAt },
     brief: { path: briefPath, sidecarPath, scaffold, sidecarDigest: 'pending' },

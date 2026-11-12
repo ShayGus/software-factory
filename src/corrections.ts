@@ -7,10 +7,11 @@ import { executionStateToken } from './firstmate.js';
 import { ref, stableId } from './intake.js';
 import { EvidenceSchema, RefSchema, TimestampSchema, type CorrectionAction, type Ref } from './primitives.js';
 import { ObservationSchema, type Assignment, type FactoryRecord, type Observation, type Operation } from './records.js';
-import { commandDigest } from './rules.js';
+import { commandDigest, validateAssignmentForDispatch } from './rules.js';
 import { pendingOperation, ProjectStore, StoreError } from './store.js';
 import { manageExecutionTask, TaskAdapterOptionsSchema } from './tasks.js';
 
+type DeliveryRecipient = NonNullable<NonNullable<Observation['correction']>['deliveryRecipient']>;
 type Correction = Observation & { correction: NonNullable<Observation['correction']> };
 const current = (history: FactoryRecord[]) => {
   const records = new Map<string, FactoryRecord>();
@@ -36,10 +37,10 @@ export const CorrectionAdapterOptionsSchema = z.strictObject({
 export type CorrectionAdapterOptions = z.input<typeof CorrectionAdapterOptionsSchema>;
 
 export function correctionOperation(action: CorrectionAction, urgentStop = false): string {
+  if (action === 'status') return 'read_status';
   if (urgentStop && action !== 'cancellation') return 'interrupt';
   switch (action) {
     case 'clarification': case 'amended_scope': return 'steer';
-    case 'status': return 'read_status';
     case 'resume': return 'relaunch';
     case 'rewind': return 'unsupported_rewind';
     case 'cancellation': return 'cancel_task';
@@ -80,7 +81,7 @@ export function queueCorrection(store: ProjectStore, input: unknown): { correcti
         throw new StoreError('validation', 'changed_outcome_requires_feature_scope_amendment');
       }
       if (action === 'amended_scope' && !payload.changedOutcome) throw new StoreError('validation', 'scope_amendment_requires_changed_outcome');
-      if (payload.urgentStop && ['resume', 'new_work', 'rewind'].includes(action)) throw new StoreError('validation', 'urgent_stop_conflicts_with_action');
+      if (payload.urgentStop && ['resume', 'new_work', 'rewind', 'status'].includes(action)) throw new StoreError('validation', 'urgent_stop_conflicts_with_action');
       if (action === 'new_work' || action === 'cancellation') {
         const task = payload.taskCommand;
         if (!task || task.projectId !== command.projectId || task.payload.action !== (action === 'new_work' ? 'create' : 'cancel') ||
@@ -180,18 +181,42 @@ export function recordCorrectionFact(store: ProjectStore, input: unknown): Obser
     expectedRevision: data.correction.revision, payload: { decision: { ...decision, id: stableId('correction-fact', data.idempotencyKey),
       sourceRefs: [{ uri: `factory:assignment/${data.assignment.id}`, record: data.assignment }] } } };
   const result = store.mutate(command, (history) => {
-    if (!same(record.correction.assignment, data.assignment) || record.correction.supersededBy || !fact(record, 'delivered')) {
+    if (record.correction.supersededBy || !fact(record, 'delivered')) {
+      throw new StoreError('validation', 'fact_requires_delivered_exact_recipient');
+    }
+    const delivered = record.correction.deliveryRecipient;
+    const deliveredRef = delivered?.assignment ?? record.correction.assignment; // Legacy observations remain readable.
+    if (data.fact === 'acknowledged' && !same(deliveredRef, data.assignment)) {
       throw new StoreError('validation', 'fact_requires_delivered_exact_recipient');
     }
     if (fact(record, data.fact)) throw new StoreError('conflict', 'correction_fact_already_recorded');
     if (data.fact === 'incorporated') {
+      const original = history.find((entry) => entry.kind === 'assignment' && same(entry, deliveredRef));
       const assignment = history.find((entry) => entry.kind === 'assignment' && same(entry, data.assignment));
-      if (assignment?.kind !== 'assignment' || !same(currentAttempt(history, assignment.firstMateTaskId) ?? { id: '', revision: 0 }, assignment)) {
-        throw new StoreError('conflict', 'incorporation_requires_current_assignment');
+      if (original?.kind !== 'assignment' || assignment?.kind !== 'assignment' || original.id !== assignment.id ||
+        assignment.attemptId !== (delivered?.attemptId ?? original.attemptId) ||
+        assignment.firstMateTaskId !== (delivered?.firstMateTaskId ?? original.firstMateTaskId) ||
+        !same(currentAttempt(history, assignment.firstMateTaskId) ?? { id: '', revision: 0 }, assignment)) {
+        throw new StoreError('conflict', 'incorporation_requires_current_assignment_of_delivered_attempt');
+      }
+      if (!same(deliveredRef, assignment)) {
+        const retained = assignment.correctionContext?.corrections.some((item) => item.id === record.id);
+        const continuousAttempt = assignment.revision > deliveredRef.revision && history.filter((entry) =>
+          entry.kind === 'assignment' && entry.id === original.id && entry.revision >= original.revision && entry.revision <= assignment.revision)
+          .every((entry) => entry.kind === 'assignment' && entry.attemptId === original.attemptId && entry.firstMateTaskId === original.firstMateTaskId);
+        const checked = validateAssignmentForDispatch(history, data.assignment);
+        // Generated briefs keep their semantic judgment in external check evidence,
+        // while the stored structural comparison stays untested (BUILD-07).
+        const issues = checked.ok ? [] : checked.issues.filter((issue) => !(assignment.brief &&
+          assignment.instructionFidelity.result === 'untested' && issue.recordId === assignment.id && issue.code === 'instruction_fidelity'));
+        if (!retained || !continuousAttempt || assignment.correctionContext?.requiresReplan || issues.length) {
+          throw new StoreError('validation', 'incorporation_requires_checked_successor_retaining_correction');
+        }
       }
     }
     return [command.payload.decision, { ...record, revision: record.revision + 1, updatedAt: data.at,
-      correction: { ...record.correction, facts: [...record.correction.facts, { fact: data.fact, at: data.at, evidence: data.evidence }] } }];
+      correction: { ...record.correction, ...(data.fact === 'incorporated' ? { incorporationAssignment: data.assignment } : {}),
+        facts: [...record.correction.facts, { fact: data.fact, at: data.at, evidence: data.evidence }] } }];
   });
   const saved = result.records.find((entry) => entry.id === record.id)!;
   return store.get(data.projectId, saved.id, saved.revision) as Observation;
@@ -227,23 +252,39 @@ function deliveryIntent(store: ProjectStore, projectId: string, record: Correcti
   }
   return { operation, command: receipt.command };
 }
-function unresolved(store: ProjectStore, projectId: string, record: Correction, operation: Operation, state: Operation['state'], note: string, delivered = false): Operation {
+function unresolved(store: ProjectStore, projectId: string, record: Correction, operation: Operation, state: Operation['state'],
+  note: string, delivered = false, recipient?: DeliveryRecipient): Operation {
   const at = new Date().toISOString(); const proof = evidence(operation.id, note, at);
   const decision = decisionRecord(projectId, at, 'Correction delivery observation', proof, [ref(record), ref(operation)]);
-  const next = { ...operation, revision: operation.revision + 1, updatedAt: at, state,
-    reconciliation: { observedAt: at, observedState: state, note, evidence: proof } };
+  let next: Operation;
   store.mutate({ schemaVersion: 1, id: decision.id, projectId, issuedAt: at, idempotencyKey: decision.id,
-    command: 'record_decision_suggestion', targetId: operation.id, expectedRevision: operation.revision, payload: { decision } }, () =>
-    [decision, next, ...(delivered ? [{ ...record, revision: record.revision + 1, updatedAt: at,
-      correction: { ...record.correction, assignment: ref(store.get(projectId, record.correction.assignment.id)!), facts: [...record.correction.facts, { fact: 'delivered' as const, at, evidence: proof }] } }] : [])]);
-  return next;
+    command: 'record_decision_suggestion', targetId: operation.id, expectedRevision: operation.revision, payload: { decision } }, (history) => {
+    const latest = corrections(current(history)).find((item) => item.id === record.id)!;
+    const captured = recipient ?? latest.correction.deliveryRecipient;
+    let finalState = state; let finalNote = note; let accepted = delivered;
+    if (captured) {
+      const attempt = currentAttempt(history, captured.firstMateTaskId);
+      if (!attempt || attempt.id !== captured.assignment.id || attempt.attemptId !== captured.attemptId) {
+        finalState = 'unknown'; accepted = false;
+        finalNote = `Unresolved recipient: attempt replaced or ambiguous during delivery. ${note}`;
+      }
+    }
+    const finalProof = finalNote === note ? proof : evidence(operation.id, finalNote, at);
+    next = { ...operation, revision: operation.revision + 1, updatedAt: at, state: finalState,
+      reconciliation: { observedAt: at, observedState: finalState, note: finalNote, evidence: finalProof } };
+    return [decision, next, ...(accepted || (captured && !latest.correction.deliveryRecipient) ? [{ ...latest,
+      revision: latest.revision + 1, updatedAt: at, correction: { ...latest.correction,
+        ...(captured ? { deliveryRecipient: captured } : {}),
+        facts: [...latest.correction.facts, ...(accepted ? [{ fact: 'delivered' as const, at, evidence: finalProof }] : [])] } }] : [])];
+  });
+  return next!;
 }
 function recipientProblem(store: ProjectStore, projectId: string, record: Correction, options: z.output<typeof CorrectionAdapterOptionsSchema>) {
   const assignment = store.get(projectId, record.correction.assignment.id);
   if (assignment?.kind !== 'assignment') return 'Unresolved recipient: assignment missing';
   const attempt = currentAttempt(store.records(projectId), assignment.firstMateTaskId);
   const original = store.get(projectId, record.correction.assignment.id, record.correction.assignment.revision);
-  if (!attempt || attempt.id !== assignment.id || original?.kind !== 'assignment' || original.attemptId !== assignment.attemptId) return 'Unresolved recipient: attempt superseded or ambiguous';
+  if (!attempt || attempt.id !== assignment.id || original?.kind !== 'assignment' || (original.attemptId !== assignment.attemptId || original.firstMateTaskId !== assignment.firstMateTaskId)) return 'Unresolved recipient: attempt superseded or ambiguous';
   const bindings = options.recipients.filter((entry) => same(entry.assignment, assignment) &&
     entry.attemptId === assignment.attemptId && entry.firstMateTaskId === assignment.firstMateTaskId);
   if (bindings.length !== 1) return 'Unresolved recipient: exact observed attempt binding required';
@@ -267,7 +308,7 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
     return unresolved(store, projectId, record, operation, 'pending', 'Waiting for earlier correction delivery');
   }
   const action = correctionOperation(record.correction.action, record.correction.urgentStop);
-  if ((action === 'relaunch' && binding.state !== 'stopped') || (action !== 'relaunch' && action !== 'read_status' && binding.state !== 'active')) {
+  if ((action === 'relaunch' && binding.state !== 'stopped') || (action !== 'relaunch' && action !== 'read_status' && action !== 'steer' && binding.state !== 'active')) {
     return unresolved(store, projectId, record, operation, 'pending', 'Unresolved recipient: lifecycle state does not match requested action');
   }
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('FM_')));
@@ -282,7 +323,9 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
       sources: item.correction.sourceRefs ?? item.affectedScope, affectedRevision: item.correction.affectedRevision })) });
   if (action === 'read_status' && !options.stateExecutable) return unresolved(store, projectId, record, operation, 'pending', 'Configured fm-crew-state wrapper required for status');
   // Durable in-flight marker prevents retry after an ambiguous call or interruption.
-  const started = unresolved(store, projectId, record, operation, 'unknown', 'External delivery started; outcome unconfirmed');
+  const recipient = { assignment: ref(assignment), attemptId: assignment.attemptId, firstMateTaskId: assignment.firstMateTaskId };
+  const started = unresolved(store, projectId, record, operation, 'unknown', 'External delivery started; outcome unconfirmed', false, recipient);
+  if (started.reconciliation?.note !== 'External delivery started; outcome unconfirmed') return started;
   try {
     const args = action === 'steer' ? [assignment.firstMateTaskId, text] : action === 'read_status' ? [assignment.firstMateTaskId] : [assignment.firstMateTaskId, action];
     const executable = action === 'steer' ? options.sendExecutable : action === 'read_status' ? options.stateExecutable! : options.controlExecutable;
@@ -294,10 +337,10 @@ function deliverSteering(store: ProjectStore, projectId: string, correctionId: s
       if (state === 'unknown') return unresolved(store, projectId, record, started, 'unknown', 'Runtime status is unknown');
     }
     // Wrapper exit zero confirms acceptance only; acknowledgement remains independent.
-    return unresolved(store, projectId, record, started, 'succeeded', JSON.stringify({ action, recipient: binding, stdout, payloadDigest: digest(text) }), true);
+    return unresolved(store, projectId, record, started, 'succeeded', JSON.stringify({ action, recipient: binding, stdout, payloadDigest: digest(text) }), true, recipient);
   } catch (error) {
     const failure = error as NodeJS.ErrnoException;
-    return unresolved(store, projectId, record, started, failure.code === 'ENOENT' || failure.code === 'EACCES' ? 'failed' : 'unknown', String(error));
+    return unresolved(store, projectId, record, started, failure.code === 'ENOENT' || failure.code === 'EACCES' ? 'failed' : 'unknown', String(error), false, recipient);
   }
 }
 function deliverTaskCorrection(store: ProjectStore, projectId: string, record: Correction, options: z.output<typeof CorrectionAdapterOptionsSchema>): Operation {
@@ -305,12 +348,17 @@ function deliverTaskCorrection(store: ProjectStore, projectId: string, record: C
   if (operation.state === 'succeeded' || operation.state === 'failed') return operation;
   const task = command.payload.taskCommand;
   if (!task || !options.taskAdapter) return unresolved(store, projectId, record, operation, 'pending', 'BUILD-08 task adapter required');
+  let recipient: DeliveryRecipient | undefined;
   if (record.correction.action === 'cancellation') {
     const problem = recipientProblem(store, projectId, record, options);
     if (typeof problem === 'string') return unresolved(store, projectId, record, operation, 'pending', problem);
+    recipient = record.correction.deliveryRecipient ?? { assignment: ref(problem.assignment),
+      attemptId: problem.assignment.attemptId, firstMateTaskId: problem.assignment.firstMateTaskId };
+    const started = unresolved(store, projectId, record, operation, 'unknown', 'Task cancellation started; recipient captured', false, recipient);
+    if (started.reconciliation?.note !== 'Task cancellation started; recipient captured') return started;
   }
   if (resolve(options.taskAdapter.fmHome) !== resolve(options.fmHome)) throw new StoreError('validation', 'task_adapter_home_must_match_correction_home');
   const result = manageExecutionTask(store, task, options.taskAdapter);
   return unresolved(store, projectId, observation(store, projectId, record.id), store.get(projectId, operation.id) as Operation,
-    result.operation.state, `BUILD-08 operation ${result.operation.id}: ${result.operation.state}`, result.operation.state === 'succeeded');
+    result.operation.state, `BUILD-08 operation ${result.operation.id}: ${result.operation.state}`, result.operation.state === 'succeeded', recipient);
 }

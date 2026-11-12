@@ -43,7 +43,7 @@ export function assignmentCriteria(records: FactoryRecord[], plan: Implementatio
 /** Select exact revisions, never a latest-by-title approximation. Original
  * request/attachment pointers remain distinct from the captured request record. */
 export function requiredAssignmentContext(records: FactoryRecord[], assignment: Pick<Assignment,
-  'feature' | 'design' | 'plan' | 'detailedPlanTask' | 'criteria' | 'projectId'>, received?: Context[]) {
+  'feature' | 'design' | 'plan' | 'detailedPlanTask' | 'criteria' | 'projectId' | 'correctionContext'>, received?: Context[]) {
   const task = planningRecord(records, assignment.detailedPlanTask);
   const design = planningRecord(records, assignment.design);
   const plan = planningRecord(records, assignment.plan);
@@ -73,6 +73,7 @@ export function requiredAssignmentContext(records: FactoryRecord[], assignment: 
     ...(design?.kind === 'design_revision' ? design.decisions : []),
     ...(task?.kind === 'detailed_plan_task' ? task.decisionsToKeep ?? [] : []),
     ...(feature?.kind === 'feature_revision' ? feature.decisions : []),
+    ...(assignment.correctionContext?.corrections ?? []),
     ...dependencies.flatMap((dependency) => dependency.needs.kind === 'criterion' ? [dependency.needs.criterion] : []),
     ...dependencies.flatMap((dependency) => plan?.kind === 'implementation_plan_revision' ?
       plan.deliverySequence.filter((task) => task.id === dependency.prerequisiteTaskId) : []),

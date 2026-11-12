@@ -103,6 +103,21 @@ function featureContent(feature: FeatureRevision) {
   return content;
 }
 
+/** A workflow-state revision preserves product evidence only if every intervening
+ * revision has the same content and remains active. A changed-and-reverted scope
+ * is not silently treated as uninterrupted evidence. */
+export function hasUnchangedFeatureScope(records: FactoryRecord[], from: Ref, to: Ref): boolean {
+  if (from.id !== to.id || from.revision > to.revision) return false;
+  const original = records.find((record) => record.kind === 'feature_revision' && sameRef(record, from));
+  if (original?.kind !== 'feature_revision' || original.disposition.state !== 'active') return false;
+  const content = canonical(featureContent(original));
+  for (let revision = from.revision; revision <= to.revision; revision++) {
+    const feature = records.find((record) => record.kind === 'feature_revision' && record.id === to.id && record.revision === revision);
+    if (feature?.kind !== 'feature_revision' || feature.disposition.state !== 'active' || canonical(featureContent(feature)) !== content) return false;
+  }
+  return true;
+}
+
 function carriesCompletionEvidence(ctx: Context, feature: FeatureRevision) {
   const evidence = feature.completionEvidence;
   if (!evidence) return false;
@@ -657,7 +672,19 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       break;
     case 'observation':
       if (record.correction) {
-        ctx.get(record, record.correction.assignment, 'assignment', 'correction.assignment');
+        const intended = ctx.get(record, record.correction.assignment, 'assignment', 'correction.assignment');
+        const captured = record.correction.deliveryRecipient;
+        const recipient = captured && ctx.get(record, captured.assignment, 'assignment', 'correction.deliveryRecipient');
+        if (captured && recipient && (recipient.id !== intended?.id || recipient.attemptId !== intended.attemptId || recipient.firstMateTaskId !== intended.firstMateTaskId ||
+          recipient.attemptId !== captured.attemptId || recipient.firstMateTaskId !== captured.firstMateTaskId)) ctx.add(record,
+          'correction_recipient_mismatch', 'correction.deliveryRecipient', 'Delivery receipt must preserve the intended attempt');
+        if (record.correction.incorporationAssignment) {
+          const incorporated = ctx.get(record, record.correction.incorporationAssignment, 'assignment', 'correction.incorporationAssignment');
+          if (!record.correction.facts.some((fact) => fact.fact === 'incorporated') || (incorporated &&
+            (incorporated.id !== intended?.id || incorporated.attemptId !== intended.attemptId ||
+              incorporated.firstMateTaskId !== intended.firstMateTaskId))) ctx.add(record,
+            'correction_incorporation_mismatch', 'correction.incorporationAssignment', 'Incorporation must name the delivered attempt');
+        }
         if (!ctx.index.has(key(record.correction.affectedRevision))) ctx.add(record, 'missing_reference', 'correction.affectedRevision', 'Missing corrected revision');
         for (const ref of record.correction.supersedes) {
           const prior = ctx.get(record, ref, 'observation', 'correction.supersedes');
@@ -817,9 +844,8 @@ export function validateReviewForCompletion(input: unknown, reviewRef: Ref): Val
   // A historical review remains valid history, but cannot complete current work.
   if (owner.feature) {
     const feature = ctx.current.get(owner.feature.id);
-    if (feature?.kind !== 'feature_revision' || (feature.revision !== owner.feature.revision && !(feature.completionEvidence &&
-      sameRef(feature.completionEvidence.review, owner) && carriesCompletionEvidence(ctx, feature)))) ctx.add(owner,
-      'superseded_feature', 'feature', 'Completion requires the current feature revision');
+    if (feature?.kind !== 'feature_revision' || !hasUnchangedFeatureScope(ctx.records, owner.feature, feature)) ctx.add(owner,
+      'superseded_feature', 'feature', 'Completion requires unchanged active product scope or current evidence');
   }
   for (const assignment of owner.assignments) {
     const target = ctx.index.get(key(assignment));
@@ -864,7 +890,9 @@ export function assertRevisionTransition(previousInput: unknown, nextInput: unkn
     if (!correction || canonical([old.action, old.originalText, old.sequence, old.affectedRevision, old.supersedes, old.sourceRefs, old.operationId, old.urgentStop, old.compatibilityKey, old.impact]) !==
       canonical([correction.action, correction.originalText, correction.sequence, correction.affectedRevision, correction.supersedes, correction.sourceRefs, correction.operationId, correction.urgentStop, correction.compatibilityKey, correction.impact]) ||
       old.facts.some((fact) => !correction.facts.some((item) => canonical(fact) === canonical(item))) ||
-      old.assignment.id !== correction.assignment.id || (old.supersededBy && !sameRef(old.supersededBy, correction.supersededBy ?? null))) {
+      !sameRef(old.assignment, correction.assignment) ||
+      (old.deliveryRecipient && canonical(old.deliveryRecipient) !== canonical(correction.deliveryRecipient)) ||
+      (old.incorporationAssignment && !sameRef(old.incorporationAssignment, correction.incorporationAssignment ?? null)) || (old.supersededBy && !sameRef(old.supersededBy, correction.supersededBy ?? null))) {
       throw new Error('correction_history_mutation');
     }
   }

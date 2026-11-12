@@ -1304,6 +1304,7 @@ does not guess lifecycle intent from prose.
 | New work | Matching BUILD-08 create command and its existing plan/readiness gates |
 | Status | Configured `fm-crew-state.sh TASK_ID` observational read; never steering or worker launch |
 
+Status rejects `urgentStop`; it always maps to an observational read.
 Cancellation remains cancellation when urgent. Neither rewind nor new work is
 translated to relaunch. New work creates a managed task without dispatching it.
 Cancellation and new work require a `taskCommand` using the existing
@@ -1337,7 +1338,9 @@ barrier. Consolidation recursively sends every original correction and source in
 sequence, marks superseded instructions, and leaves their delivery facts untouched.
 Delivered messages and urgent stops never consolidate. A failed or unknown earlier
 correction blocks later ordinary steering. Urgent cancellation and interruption
-bypass that queue.
+bypass that queue. Durable steering can be delivered to a freshly observed stopped
+attempt. Drain earlier messages in sequence while it is stopped, then deliver the
+explicit resume; relaunch continues to wait until those deliveries are confirmed.
 
 `recordCorrectionFact` (CLI `correction-fact --input fact.json --db project.sqlite`)
 records acknowledgement and incorporation separately. Its input names
@@ -1345,11 +1348,27 @@ records acknowledgement and incorporation separately. Its input names
 `idempotencyKey`, and nonempty artifact `evidence`. The integrating observer records
 acknowledgement after the durable inbox message moves to `handled/`. Incorporation
 requires separate implementation/verification evidence for the current assignment.
-Acknowledgement never creates incorporation. The BUILD-10 completion gate checks
-pending corrections, current assignment/feature revisions and replanning state.
-Historical returns and reviews remain stored without satisfying current criteria.
+`deliveryRecipient` preserves the exact assignment revision, attempt and runtime
+task captured before the wrapper call. Acknowledgement names that historical
+recipient. Incorporation may name a checked successor revision of the same attempt
+that explicitly retains the correction; `incorporationAssignment` records that
+successor without rewriting the delivery recipient. Brief regeneration carries
+corrections into required context and clears `requiresReplan` only for the checked
+amended scope. Generated briefs keep their semantic judgment in external check
+evidence, so the observer must supply that verification with the incorporation
+artifact evidence. Missing correction context, unchecked replanning, and replacement
+attempts cannot establish incorporation.
 
-External delivery is marked unconfirmed durably before invoking a wrapper. A
+Acknowledgement never creates incorporation. The BUILD-10 completion gate checks
+pending corrections, assignment currency, product scope and replanning state.
+State-only feature revisions can use evidence for the unchanged active scope;
+actual scope changes, inactive dispositions and changed-and-reverted scope still
+require current evidence. Existing explicit retention rules continue to govern
+recording feature completion. Historical returns and reviews remain stored.
+
+External delivery and its recipient are marked unconfirmed durably before invoking
+a wrapper. The outcome transaction rechecks the attempt; a concurrent replacement
+leaves the original recipient unresolved and cannot inherit a delivered fact. A
 nonzero exit or timeout can follow a saved message, so it remains `unknown` and is
 never blindly retried; missing or non-executable wrappers report `failed`. Unknown
 status output also remains unresolved. An exit-zero steering/lifecycle receipt
