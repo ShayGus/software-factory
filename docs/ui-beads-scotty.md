@@ -1,5 +1,9 @@
 # BUILD-05: Beads + Scotty canonical-operation spike
 
+BUILD-12 now extends this API in place with the [local overview and feature
+editors](ui-overview.md). The spike evidence below remains historical;
+`UiSpikeApi` aliases `ToolkitApi`, and both demos use the same HTTP handler.
+
 Beads is the chosen execution task/dependency store, through the existing
 FirstMate/tasks-axi Beads backend. Scotty is the existing browser page. Piyaz is
 out. This companion project does not replace or migrate a FirstMate workspace.

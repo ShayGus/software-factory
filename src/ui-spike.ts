@@ -1,13 +1,13 @@
 import { z } from 'zod';
 import { CommandEnvelopeSchema } from './commands.js';
 import { IdSchema } from './primitives.js';
-import { manageExecutionTask, type TaskAdapterOptions } from './tasks.js';
+import { type TaskAdapterOptions } from './tasks.js';
+import { applyCommand } from './application.js';
+import { projectView, featureView, type UiOptions } from './ui-state.js';
+import { renderOverview, renderFeature, renderRecord } from './ui-pages.js';
 import { ProjectStore, StoreError } from './store.js';
 
-/** Bounded BUILD-05 routing experiment, not the BUILD-12–14 HTTP service.
- * The store, command vocabulary and execution adapter are the existing ones.
- * Product edits exercise their contracts; their final editors remain provisional.
- */
+/** BUILD-05 field ownership retained by the focused toolkit editors. */
 export const scottyFields = {
   title: { owner: 'FirstMate/tasks-axi', route: 'update' },
   status: { owner: 'FirstMate/tasks-axi', route: 'lifecycle' },
@@ -27,21 +27,39 @@ const EditSchema = z.strictObject({ projectId: IdSchema, id: IdSchema,
   field: z.enum(Object.keys(scottyFields) as [keyof typeof scottyFields, ...(keyof typeof scottyFields)[]]),
   value: z.unknown() });
 
-export interface SpikeResponse { status: number; body: unknown }
-export class UiSpikeApi {
-  constructor(readonly store: ProjectStore, readonly tasks: TaskAdapterOptions) {}
+export interface SpikeResponse { status: number; body: unknown; contentType?: string }
+export class ToolkitApi {
+  constructor(readonly store: ProjectStore, readonly tasks?: TaskAdapterOptions, readonly options: UiOptions = { projectId: 'project-1' }) {}
 
   /** These relative links are also rendered in the execution task bodies.
    * No write accepts a Beads physical ID or matches by title.
    */
   handle(method: string, path: string, body?: unknown): SpikeResponse {
     try {
-      const url = new URL(path, 'http://spike.invalid');
+      const url = new URL(path, 'http://toolkit.invalid');
       const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       if (method === 'GET' && url.pathname === '/canonical') {
-        return { status: 200, body: { spike: true, fields: scottyFields, method: 'POST', path: '/canonical',
-          contract: 'CommandEnvelopeSchema', lifecycle: 'Open FirstMate lifecycle; this stub only exposes task pause/resume/cancel.',
-          adoption: 'Provisional; verify actual editor mutations in BUILD-12–14 and BUILD-17.' } };
+        return { status: 200, body: { fields: scottyFields, method: 'POST', path: '/canonical',
+          contract: 'CommandEnvelopeSchema', operations: ['record_decision_suggestion', 'design_plan_feature', 'map_manage_execution_task'],
+          lifecycle: 'Existing FirstMate lifecycle; toolkit task edits use BUILD-08.' } };
+      }
+      if (method === 'GET' && url.pathname === '/') {
+        return { status: 200, body: renderOverview(projectView(this.store, this.options)), contentType: 'text/html; charset=utf-8' };
+      }
+      if (method === 'GET' && parts[0] === 'projects' && parts[1]) {
+        const options = { ...this.options, projectId: parts[1] };
+        if (parts.length === 3 && parts[2] === 'overview') return { status: 200, body: projectView(this.store, options) };
+        if (parts.length === 4 && parts[2] === 'features') {
+          const view = projectView(this.store, options);
+          return { status: 200, body: renderFeature(view, featureView(view, parts[3]!)), contentType: 'text/html; charset=utf-8' };
+        }
+        if (parts.length === 4 && parts[2] === 'inspect') {
+          const raw = url.searchParams.get('revision');
+          const revision = raw === null ? undefined : z.coerce.number().int().positive().parse(raw);
+          const record = this.store.get(parts[1], parts[3]!, revision);
+          if (!record) throw new StoreError('not_found', 'record_not_found');
+          return { status: 200, body: renderRecord(projectView(this.store, options), record), contentType: 'text/html; charset=utf-8' };
+        }
       }
       if (method === 'GET' && parts.length === 4 && parts[0] === 'projects' && parts[2] === 'records') {
         const raw = url.searchParams.get('revision');
@@ -63,35 +81,25 @@ export class UiSpikeApi {
       }
       if (method === 'POST' && url.pathname === '/canonical') {
         const command = CommandEnvelopeSchema.parse(body);
-        if (command.command === 'map_manage_execution_task') {
-          const result = manageExecutionTask(this.store, command, this.tasks);
-          return { status: result.operation.state === 'succeeded' ? 200 : 202, body: result };
+        const result = applyCommand(this.store, command, this.tasks);
+        if ('operation' in result && ['unknown', 'failed'].includes(result.operation.state)) {
+          return { status: result.operation.state === 'unknown' ? 202 : 502, body: { ...result, error: {
+            code: result.operation.state === 'unknown' ? 'unknown_outcome' : 'external_failure',
+            message: 'Inspect the saved operation before another task edit.', paths: [],
+            externalReferences: result.operation.externalReferences,
+          } } };
         }
-        if (command.command === 'record_decision_suggestion') {
-          // This stub tests typed, revision-checked feature/criterion and decision
-          // round trips. No arbitrary record import, lifecycle, or request rewrite.
-          if (command.payload.project) throw new StoreError('validation', 'project_edit_not_exposed');
-          if (command.payload.decision.id !== command.targetId &&
-            !command.payload.intakeRecords?.some((record) => record.id === command.targetId)) {
-            throw new StoreError('validation', 'command_must_target_written_record');
-          }
-          const result = this.store.mutate(command, () => [command.payload.decision, ...(command.payload.intakeRecords ?? [])]);
-          return { status: 200, body: result };
-        }
-        if (command.command === 'capture_consolidate_learning' && command.payload.action === 'capture') {
-          const observation = command.payload.observation;
-          if (observation.id !== command.targetId) throw new StoreError('validation', 'command_must_target_written_record');
-          const result = this.store.mutate(command, () => [observation]);
-          return { status: 200, body: result };
-        }
-        throw new StoreError('validation', 'operation_not_exposed_by_spike');
+        return { status: 'operation' in result && result.operation.state !== 'succeeded' ? 202 : 200, body: result };
       }
-      return { status: 404, body: { error: 'spike_route_not_found' } };
+      throw new StoreError('not_found', 'route_not_found');
     } catch (error) {
       if (error instanceof StoreError) return { status: error.detail.code === 'conflict' ? 409 :
         error.detail.code === 'not_found' ? 404 : 400, body: { error: error.detail } };
       return { status: 400, body: { error: { code: 'validation',
-        message: error instanceof Error ? error.message : String(error) } } };
+        message: error instanceof Error ? error.message : String(error), paths: error instanceof z.ZodError ? error.issues.map((issue) => issue.path.join('.')) : [], externalReferences: [] } } };
     }
   }
 }
+
+// Compatibility name for the BUILD-05 fixture and opt-in integration harness.
+export { ToolkitApi as UiSpikeApi };

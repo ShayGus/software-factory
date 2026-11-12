@@ -10,7 +10,7 @@ BUILD-06 adds staged understanding, design, planning, detail, reuse and readines
 BUILD-08 connects managed tasks and product prerequisites to FirstMate's existing task wrappers.
 The [one-feature run path](docs/one-feature-run.md) connects these commands to real
 FirstMate brief/start wrappers and its worker-start hook. It does not implement a
-scheduler, production UI/HTTP service, tasks-axi changes or a Beads adapter; the
+scheduler, remote UI hosting, tasks-axi changes or a Beads adapter; the
 FirstMate home given in the settings selects Beads through FirstMate's existing task wrapper.
 Bootstrap the project database before enabling the sample hook; the runbook then
 verifies the hook before creating or releasing managed native work.
@@ -28,7 +28,7 @@ The package entry point is `dist/src/index.js`. The only runtime dependency is
 [Zod](https://zod.dev/basics), pinned in the lockfile. Zod provides runtime parsing,
 path-specific errors and inferred TypeScript types from the same schema, avoiding
 separate interface and validator definitions. It is MIT licensed and runs locally.
-No network, paid service or database server is required at runtime or for tests.
+No external network, paid service or database server is required at runtime or for tests.
 
 The BUILD-05 canonical-routing tests are self-contained. The additional local
 backend check is opt-in: `npm run test:beads-spike` uses a fake bd process with
@@ -37,6 +37,54 @@ the existing tasks-axi main source at
 from a `tasks-axi` install on `PATH`. Those are optional prerequisites, not
 requirements for `npm ci`, `npm test`, or type checking. This check never opens
 a real Beads database or starts Docker. See [the UI spike report](docs/ui-beads-scotty.md).
+
+## Local overview and feature UI — BUILD-12
+
+Start the fixture UI explicitly (this command is never run by tests):
+
+```sh
+npm run ui
+# Optional configuration:
+SF_UI_PORT=4712 SF_SCOTTY_URL=http://127.0.0.1:3186 npm run ui
+```
+
+Open `http://127.0.0.1:3185` (or the configured `SF_UI_PORT`). The server binds
+only `127.0.0.1`. It serves its TypeScript browser client and stylesheet locally,
+with no CDN, UI framework, login or model calls. All requests, task observations
+and evidence are labeled **synthetic fixtures**. Each launch creates an isolated
+temporary SQLite database and task-wrapper fixture; Ctrl-C discards this session.
+It does not read or change an installed FirstMate workspace, Beads or Scotty data.
+`SF_SCOTTY_URL` is an optional plain link to an existing loopback Scotty origin.
+
+The overview separates requested outcomes from suggestions, lists missing
+criteria and open questions, and edits feature/task priorities, dependencies and
+deferral. Feature detail shows the exact original request, readable design and
+detailed plan, revisions, criteria/evidence, corrections and affected attempts.
+A worker brief links to the exact plan task and plan revision that produced it.
+Returned or done tasks never establish feature completeness by themselves.
+
+All forms post existing command envelopes to `POST /canonical`. CLI callers can
+apply the same envelope through the same function:
+
+```sh
+node dist/src/cli.js apply-command --db /absolute/project.sqlite --input /absolute/command.json
+# Task commands additionally need --adapter-config /absolute/task-adapter.json
+```
+
+Every edit supplies an idempotency key and expected revision. Stale edits return
+structured conflicts and preserve entered text; a retry reuses its command. Design,
+plan and task-detail edits create a coherent revisioned artifact set through
+`design_plan_feature` and clear readiness for rechecking with BUILD-06. Prior
+assignments retain their old revision links. Task edits use BUILD-08 and its
+existing reconciliation/receipt records. Unknown outcomes stay visible and block
+further edits; explicit reconciliation uses the existing CLI operation.
+
+`npm test` checks the two rendered screens, actual command/HTTP round trips in
+memory, replay after later edits, stale revisions, source preservation, a missing
+criterion, brief traceability, and text state labels. These checks open no listener,
+browser, Beads database or external network connection. Browser end-to-end testing
+and separate-agent review remain for the later authorized integration run.
+See [the UI implementation notes](docs/ui-overview.md) for routes and limits.
 
 ## Record contracts
 

@@ -179,3 +179,22 @@ export function unclassifiedRequests(store: ProjectStore, projectId: string) {
     return coverage.unmapped.length > 0 ? [{ ...request, coverage }] : [];
   });
 }
+
+/** Record product changes through the existing command family and transaction.
+ * Kept independent of HTTP so agent/CLI edits have identical scope validation. */
+export function recordDecisionSuggestion(store: ProjectStore, input: unknown) {
+  const command = RecordDecisionSuggestionCommandSchema.parse(input);
+  const { decision, intakeRecords = [], project } = command.payload;
+  if (project) throw new StoreError('validation', 'use_project_initialization');
+  if (command.targetId !== decision.id && !intakeRecords.some((record) => record.id === command.targetId)) {
+    throw new StoreError('validation', 'command_must_target_written_record');
+  }
+  for (const record of intakeRecords) {
+    if (!decision.affectedRecords.some((entry) => same(entry, record)) &&
+      !intakeRecords.some((feature) => feature.kind === 'feature_revision' &&
+        feature.criteria.some((entry) => same(entry, record)) && decision.affectedRecords.some((entry) => same(entry, feature)))) {
+      throw new StoreError('validation', 'decision_must_name_written_revision');
+    }
+  }
+  return store.mutate(command, () => [decision, ...intakeRecords]);
+}

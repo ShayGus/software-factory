@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-12T12:15:00Z",
+  "title": "Design System: Software Factory",
+  "extensions": {
+    "shadows": [],
+    "motion": [{ "name": "editor-reveal", "value": "reveal .16s ease-out", "purpose": "Reveal editor fields only when reduced motion is not requested." }],
+    "breakpoints": [{ "name": "single-column", "value": "760px" }]
+  },
+  "components": [
+    {
+      "name": "Save change",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Submit the revision-checked canonical command.",
+      "html": "<button class=\"ds-save\">Save change</button>",
+      "css": ".ds-save{font:inherit;font-weight:600;background:var(--accent,#155b49);color:white;border:0;border-radius:4px;min-height:44px;padding:.6rem 1rem;cursor:pointer}.ds-save:hover{background:#0b4435}.ds-save:focus-visible{outline:3px solid #176c93;outline-offset:3px}.ds-save:disabled{background:#d5dfd9;color:#42574e}"
+    }
+  ],
+  "narrative": {
+    "overview": "An operating surface for reading requests and inspecting product evidence.",
+    "keyCharacteristics": ["Original sources", "Explicit revisions", "Text uncertainty states", "Native contextual editors"],
+    "rules": [],
+    "dos": ["Do label freshness, missing evidence and unknown outcomes in text."],
+    "donts": ["Don't equate a returned or done task with product completeness."]
+  }
+}

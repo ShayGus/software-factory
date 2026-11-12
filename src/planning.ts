@@ -140,3 +140,46 @@ export function stageHistory(store: ProjectStore, projectId: string, featureId: 
   return store.history(projectId).filter((record): record is StageRevision =>
     record.kind === 'stage_revision' && record.feature.id === featureId);
 }
+
+/** Canonical envelope entry point shared by CLI and HTTP. The original combined
+ * design/plan contract revises a coherent artifact set; staged authoring keeps
+ * using recordStage/checkPlanReadiness and their stronger workflow checks. */
+export function designPlanFeature(store: ProjectStore, input: unknown) {
+  const command = DesignPlanFeatureCommandSchema.parse(input);
+  const payload = command.payload;
+  if ('action' in payload) {
+    if (payload.action === 'record_stage') {
+      if (command.targetId !== payload.stage.id) throw new StoreError('validation', 'stage_target_mismatch');
+      if (command.projectId !== payload.stage.projectId) throw new StoreError('validation', 'project_mismatch');
+      return recordStage(store, { idempotencyKey: command.idempotencyKey, expectedRevision: command.expectedRevision,
+        issuedAt: command.issuedAt, stage: payload.stage, records: payload.records });
+    }
+    const stage = store.get(command.projectId, payload.detailStage.id, payload.detailStage.revision);
+    if (stage?.kind !== 'stage_revision' || stage.artifact.id !== command.targetId) {
+      throw new StoreError('validation', 'readiness_target_mismatch');
+    }
+    return checkPlanReadiness(store, { projectId: command.projectId, detailStage: payload.detailStage,
+      idempotencyKey: command.idempotencyKey, issuedAt: command.issuedAt, expectedPlanRevision: command.expectedRevision });
+  }
+  const writes = [payload.design, payload.plan, ...payload.tasks];
+  if (!writes.some((record) => record.id === command.targetId)) throw new StoreError('validation', 'command_must_target_written_record');
+  return store.mutate(command, (history) => {
+    if (payload.plan.readiness.ready) throw new StoreError('validation', 'use_readiness_check_to_record_ready_plan');
+    if (payload.feature) {
+      const current = history.filter((entry) => entry.id === payload.feature!.id).at(-1);
+      if (current?.kind !== 'feature_revision' || !samePlanningRef(current, payload.feature)) {
+        throw new StoreError('conflict', 'design_requires_current_feature_revision');
+      }
+    }
+    for (const record of writes) {
+      if (payload.feature === null ? record.feature !== null : !record.feature || !samePlanningRef(payload.feature, record.feature)) {
+        throw new StoreError('validation', 'artifact_feature_mismatch');
+      }
+      const previous = history.filter((entry) => entry.id === record.id).at(-1);
+      if (previous && !payload.expectedRevisions.some((entry) => samePlanningRef(entry, previous))) {
+        throw new StoreError('validation', `missing_expected_revision: ${record.id}`);
+      }
+    }
+    return writes;
+  });
+}

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { applyCommand } from './application.js';
 import { captureLearning, consolidateLearning, readLegacySection } from './learning.js';
 import { learningContext } from './learning-context.js';
 import { prepareLearningSchedule, runScheduledLearning } from './learning-schedule.js';
@@ -21,6 +22,7 @@ import { manageExecutionTask, queueManagedTask, reconcileManagedTask, TaskAdapte
 const help = `Software Factory request intake and staged planning
 All commands print JSON; chat-hook is silent on success. No settings are installed.
 
+  apply-command  --db <sqlite> --input <CommandEnvelope JSON file> [--adapter-config <TaskAdapterOptions JSON file>]
   init           --db <sqlite> --input <Project JSON file>
   capture        --db <sqlite> --project <id> --client-request-id <id>
                  --channel <cli|chat|firstmate_inbox|other> --source <reference>
@@ -80,6 +82,7 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   'learning-legacy': { db: valueOption, source: valueOption, heading: valueOption },
   'learning-schedule': { db: valueOption, schedule: valueOption, 'agent-config': valueOption },
   'learning-tick': { db: valueOption, schedule: valueOption, 'agent-config': valueOption, now: valueOption },
+  'apply-command': { db: valueOption, input: valueOption, 'adapter-config': valueOption },
   init: { db: valueOption, input: valueOption },
   capture: { db: valueOption, project: valueOption, 'client-request-id': valueOption,
     channel: valueOption, source: valueOption, 'text-file': valueOption, 'captured-at': valueOption },
@@ -135,6 +138,7 @@ export function runCli(args: string[]): number {
     const store = new ProjectStore(database);
     try {
       switch (verb) {
+        case 'apply-command': output(applyCommand(store, jsonFile('input'), optional('adapter-config') ? TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')) : undefined)); break;
         case 'learning-capture': output(captureLearning(store, jsonFile('input'))); break;
         case 'learning-consolidate': output(consolidateLearning(store, jsonFile('input'), jsonFile('agent-config'))); break;
         case 'learning-context': output(learningContext(store.history(required('project')), optional('feature'))); break;
