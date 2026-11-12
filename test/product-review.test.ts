@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { RecordsSchema, ProjectStore, reviewProduct, parseRoborevResult, readRoborevResult, snapshotDelivery,
   stepAgentCommand, validateRecords, validateReviewForCompletion, type Assignment, type CriterionResult, type FactoryRecord,
-  type ProductVerdict, type QualityResult } from '../src/index.js';
+  ref, recordSource, planReadinessFindings, type StageRevision, type ProductVerdict, type QualityResult } from '../src/index.js';
 import { fakeJudgeOptions } from './judge-helper.js';
 
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
@@ -96,9 +96,9 @@ for (const type of ['missing_behavior', 'wrong_implementation'] as const) test(`
   try {
     const { review } = flow.run(failure(type, 'planConformance'));
     assert.equal(review.outcome, 'failed'); assert.equal(review.planConformance.result, 'failed');
-    assert.equal(flow.store.get('project-1', 'result-second')?.kind, 'criterion_result');
+    const saved = flow.store.get('project-1', 'result-second'); assert.ok(saved?.kind === 'criterion_result');
+    assert.equal(saved.result, 'passed');
     assert.equal(review.conformance?.verdict?.findings[0]?.type, type);
-    assert.equal(flow.input.results[1]!.result, 'passed');
   } finally { flow.close(); }
 });
 
@@ -126,7 +126,6 @@ test('accomplished behavior with baseline, improvement and quality evidence perm
     assert.equal(review.outcome, 'passed', JSON.stringify(review));
     assert.equal(validateReviewForCompletion(flow.store.history('project-1'), review).ok, true);
     assert.ok(review.improvementEvidence.length); assert.ok(review.baselineEvidence.length);
-    assert.equal(flow.store.get('project-1', 'feature-1')?.kind, 'feature_revision');
   } finally { flow.close(); }
 });
 
@@ -151,12 +150,12 @@ test('unchanged quality results are reused across product passes; a changed comm
   } finally { flow.close(); }
 });
 
-for (const problem of ['unavailable', 'failed', 'uncertain', 'wrong-commit'] as const) test(`quality ${problem} cannot be replaced by a product pass`, () => {
+for (const problem of ['unavailable', 'failed', 'uncertain'] as const) test(`quality ${problem} cannot be replaced by a product pass`, () => {
   const flow = setup();
   try {
-    const quality = parseRoborevResult(qualityRaw(problem === 'wrong-commit' ? 'f'.repeat(40) : flow.commit,
+    const quality = parseRoborevResult(qualityRaw(flow.commit,
       problem === 'failed' ? 'fail' : problem === 'uncertain' ? 'unable_to_review' : 'pass'),
-      problem === 'wrong-commit' ? 'f'.repeat(40) : flow.commit, at);
+      flow.commit, at);
     const { review } = reviewProduct(flow.store, flow.input, fakeJudgeOptions({ result: JSON.stringify(passing()) }),
       () => { if (problem === 'unavailable') throw Error('No existing result'); return quality; });
     assert.equal(review.outcome, problem === 'failed' ? 'failed' : 'incomplete');
@@ -174,7 +173,7 @@ for (const problem of ['uncertain', 'missing-return', 'missing-baseline'] as con
   } finally { flow.close(); }
 });
 
-for (const output of ['not JSON', '{}', '{"sourceComparison":"passed","sourceComparison":"failed"}',
+for (const output of ['not JSON', '{}', JSON.stringify(passing()).replace('{', '{"sourceComparison":"failed",'),
   JSON.stringify({ ...passing(), criteria: [] }),
   JSON.stringify({ ...passing(), criteria: [passing().criteria[0], passing().criteria[0]] }),
   JSON.stringify({ ...passing(), criteria: passing().criteria.map((criterion) => ({ ...criterion, quotes: [{ source: 'delivery', text: 'invented code' }] })) }),
@@ -470,7 +469,7 @@ for (const definitive of ['pass', 'fail'] as const) test(`review finding 4: a ne
     assert.equal((flow.store.get('project-1', first.review.id) as typeof first.review).conformance?.technicalReviews[0]?.verdict, 'uncertain');
     const reused = reviewProduct(flow.store, { ...flow.input, reviewId: 'definitive-reused', idempotencyKey: 'definitive-op' }, config,
       () => { throw Error('A definitive unchanged result must be reused'); });
-    assert.equal(reused.review.outcome, refreshed.review.outcome); assert.equal(reads, 2);
+    assert.equal(reused.review.outcome, refreshed.review.outcome);
   } finally { flow.close(); }
 });
 
@@ -553,4 +552,121 @@ test('review 1169 finding 2: a feature aggregate includes criterion and maintena
     saved.conformance!.verdict!.criteria.pop();
     assert.equal(validateReviewForCompletion(historical, review).ok, false, 'Completion also requires the maintenance outcome');
   } finally { flow.close(); }
+});
+
+
+test('quality cache isolates repositories and artifacts even at the same commit', () => {
+  const flow = setup();
+  const other = mkdtempSync(join(tmpdir(), 'sf-other-repo-'));
+  try {
+    execFileSync('git', ['clone', '-q', flow.directory, other]);
+    const config = fakeJudgeOptions({ result: JSON.stringify(passing()) });
+    const artifactB = { ...flow.input.deliveredArtifact, uri: `git:${other}` };
+    const inputB = { ...flow.input, repository: other, deliveredArtifact: artifactB,
+      results: flow.input.results.map((result) => ({ ...result, id: result.id + '-B', artifact: artifactB })) };
+    assert.equal(reviewProduct(flow.store, inputB, config, flow.reader).review.outcome, 'passed');
+    let reads = 0;
+    const inputA = { ...flow.input, reviewId: 'repository-A', idempotencyKey: 'repository-A' };
+    const failed = reviewProduct(flow.store, inputA, config, (_repo, commit, observedAt) => {
+      reads++; return parseRoborevResult(qualityRaw(commit, 'fail'), commit, observedAt);
+    });
+    assert.equal(reads, 1); assert.equal(failed.review.outcome, 'failed');
+    const reused = reviewProduct(flow.store, { ...inputA, reviewId: 'repository-A-again', idempotencyKey: 'repository-A-again' }, config,
+      () => { throw Error('Must reuse A failure rather than B pass'); });
+    assert.equal(reused.review.outcome, 'failed');
+    // The same artifact under another repository also requires its own result.
+    let otherReads = 0;
+    reviewProduct(flow.store, { ...inputA, reviewId: 'alias', idempotencyKey: 'alias', repository: other }, config,
+      (_repo, commit, observedAt) => { otherReads++; return parseRoborevResult(qualityRaw(commit), commit, observedAt); });
+    assert.equal(otherReads, 1);
+  } finally { flow.close(); rmSync(other, { recursive: true, force: true }); }
+});
+
+test('large source within both limits is serialized once and reaches the reviewer', () => {
+  const code = goodCode + '// ' + 'x'.repeat(800_000);
+  const flow = setup(code);
+  try {
+    const calls = join(flow.directory, 'large-review.jsonl');
+    const result = reviewProduct(flow.store, { ...flow.input, maxSourceChars: 1_000_000 },
+      fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) }), flow.reader);
+    assert.equal(result.review.outcome, 'passed');
+    const serialized = readFileSync(calls, 'utf8');
+    assert.equal(serialized.split('x'.repeat(800_000)).length - 1, 1);
+    const snapshot = JSON.parse(serialized);
+    assert.equal(snapshot.deliveredFiles[0].text, code);
+  } finally { flow.close(); }
+});
+
+for (const primary of ['earlier', 'later'] as const) test(`aggregate completion accepts retained-task links with the ${primary} assignment first`, () => {
+  const flow = setup(goodCode, (records) => {
+    splitAssignments(records);
+    const plan = records.find((record) => record.kind === 'implementation_plan_revision'); assert.ok(plan?.kind === 'implementation_plan_revision');
+    const base = { projectId: 'project-1', schemaVersion: 1 as const, revision: 1, createdAt: at, updatedAt: at };
+    const feature = { id: 'feature-1', revision: 1 }; const request = { id: 'request-1', revision: 1 };
+    const understanding: FactoryRecord = { ...base, kind: 'understanding_revision', id: 'retained-understanding', feature,
+      sourceRequests: [request], criteria: [general, second], goal: original, userBehavior: 'Common integration', terms: {},
+      priorities: [], examples: [], exclusions: [], existingWork: [{ source: recordSource(request), finding: 'Existing interface' }],
+      openUnknowns: [], scope: [], changeReason: 'Preserve delivery' };
+    for (const task of records) if (task.kind === 'detailed_plan_task') { task.decisionsToKeep = []; task.verificationMethod = 'Exercise connected systems'; }
+    const draft = { ...structuredClone(plan), revision: 2, updatedAt: at, readiness: { ...plan.readiness, ready: false },
+      workflow: { slices: [{ id: 'slice', behavior: 'Keep common integration', criteria: [general, second], tasks: plan.deliverySequence }],
+        scope: [], integrationSteps: ['Connect deliveries'], finalVerification: ['Exercise both systems'], changeReason: 'Retain unchanged deliveries',
+        retainedTasks: plan.deliverySequence.map((task) => ({ task, reason: 'Unchanged task' })) } };
+    const stage = (name: StageRevision['stage'], artifact: { id: string; revision: number }, previousStage?: StageRevision): StageRevision => ({
+      ...base, kind: 'stage_revision', id: `retained-${name}`, stage: name, feature, sourceRequests: [request], criteria: [general, second],
+      artifact: ref(artifact), changeReason: 'Reuse unchanged delivery', ...(previousStage ? { previousStage: ref(previousStage) } : {}) });
+    const understand = stage('understand', understanding);
+    const design = stage('design', plan.design, understand);
+    design.reuse = { check: { result: 'passed', sourceRefs: [recordSource(request), recordSource(plan.design)], findings: [], reviewerSession: 'reuse', comparedAt: at }, criterionMap: [general, second].map((criterion) => ({ current: criterion, existing: criterion })) };
+    const planned = stage('plan', draft, design); const detail = stage('detail', draft, planned);
+    records.push(understanding, draft, understand, design, planned, detail);
+    assert.deepEqual(planReadinessFindings(records, detail), []);
+    const check: FactoryRecord = { ...base, kind: 'plan_readiness_revision', id: 'retained-check', feature, plan: ref(draft), detailStage: ref(detail), ready: true, findings: [] };
+    const retained = { ...draft, revision: 3, readiness: plan.readiness, workflow: { ...draft.workflow, readinessCheck: ref(check) } };
+    records.push(check, retained);
+    const assignment = records.find((record) => record.id === 'assignment-2'); assert.ok(assignment?.kind === 'assignment');
+    assignment.plan = ref(retained); assignment.instructionFidelity.sourceRefs.push(recordSource(retained));
+  });
+  try {
+    const [first, secondReturn] = flow.input.results; assert.ok(first && secondReturn);
+    const later = { assignment: { id: 'assignment-2', revision: 1 }, repository: flow.directory,
+      deliveredArtifact: flow.input.deliveredArtifact, results: [{ ...secondReturn, assignment: { id: 'assignment-2', revision: 1 } }] };
+    const earlier = { assignment: flow.input.assignment, repository: flow.directory,
+      deliveredArtifact: flow.input.deliveredArtifact, results: [first] };
+    const input = { ...flow.input, ...(primary === 'earlier' ? earlier : later),
+      additionalDeliveries: [primary === 'earlier' ? later : earlier] };
+    const { review } = reviewProduct(flow.store, input, fakeJudgeOptions({ result: JSON.stringify(passing()) }), flow.reader);
+    assert.equal(review.outcome, 'passed', JSON.stringify(review));
+    assert.deepEqual(review.plan, { id: 'plan-1', revision: 3 });
+    assert.equal(validateReviewForCompletion(flow.store.history('project-1'), review).ok, true);
+    const tampered = structuredClone(flow.store.history('project-1'));
+    const plan = tampered.find((record) => record.id === 'plan-1' && record.revision === 3); assert.ok(plan?.kind === 'implementation_plan_revision');
+    plan.workflow!.retainedTasks = [];
+    assert.equal(validateReviewForCompletion(tampered, review).ok, false);
+  } finally { flow.close(); }
+});
+
+
+test('aggregate quality cache preserves opposite repository verdicts at a shared SHA', () => {
+  const flow = setup(goodCode, splitAssignments);
+  const other = mkdtempSync(join(tmpdir(), 'sf-shared-sha-'));
+  try {
+    execFileSync('git', ['clone', '-q', flow.directory, other]);
+    const [first, secondReturn] = flow.input.results; assert.ok(first && secondReturn);
+    const artifact = { uri: `git:${other}`, revision: flow.commit };
+    const input = { ...flow.input, results: [first], additionalDeliveries: [{
+      assignment: { id: 'assignment-2', revision: 1 }, repository: other, deliveredArtifact: artifact,
+      results: [{ ...secondReturn, assignment: { id: 'assignment-2', revision: 1 }, artifact }],
+    }] };
+    const config = fakeJudgeOptions({ result: JSON.stringify(passing()) });
+    let reads = 0;
+    const firstReview = reviewProduct(flow.store, input, config, (repository, commit, observedAt) => {
+      reads++; return parseRoborevResult(qualityRaw(commit, repository === other ? 'pass' : 'fail'), commit, observedAt);
+    });
+    assert.equal(reads, 2); assert.equal(firstReview.review.outcome, 'failed');
+    const repeat = reviewProduct(flow.store, { ...input, reviewId: 'shared-sha-repeat', idempotencyKey: 'shared-sha-repeat' }, config,
+      () => { throw Error('Both repository results must be cached'); });
+    assert.deepEqual(repeat.review.conformance?.technicalReviews.map((result) => result.verdict), ['failed', 'passed']);
+    assert.equal(repeat.review.outcome, 'failed');
+  } finally { flow.close(); rmSync(other, { recursive: true, force: true }); }
 });

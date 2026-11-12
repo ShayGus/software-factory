@@ -194,6 +194,16 @@ function retainedTask(ctx: Context, plan: ImplementationPlanRevision, task: Deta
     criteria.every((ref) => feature.criteria.some((expected) => sameRef(ref, expected)));
 }
 
+/** A review can combine deliveries only through the existing unchanged-task retention rule. */
+export function assignmentMatchesReviewPlan(records: FactoryRecord[], assignment: Assignment, planRef: Ref): boolean {
+  if (sameRef(assignment.plan, planRef)) return true;
+  if (assignment.plan.id !== planRef.id || assignment.plan.revision > planRef.revision) return false;
+  const ctx = new Context(records);
+  const plan = ctx.index.get(key(planRef)); const task = ctx.index.get(key(assignment.detailedPlanTask));
+  return plan?.kind === 'implementation_plan_revision' && plan.readiness.ready &&
+    plan.readiness.comparison.result === 'passed' && task?.kind === 'detailed_plan_task' && retainedTask(ctx, plan, task);
+}
+
 function checkTaskPlan(ctx: Context, owner: FactoryRecord, task: DetailedPlanTask, plan: ImplementationPlanRevision) {
   if (!retainedTask(ctx, plan, task)) {
     ctx.equal(owner, task.plan, plan, 'task.plan');
@@ -269,7 +279,9 @@ function checkReview(ctx: Context, review: ProductReview) {
     if (assignment) {
       ctx.equal(review, assignment.feature, review.feature, 'assignment.feature');
       ctx.equal(review, assignment.design, review.design, 'assignment.design');
-      ctx.equal(review, assignment.plan, review.plan, 'assignment.plan');
+      if (!assignmentMatchesReviewPlan(ctx.records, assignment, review.plan)) {
+        ctx.equal(review, assignment.plan, review.plan, 'assignment.plan');
+      }
       if (!review.detailedPlanTasks.some((task) => sameRef(task, assignment.detailedPlanTask))) {
         ctx.add(review, 'omitted_task', 'detailedPlanTasks', 'Review omitted an assignment detailed task');
       }

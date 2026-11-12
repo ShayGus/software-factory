@@ -21,14 +21,17 @@ export function taskDependencyIds(records: FactoryRecord[], mapping: TaskMapping
 
 export function cancelledTaskPrerequisites(records: FactoryRecord[], mapping: TaskMapping): string[] {
   const mappings = new Map(currentTaskMappings(records).map((entry) => [entry.firstMateTaskId, entry]));
+  const native = new Map<string, Set<string>>();
+  for (const edge of mapping.management?.nativeDependencies ?? []) {
+    native.set(edge.taskId, new Set([...(native.get(edge.taskId) ?? []), ...edge.dependencies]));
+  }
   const cancelled = new Set<string>(); const visited = new Set<string>();
   const visit = (id: string) => {
     if (visited.has(id)) return;
     visited.add(id);
     const prerequisite = mappings.get(id);
-    if (!prerequisite) return;
-    if (prerequisite.disposition.state === 'cancelled') cancelled.add(id);
-    for (const next of taskDependencyIds(records, prerequisite)) visit(next);
+    if (prerequisite?.disposition.state === 'cancelled') cancelled.add(id);
+    for (const next of prerequisite ? taskDependencyIds(records, prerequisite) : native.get(id) ?? []) visit(next);
   };
   for (const id of taskDependencyIds(records, mapping)) visit(id);
   return [...cancelled];

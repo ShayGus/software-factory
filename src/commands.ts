@@ -62,7 +62,7 @@ export const MapManageExecutionTaskCommandSchema = z.strictObject({
     'Priority change requires a priority')
     .refine((value) => value.action !== 'create' || value.task.kind === 'new',
       'Create requires a new task description')
-    .refine((value) => value.action !== 'update' || (value.update && Object.keys(value.update).length > 0),
+    .refine((value) => value.action !== 'update' || (value.update && Object.values(value.update).some((field) => field !== undefined)),
       'Update requires at least one field')
     .refine((value) => value.feature !== null || value.criteria.length === 0,
       'Mapping product criteria requires a feature'),

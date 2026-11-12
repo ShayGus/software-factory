@@ -167,6 +167,8 @@ export const TaskMappingSchema = record('task_mapping', {
     operationId: IdSchema, requirements: z.array(DependencySchema),
     explicitRequirements: z.array(DependencySchema).optional(),
     managedDependencies: z.array(IdSchema),
+    // Native intermediary edges remain evidence after FirstMate cleanup.
+    nativeDependencies: z.array(z.strictObject({ taskId: IdSchema, dependencies: z.array(IdSchema) })).optional(),
     readiness: z.array(z.strictObject({ id: IdSchema, reason: TextSchema, evidence: z.array(EvidenceSchema) })),
     paused: z.boolean(),
     // The exact marker is our ownership token. Never clear an unrelated hold.
@@ -339,6 +341,7 @@ export const OperationSchema = record('operation', {
     payload: z.string().optional(), repository: TextSchema.optional(),
     baselineGeneration: TextSchema.nullable().optional(), baselineEndpointAlive: z.boolean().optional(), startedAt: TimestampSchema,
   }).optional(),
+  taskMutationAttempted: z.boolean().optional(),
   taskRejection: z.strictObject({ beforeMutation: z.literal(true), reason: TextSchema }).optional(),
   reconciliation: z.strictObject({
     observedAt: TimestampSchema, evidence: z.array(EvidenceSchema).min(1),

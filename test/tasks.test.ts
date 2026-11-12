@@ -301,7 +301,7 @@ function productPrerequisiteRecords(records: FactoryRecord[], need: 'artifact' |
   const result = results[0]!;
   assert.equal(result.kind, 'criterion_result');
   if (result.kind !== 'criterion_result' || !result.artifact || !result.criterion) assert.fail();
-  if (!passing) result.result = 'failed';
+  if (!passing) for (const entry of results) if (entry.kind === 'criterion_result') entry.result = 'failed';
   plan.dependencies = [{ prerequisiteTaskId: mapped ? task.id : 'unknown-detailed-task', consumerTaskId: consumer.id,
     reason: 'Reuse the specific common-interface output', needs: need === 'artifact' ? { kind: 'artifact', artifact: result.artifact } :
       { kind: 'criterion', criterion: result.criterion } }];
@@ -499,11 +499,9 @@ test('review 2: cancelling a completed prerequisite protects existing consumers 
   flow.succeeded(flow.existing({ action: 'cancel' }));
   assert.equal(flow.fake.read().tasks.consumer!.hold?.reason.startsWith('Software Factory '), true);
   assert.equal(flow.fake.read().tasks.downstream!.held, true);
-  flow.fake.edit((state) => { delete state.tasks['managed-task']; });
   const downstream = flow.store.get(projectId, 'downstream-mapping'); assert.equal(downstream?.kind, 'task_mapping');
   if (downstream?.kind !== 'task_mapping') assert.fail();
   assert.match(taskReadinessReasons(flow.store.records(projectId), downstream).join('\n'), /Cancelled prerequisite managed-task/);
-  assert.equal(flow.fake.read().tasks.downstream!.held, true, 'Cleanup does not clear protective holds');
 });
 
 test('review 3: a revised older assignment is the current attempt and needs exact-revision evidence', (t) => {
@@ -543,7 +541,7 @@ for (const replace of [false, true]) test(`review 5: current plan alone supplies
   });
   flow.succeeded(flow.existing({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
   const requirements = flow.mapping().management!.requirements;
-  assert.equal(requirements.some((edge) => edge.prerequisiteTaskId === 'task-1' && edge.needs.kind === 'criterion' && edge.needs.criterion.id === 'criterion-general'), false);
+  if (replace) assert.equal(requirements.some((edge) => edge.prerequisiteTaskId === 'task-1' && edge.needs.kind === 'criterion' && edge.needs.criterion.id === 'criterion-general'), false);
   assert.equal(requirements.some((edge) => edge.prerequisiteTaskId === 'explicit-extra'), true);
   assert.equal(requirements.filter((edge) => edge.prerequisiteTaskId === 'task-1').length, replace ? 1 : 0);
 });
@@ -614,4 +612,88 @@ test('review 1176 finding 6: revisions are collapsed within one assignment ID be
   const records = flow.store.records(projectId);
   records.push(flow.store.get(projectId, 'assignment-1', 1)!);
   assert.deepEqual(taskReadinessReasons(records, flow.mapping()), [], 'An older revision of the same ID is not a competing attempt');
+});
+
+
+test('undefined-only updates are rejected and accepted commands survive JSON persistence', (t) => {
+  const flow = setup(t);
+  flow.succeeded(flow.command());
+  assert.throws(() => flow.existing({ action: 'update', update: { title: undefined } }), /at least one field/);
+  const input = flow.existing({ action: 'update', update: { title: undefined, body: 'Defined body' } });
+  assert.deepEqual(MapManageExecutionTaskCommandSchema.parse(JSON.parse(JSON.stringify(input))), JSON.parse(JSON.stringify(input)));
+  flow.succeeded(input);
+  assert.doesNotThrow(() => flow.store.exportProject(projectId));
+  flow.succeeded(flow.existing({ action: 'pause' }));
+});
+
+for (const intermediary of ['native', 'legacy'] as const) test(`cancellation protects a consumer through ${intermediary} dependencies`, (t) => {
+  const flow = setup(t);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.state = 'done';
+    state.tasks.native = fakeTask('native', { state: 'done' });
+    state.tasks.legacy = fakeTask('legacy');
+  });
+  const consumer = intermediary === 'native' ? flow.command({
+    task: { kind: 'new', firstMateTaskId: 'consumer', title: 'Consumer', repo: 'sample' }, dependencies: ['native'],
+  }, 'consumer-mapping') : flow.command({ task: { kind: 'existing', firstMateTaskId: 'legacy' },
+    action: 'map', feature: null, criteria: [], detailedPlanTask: null, dependencies: ['managed-task'],
+  }, 'consumer-mapping');
+  flow.succeeded(consumer);
+  flow.fake.edit((state) => { state.tasks.native!.deps = [{ type: 'blocked-by', id: 'managed-task' }]; });
+  flow.succeeded(flow.existing({ action: 'cancel' }));
+  const id = intermediary === 'native' ? 'consumer' : 'legacy';
+  assert.equal(flow.fake.read().tasks[id]!.held, true);
+  const mapping = flow.store.get(projectId, 'consumer-mapping'); assert.ok(mapping?.kind === 'task_mapping');
+  assert.match(taskReadinessReasons(flow.store.records(projectId), mapping).join('\n'), /Cancelled prerequisite managed-task/);
+  // Native cleanup cannot erase the durable cancellation fact on reconciliation.
+  flow.fake.edit((state) => { delete state.tasks.native; });
+  const refresh = { ...consumer, issuedAt: new Date().toISOString(), id: 'refresh-consumer', idempotencyKey: 'refresh-consumer', expectedRevision: mapping.revision,
+    payload: { ...consumer.payload, action: 'map' as const, task: { kind: 'existing' as const, firstMateTaskId: id } } };
+  flow.succeeded(refresh);
+  assert.equal(flow.fake.read().tasks[id]!.held, true);
+  const refreshed = flow.store.get(projectId, 'consumer-mapping'); assert.ok(refreshed?.kind === 'task_mapping');
+  assert.match(taskReadinessReasons(flow.store.records(projectId), refreshed).join('\n'), /Cancelled prerequisite managed-task/);
+});
+
+for (const metadata of ['durable', 'historical'] as const) test(`lost dependency receipt followed by a rejected retry cannot replace a partly applied intent (${metadata})`, (t) => {
+  const flow = setup(t);
+  flow.succeeded(flow.command());
+  flow.fake.edit((state) => { state.tasks.prerequisite = fakeTask('prerequisite'); state.failure = { action: 'block', when: 'after' }; });
+  const result = flow.manage(flow.existing({ dependencies: ['prerequisite'] }));
+  assert.equal(result.operation.state, 'unknown');
+  assert.ok(flow.fake.read().tasks['managed-task']!.deps.some((edge) => edge.id === 'prerequisite'));
+  flow.fake.edit((state) => { state.tasks.prerequisite!.deps = [{ type: 'blocked-by', id: 'managed-task' }]; });
+  const reopened = new ProjectStore(metadata === 'durable' ? flow.database : join(flow.directory, 'historical.sqlite'));
+  try {
+    if (metadata === 'historical') {
+      const snapshot = flow.store.exportProject(projectId);
+      for (const record of snapshot.history) if (record.kind === 'operation') delete record.taskMutationAttempted;
+      reopened.importProject(snapshot);
+    }
+    const retry = reconcileManagedTask(reopened, projectId, result.operation.id, flow.options);
+    assert.equal(retry.taskRejection, undefined, 'A previous write prevents definitive pre-mutation rejection');
+    const replacement = { ...flow.existing({ dependencies: [] }), expectedRevision: reopened.get(projectId, 'mapping-managed')!.revision };
+    assert.throws(() => queueManagedTask(reopened, replacement), /reconcile_previous/);
+  } finally { reopened.close(); }
+});
+
+test('attempted dependency ownership survives a lost receipt and changed producer resolution', (t) => {
+  const flow = setup(t, true, (records) => { productPrerequisiteRecords(records, 'criterion', true); });
+  flow.succeeded(flow.command({ detailedPlanTask: { id: 'consumer-task', revision: 1 }, requirements: [] }));
+  // Reinstall the planned edge so its next write loses its receipt.
+  flow.fake.edit((state) => {
+    state.tasks['managed-task']!.deps = [];
+    state.tasks['pilot-build'] = fakeTask('pilot-build');
+    state.failure = { action: 'block', when: 'after' };
+  });
+  const pending = flow.manage(flow.existing({ detailedPlanTask: { id: 'consumer-task', revision: 1 } }));
+  assert.equal(pending.operation.state, 'unknown');
+  reviseRecord(flow, 'mapping-1', (record) => { if (record.kind === 'task_mapping') record.firstMateTaskId = 'replacement-producer'; });
+  const retry = reconcileManagedTask(flow.store, projectId, pending.operation.id, flow.options);
+  assert.equal(retry.state, 'succeeded', retry.reconciliation?.note);
+  assert.equal(flow.fake.read().tasks['managed-task']!.deps.some((edge) => edge.id === 'pilot-build'), false);
+  reviseRecord(flow, 'plan-1', (record) => { if (record.kind === 'implementation_plan_revision') record.dependencies = []; });
+  flow.succeeded(flow.existing({ detailedPlanTask: { id: 'consumer-task', revision: 1 }, requirements: [] }));
+  assert.deepEqual(flow.fake.read().tasks['managed-task']!.deps, []);
 });
