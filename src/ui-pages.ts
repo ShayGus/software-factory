@@ -63,7 +63,7 @@ function featureRow(view: ProjectView, item: FeatureView) {
     <p>Original requests: ${links(feature.projectId, feature.sourceRequests)}</p><p>Related work: ${links(feature.projectId, item.tasks.map((task) => task.mapping))}</p></div>
     <div>${featureEditor(item)}</div></article>`;
 }
-function taskActions(item: { mapping: FeatureView['tasks'][number]['mapping']; operation: FeatureView['tasks'][number]['operation']; priority: number | null | undefined }) {
+function taskActions(item: { mapping: FeatureView['tasks'][number]['mapping']; operation: FeatureView['tasks'][number]['operation']; priority: number | null | undefined }, canCancelTasks = true) {
   const { mapping, operation } = item;
   if (mapping.disposition.state === 'cancelled') return empty('Cancelled — further changes require explicit replanning.');
   if (operation?.kind === 'operation' && operation.state !== 'succeeded' && !operation.taskRejection?.beforeMutation) return empty('Edits unavailable — inspect and reconcile the saved operation first.');
@@ -71,9 +71,9 @@ function taskActions(item: { mapping: FeatureView['tasks'][number]['mapping']; o
   return edit({ ...context, action: 'set_priority' }, 'Edit task priority', field('priority', 'Task priority (0–4)', item.priority ?? '', 'number')) +
     edit({ ...context, action: 'edit_dependencies' }, 'Add or remove dependencies', field('dependencies', 'Prerequisite logical task IDs (comma separated; empty removes all explicit dependencies)', mapping.dependencies.join(', '), 'text') + empty('Product prerequisites from the plan remain governed by product readiness.')) +
     edit({ ...context, action: mapping.management?.paused ? 'resume' : 'pause' }, mapping.management?.paused ? 'Unhold task (resume toolkit pause)' : 'Hold task (indefinite toolkit pause)', empty('Uses the canonical pause/resume operation. Other owners’ holds remain visible and are preserved.')) +
-    edit({ ...context, action: 'cancel' }, 'Cancel execution task', empty('Records cancellation through FirstMate; feature completeness still requires product review.'));
+    (canCancelTasks ? edit({ ...context, action: 'cancel' }, 'Cancel execution task', empty('Records cancellation through FirstMate; feature completeness still requires product review.')) : empty('Cancel execution tasks through FirstMate chat on the host.'));
 }
-function taskRows(feature: FeatureView) {
+function taskRows(feature: FeatureView, canCancelTasks = true) {
   return feature.tasks.map((item) => {
     const mapping = item.mapping;
     const operation = item.operation?.kind === 'operation' ? item.operation : undefined;
@@ -85,7 +85,7 @@ function taskRows(feature: FeatureView) {
       <p>${recordLink(mapping.projectId, mapping)} · Plan task: ${mapping.detailedPlanTask ? recordLink(mapping.projectId, mapping.detailedPlanTask) : 'Unknown — legacy mapping'}
       ${operation ? ` · ${recordLink(mapping.projectId, operation, 'Operation and observation evidence')}` : ''}</p>
       <p>Original requests: ${links(mapping.projectId, feature.feature.sourceRequests)} · Related briefs: ${links(mapping.projectId, feature.assignments.filter((assignment) => assignment.firstMateTaskId === mapping.firstMateTaskId))}</p>
-      ${taskActions(item)}
+      ${taskActions(item, canCancelTasks)}
     </article>`;
   }).join('') || empty('Unknown — no execution mappings recorded.');
 }
@@ -97,7 +97,7 @@ export function renderOverview(view: ProjectView) {
     <section aria-labelledby="requested"><h2 id="requested">Requested features</h2>${view.features.sort((a, b) => a.feature.priority - b.feature.priority).map((item) => featureRow(view, item)).join('') || empty('No requested features recorded.')}</section>
     <section aria-labelledby="suggestions"><h2 id="suggestions">Suggestions · outside current scope</h2>${view.suggestions.map((suggestion) => `<article><h3>${recordLink(view.options.projectId, suggestion, suggestion.questionOrChange)}</h3>${text(suggestion.rationale)}<p>Proposed — not selected. Related records: ${links(view.options.projectId, suggestion.affectedRecords)}</p></article>`).join('') || empty('No suggestions recorded.')}</section>
     <section><h2>Decisions needing input</h2>${decisionRows(view)}</section>
-    <section><h2>Work and input needed</h2>${view.features.map((feature) => `<h3><a href="${featureUrl(view.options.projectId, feature.feature.id)}">${h(feature.feature.outcome)}</a></h3>${taskRows(feature)}`).join('')}</section>`);
+    <section><h2>Work and input needed</h2>${view.features.map((feature) => `<h3><a href="${featureUrl(view.options.projectId, feature.feature.id)}">${h(feature.feature.outcome)}</a></h3>${taskRows(feature, view.options.canCancelTasks)}`).join('')}</section>`);
 }
 const workUrl = (projectId: string, id: string) => `/projects/${enc(projectId)}/work/${enc(id)}`;
 function workContext(view: ProjectView, row: WorkView['rows'][number]) {
@@ -131,7 +131,7 @@ function workRow(view: ProjectView, row: WorkView['rows'][number], dependencies:
     ${row.requirements.length ? `<ul>${row.requirements.map(({ requirement, producer }) => `<li>Product prerequisite ${h(requirement.prerequisiteTaskId)} (${h(requirement.needs.kind)}): ${h(requirement.reason)} — ${producer ? recordLink(mapping.projectId, producer) : 'Unknown — producer mapping unresolved'}</li>`).join('')}</ul>` : ''}
     ${dependencies ? `<p>Needed by: ${row.consumers.map((entry) => `<a href="${workUrl(mapping.projectId, entry.id)}">${h(entry.firstMateTaskId)}</a> (${edgeOrigin(entry.edge)})`).join(' · ') || 'No consumers recorded'}</p>` : ''}
     <p>${recordLink(mapping.projectId, mapping, 'Canonical task mapping')}${row.operation ? ` · ${recordLink(mapping.projectId, row.operation, 'Operation and observation evidence')}` : ''}</p>
-    ${taskActions(row)}</article>`;
+    ${taskActions(row, view.options.canCancelTasks)}</article>`;
 }
 export function renderWork(view: ProjectView, dependencies = false, focusId?: string) {
   const work = workView(view);
@@ -242,7 +242,7 @@ export function renderFeature(view: ProjectView, item: FeatureView) {
       <p>Attempt: ${h(assignment.attemptId)} · Execution task: ${h(assignment.firstMateTaskId)}</p><p>Derived from ${recordLink(projectId, assignment.detailedPlanTask, 'Detailed plan task')} in ${recordLink(projectId, assignment.plan, 'Plan')} and ${recordLink(projectId, assignment.design, 'Design')}.</p>
       <p>${sameRef(assignment.plan, item.displayPlan) && sameRef(assignment.design, item.displayDesign) && sameRef(assignment.feature, item.feature) ? 'Current referenced revisions' : 'Stale — assignment references earlier product revisions'}. Fidelity: ${h(assignment.instructionFidelity.result)}</p>
       <details><summary>Read worker instructions</summary><pre>${h(assignment.instructionText)}</pre></details><p>Original requests: ${links(projectId, item.feature.sourceRequests)}</p></article>`).join('') || empty('Unknown — no assignments recorded.')}</section>
-    <section><h2>Task progress</h2>${taskRows(item)}</section><section id="changes"><h2>Decisions & changes</h2>
+    <section><h2>Task progress</h2>${taskRows(item, view.options.canCancelTasks)}</section><section id="changes"><h2>Decisions & changes</h2>
       ${item.decisions.map((decision) => `<article><h3>${recordLink(projectId, decision, decision.questionOrChange)}</h3><p>${h(decision.disposition)}${decision.choice ? ` · ${h(decision.choice.state)}` : ''}</p>${text(decision.rationale)}<p>Affected records: ${links(projectId, decision.affectedRecords)}</p></article>`).join('') || empty('No linked decisions recorded.')}
       <h2>Corrections</h2><p>Active feature revision: ${recordLink(projectId, item.feature)}</p>${item.corrections.map((observation) => {
         const correction = observation.correction!;

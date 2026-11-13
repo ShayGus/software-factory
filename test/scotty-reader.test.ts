@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { createServer, request, type Server } from 'node:http';
 
 test('scratch Scotty refuses every native mutation and model/update route even with an editing cookie', async (t) => {
   const directory = mkdtempSync(join(tmpdir(), 'sf-scotty-reader-'));
@@ -49,8 +50,41 @@ process.stdout.write(JSON.stringify({args:process.argv.slice(2), workspace:proce
   assert.equal(scottyReadRequestAllowed('HEAD', '/p/sf-build05'), true);
   const launcher = join(directory, 'launch.mjs');
   writeScottyLauncher(launcher, 'http://127.0.0.1:3185/canonical');
-  assert.match(readFileSync(launcher, 'utf8'), /cookie:'scotty-viewer-mode=read-only'/);
   assert.equal(spawnSync(process.execPath, ['--check', launcher]).status, 0);
+});
+
+test('published Scotty guard refuses hostile headers without forwarding and forces read-only for valid local requests', async t => {
+  const { createScottyReadHandler } = await import(new URL('../../scripts/scotty-spike-reader.mjs', import.meta.url).href);
+  const received: unknown[] = [];
+  const listen = async (server: Server) => {
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }));
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    return address.port;
+  };
+  const upstream = createServer((req, res) => {
+    received.push({ method: req.method, path: req.url, cookie: req.headers.cookie });
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"read":true}');
+  });
+  const upstreamPort = await listen(upstream);
+  let handler: ReturnType<typeof createScottyReadHandler>;
+  const guard = createServer((req, res) => handler(req, res));
+  const port = await listen(guard);
+  const authority = `127.0.0.1:${port}`;
+  handler = createScottyReadHandler({ canonicalUrl: 'http://127.0.0.1:3999', projectId: 'factory', folder: true, authority, upstreamPort });
+  const send = (headers: Record<string, string>) => new Promise<number>((resolve, reject) => {
+    const req = request({ hostname: '127.0.0.1', port, path: '/api/p/factory/beads', headers }, res => {
+      res.resume(); res.on('end', () => resolve(res.statusCode!));
+    });
+    req.on('error', reject); req.end();
+  });
+  assert.equal(await send({ Host: authority, Origin: `http://${authority}`, Cookie: 'scotty-viewer-mode=editing' }), 200);
+  assert.deepEqual(received, [{ method: 'GET', path: '/api/p/factory/beads', cookie: 'scotty-viewer-mode=read-only' }]);
+  for (const headers of [{ Host: 'foreign.invalid' }, { Origin: 'https://foreign.invalid' }, { 'Sec-Fetch-Site': 'cross-site' }]) {
+    assert.equal(await send({ Host: authority, ...headers }), 403);
+    assert.equal(received.length, 1, 'Hostile request must not reach Scotty');
+  }
 });
 
 test('folder Scotty reads arbitrary folder tickets but refuses alternate endpoints, options and every write', async t => {

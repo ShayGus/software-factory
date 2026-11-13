@@ -82,7 +82,7 @@ Scotty’s published port enforces a read allowlist and its Beads executable sep
 Its ticket list and dependency graph use this home’s Beads database.
 The factory index starts with an empty state and discovers every initialized factory project from the existing hook registry, including projects added after startup.
 The UI runtime image is built locally from the pinned Scotty image with the shell tools required by the home’s task wrapper.
-Features, plans, decisions and task edits use canonical factory operations; cancellation of an active worker stays in FirstMate chat on the host.
+Features, plans, decisions and task edits use canonical factory operations; execution-task cancellation stays in FirstMate chat on the host.
 The Docker daemon must itself start at boot.
 Docker access is detected automatically, including this computer's `sg docker` requirement.
 

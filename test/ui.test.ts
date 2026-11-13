@@ -91,12 +91,15 @@ async function sendEdit(flow: ReturnType<typeof setup>, editor: ReturnType<typeo
   return { command, first };
 }
 
-for (const screen of ['/', '/projects/project-1/features/feature-1']) {
+for (const screen of ['/', '/projects/project-1', '/projects/project-1/features/feature-1']) {
   test(`feature priority, outcome and deferral round trip from ${screen}`, async (t) => {
     const flow = setup(t);
     const original = flow.store.get('project-1', 'request-1');
     const page = await flow.http('GET', screen);
     assert.equal(page.status, 200, page.body);
+    const featuresLink = page.body.match(/href="([^"]+)">Features</u)?.[1];
+    assert.ok(featuresLink);
+    assert.equal((await flow.http('GET', featuresLink)).status, 200);
     const { command } = await sendEdit(flow, findEditor(page.body, 'feature'), { priority: '3', outcome: 'Preserve every connected system', disposition: 'deferred' });
     const feature = flow.store.get('project-1', 'feature-1');
     assert.ok(feature?.kind === 'feature_revision');

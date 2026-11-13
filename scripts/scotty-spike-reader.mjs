@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import { request } from 'node:http';
 
 /** Only the fixed scratch scenario's read commands. No option can change DB,
  * workspace, actor, endpoint, or execute SQL through Scotty's process.
@@ -31,36 +32,40 @@ export function scottyReadRequestAllowed(method, rawPath, projectId = 'sf-build0
     '/api/p/sf-build05/beads/fm-pilot-build', '/api/p/sf-build05/beads/fm-pilot-verify'].includes(path);
 }
 
-/** Published port reaches only this guard. Next listens on container loopback
- * at 3001; no cookie can enable native writes or AI/update/publish endpoints.
- */
+/** The published HTTP boundary. Tests exercise this same handler against a
+ * local upstream; the launcher embeds it so no other server route is exposed. */
+export function createScottyReadHandler({ canonicalUrl, projectId = 'sf-build05', folder = false, authority, upstreamPort = 3001 }) {
+  return (req, res) => {
+    if (authority && (req.headers.host !== authority ||
+      (req.headers.origin && req.headers.origin !== 'http://' + authority) || req.headers['sec-fetch-site'] === 'cross-site')) {
+      res.writeHead(403).end(); return;
+    }
+    if (!scottyReadRequestAllowed(req.method, req.url, projectId, folder)) {
+      res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'GET, HEAD' });
+      res.end(JSON.stringify({ code: 'canonical_operation_required', error: 'Use the canonical operation', operation: canonicalUrl }));
+      return;
+    }
+    const upstream = request({ hostname: '127.0.0.1', port: upstreamPort, path: req.url, method: req.method,
+      headers: { ...req.headers, host: `127.0.0.1:${upstreamPort}`, cookie: 'scotty-viewer-mode=read-only' } }, response => {
+        res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res);
+      });
+    upstream.once('error', () => { res.writeHead(503).end(); });
+    res.once('close', () => upstream.destroy());
+    upstream.end();
+  };
+}
+
+/** Next listens on container loopback at 3001; only the guard is published. */
 export function writeScottyLauncher(path, canonicalUrl, { projectId = 'sf-build05', folder = false, authority } = {}) {
   writeFileSync(path, `import { spawn } from 'node:child_process';
 import { createServer, request } from 'node:http';
-const allowed = ${scottyReadRequestAllowed.toString()};
+const scottyReadRequestAllowed = ${scottyReadRequestAllowed.toString()};
+const createScottyReadHandler = ${createScottyReadHandler.toString()};
 const child = spawn(process.execPath, ['/app/server.js'], {cwd:'/app', stdio:'inherit',
   env:{...process.env, PORT:'3001', HOSTNAME:'127.0.0.1'}});
 child.once('exit', code => process.exit(code ?? 1));
 for (const signal of ['SIGINT','SIGTERM']) process.once(signal, () => {child.kill(signal); process.exit(0);});
-createServer((req, res) => {
-  const authority = ${JSON.stringify(authority) ?? 'undefined'};
-  if (authority && (req.headers.host !== authority ||
-    (req.headers.origin && req.headers.origin !== 'http://' + authority) || req.headers['sec-fetch-site'] === 'cross-site')) {
-    res.writeHead(403).end(); return;
-  }
-  if (!allowed(req.method, req.url, ${JSON.stringify(projectId)}, ${folder})) {
-    res.writeHead(405, {'Content-Type':'application/json', 'Allow':'GET, HEAD'});
-    res.end(JSON.stringify({code:'canonical_operation_required',error:'Use the canonical operation',operation:${JSON.stringify(canonicalUrl)}}));
-    return;
-  }
-  const upstream = request({hostname:'127.0.0.1', port:3001, path:req.url, method:req.method,
-    headers:{...req.headers, host:'127.0.0.1:3001', cookie:'scotty-viewer-mode=read-only'}}, response => {
-      res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res);
-    });
-  upstream.once('error', () => {res.writeHead(503).end();});
-  res.once('close', () => upstream.destroy());
-  upstream.end();
-}).listen(3000, '0.0.0.0');
+createServer(createScottyReadHandler(${JSON.stringify({ canonicalUrl, projectId, folder, authority })})).listen(3000, '0.0.0.0');
 `);
 }
 

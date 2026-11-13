@@ -49,6 +49,7 @@ export class ToolkitApi {
       }
       if (method === 'GET' && parts[0] === 'projects' && parts[1]) {
         const options = { ...this.options, projectId: parts[1] };
+        if (parts.length === 2) return { status: 200, body: renderOverview(projectView(this.store, options)), contentType: 'text/html; charset=utf-8' };
         if (parts.length === 3 && (parts[2] === 'decisions' || parts[2] === 'learning')) {
           const view = projectView(this.store, options);
           return { status: 200, body: parts[2] === 'decisions' ? renderDecisions(view) : renderLearning(view), contentType: 'text/html; charset=utf-8' };

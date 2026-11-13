@@ -30,8 +30,26 @@ test('folder discovers multiple project databases live and routes reads and cano
     assert.equal(api.handle('GET', `/projects/${project.projectId}`).status, 200);
     assert.equal(api.handle('GET', `/projects/${project.projectId}/work`).status, 200);
     assert.equal(api.handle('GET', `/projects/${project.projectId}/decisions`).status, 200);
+    const page = String(api.handle('GET', `/projects/${project.projectId}`).body);
+    const featuresLink = page.match(/href="([^"]+)">Features</)?.[1];
+    assert.ok(featuresLink);
+    assert.equal(api.handle('GET', featuresLink).status, 200);
+    for (const suffix of ['', '/work', '/dependencies', '/features/feature-1']) {
+      const taskPage = String(api.handle('GET', `/projects/${project.projectId}${suffix}`).body);
+      assert.doesNotMatch(taskPage, /Cancel execution task<\/summary>/);
+      assert.match(taskPage, /Cancel execution tasks through FirstMate chat/);
+    }
   }
   const store = new ProjectStore(projects[1]!.database);
+  const mapping = store.records('project-2').find(record => record.kind === 'task_mapping')!;
+  assert.equal(mapping.kind, 'task_mapping');
+  if (mapping.kind !== 'task_mapping') throw new Error('missing fixture mapping');
+  const before = store.exportProject('project-2');
+  const cancel = buildEditCommand({ kind: 'task', mapping, action: 'cancel' }, { reason: 'Must hand off to host before mutation' }, 'folder-cancel', new Date().toISOString());
+  const refused = api.handle('POST', '/canonical', cancel);
+  assert.equal(refused.status, 409);
+  assert.match(JSON.stringify(refused.body), /firstmate_control_required/);
+  assert.deepEqual(store.exportProject('project-2'), before, 'No cancellation disposition, hold or receipt may be committed');
   const feature = store.records('project-2').find(record => record.kind === 'feature_revision')!;
   assert.equal(feature.kind, 'feature_revision');
   if (feature.kind !== 'feature_revision') throw new Error('missing fixture feature');

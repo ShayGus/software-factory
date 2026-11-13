@@ -10,7 +10,7 @@ import { bundleUrl, type BundleRefs } from './ui-bundle.js';
 import { reusableAnswer } from './decision-context.js';
 import { learningView } from './ui-learning-state.js';
 
-export interface UiOptions { bundle?: { featureId: string; refs: BundleRefs }; projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string; readSnapshot?: () => unknown; learningSchedule?: unknown }
+export interface UiOptions { bundle?: { featureId: string; refs: BundleRefs }; projectId: string; fixture?: boolean; staleAfterMs?: number; scottyUrl?: string; canCancelTasks?: boolean; readSnapshot?: () => unknown; learningSchedule?: unknown }
 export const uiStaleAfterMs = (value?: number) => value !== undefined && Number.isFinite(value) && value > 0 ? value : 60000;
 export const sameRef = (a: Ref | null | undefined, b: Ref | null | undefined) => !!a && !!b && a.id === b.id && a.revision === b.revision;
 /** Last validated BUILD-08 observation; reads never query or mutate FirstMate. */

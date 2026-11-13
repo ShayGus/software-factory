@@ -45,13 +45,18 @@ export class FolderToolkitApi {
         method === 'POST' && body && typeof body === 'object' && 'projectId' in body ? body.projectId : undefined;
       const entry = projects.find(entry => entry.projectId === projectId);
       if (!entry) return { status: 404, body: { error: { code: 'not_found', message: 'Project is not registered in this factory folder' } } };
+      if (method === 'POST' && url.pathname === '/canonical' && body && typeof body === 'object' &&
+        'command' in body && body.command === 'map_manage_execution_task' && 'payload' in body && body.payload &&
+        typeof body.payload === 'object' && 'action' in body.payload && body.payload.action === 'cancel') {
+        return { status: 409, body: { error: { code: 'firstmate_control_required', message: 'Cancel execution tasks through FirstMate chat on the host.', paths: [], externalReferences: [] } } };
+      }
       if (!existsSync(entry.database)) throw new Error('Project database is unavailable');
       const store = new ProjectStore(entry.database);
       try {
         // Active-worker cancellation stays with FirstMate on the host. A UI
         // container cannot attest to host process or tmux session termination.
         const api = new ToolkitApi(store, { fmHome: this.home, tasksExecutable: join(this.home, 'bin/fm-tasks-axi.sh') },
-        { projectId: entry.projectId, ...(this.scottyUrl ? { scottyUrl: `${this.scottyUrl}/p/factory` } : {}) });
+        { projectId: entry.projectId, canCancelTasks: false, ...(this.scottyUrl ? { scottyUrl: `${this.scottyUrl}/p/factory` } : {}) });
         return api.handle(method, parts.length === 2 && method === 'GET' ? '/' : path, body);
       } finally { store.close(); }
     } catch (error) {

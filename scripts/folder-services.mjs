@@ -67,6 +67,12 @@ export async function waitForScreens(services) {
   }
 }
 
+export function screenProbeObserved(payload, probe, successor) {
+  const beads = payload.beads;
+  return payload.meta?.readOnly === true && Array.isArray(beads) && beads.some(bead => bead.id === `fm-${probe}`) &&
+    beads.some(bead => bead.id === `fm-${successor}` && bead.dependencies?.some(edge => edge.depends_on_id === `fm-${probe}` && edge.type === 'blocks'));
+}
+
 export async function acceptScreens(home, services, wrapper) {
   await waitForScreens(services);
   const probe = `sf-screen-check-${Date.now()}`;
@@ -87,9 +93,7 @@ export async function acceptScreens(home, services, wrapper) {
     if (!page.response.ok || !page.response.headers.get('content-type')?.includes('text/html')) throw new Error('Scotty page did not answer');
     const { response, text } = await check('/api/p/factory/beads', { headers: { cookie: 'scotty-viewer-mode=editing' } });
     const payload = JSON.parse(text);
-    const beads = payload.beads;
-    if (!response.ok || payload.meta?.readOnly !== true || !Array.isArray(beads) || !beads.some(bead => bead.id === `fm-${probe}`) ||
-      !beads.some(bead => bead.id === `fm-${successor}` && bead.dependencies?.some(edge => edge.depends_on_id === `fm-${probe}` && edge.type === 'blocks'))) {
+    if (!response.ok || !screenProbeObserved(payload, probe, successor)) {
       throw new Error('Scotty did not show tasks-axi probe and dependency edge');
     }
     for (const [method, path, body] of [
