@@ -52,11 +52,14 @@ Create the complete Linux FirstMate home with one command from this repository:
 node scripts/setup-firstmate-home.mjs \
   --home /absolute/new-factory-home --name factory \
   --container factory-dolt --database factory_backlog \
-  --fork-source /absolute/owners-firstmate-fork \
-  --tasks-source /absolute/beads-capable-tasks-axi \
-  --factory-source /absolute/software-factory
+  --fork-source /home/shayg/code/firstmate-fork \
+  --tasks-source /home/shayg/code/tasks-axi \
+  --factory-source /home/shayg/code/software-factory
 ```
 
+The source paths above are the owner’s independent checkouts; substitute your own repositories on another computer.
+Setup prints the folder’s factory-screen address, its view-only Scotty address, and the Claude launch command.
+You start no database or screens yourself.
 Then open it normally:
 
 ```sh
@@ -72,14 +75,25 @@ Run `node scripts/setup-firstmate-home.mjs --help` for all inputs, ref overrides
 
 Setup creates a private clone on local `main`, a committed Beads configuration, home-local tools, both skill discovery paths, agent profiles and the version 1 `worker.start.before` hook.
 It uses FirstMate's existing Claude session hooks and puts the private task executable first in Claude's local PATH, without changing the computer's global tools.
-The dedicated Dolt container has no network access, persists under the home and restarts with Docker after reboot; its entry point removes a stale socket before starting.
+The dedicated Dolt container has no network access and persists under the home; its entry point removes a stale socket before starting.
+Setup also creates dedicated Scotty and factory UI containers, all with `unless-stopped` restart policies so they return with Docker after reboot.
+Both screen addresses bind to loopback and use available ports by default; `--ui-port` and `--scotty-port` optionally reserve explicit ports without replacing an existing listener.
+Scotty’s published port enforces a read allowlist and its Beads executable separately refuses native writes, regardless of browser editing preferences.
+Its ticket list and dependency graph use this home’s Beads database.
+The factory index starts with an empty state and discovers every initialized factory project from the existing hook registry, including projects added after startup.
+The UI runtime image is built locally from the pinned Scotty image with the shell tools required by the home’s task wrapper.
+Features, plans, decisions and task edits use canonical factory operations; cancellation of an active worker stays in FirstMate chat on the host.
 The Docker daemon must itself start at boot.
 Docker access is detected automatically, including this computer's `sg docker` requirement.
 
 The command finishes by opening a real non-interactive Claude session with normal startup hooks and settings.
 That session must load the factory skill and add, list and remove a probe through the home's task wrapper; a failure makes setup fail.
+The built-in screen check also requires both screens to answer, a tasks-axi probe and its dependency to appear in Scotty, and Scotty creation, editing, deletion and editing-mode requests to be refused.
+Screen-check responses are retained under `data/software-factory.screens.*.json`.
 Full acceptance output is retained under the home's `data/software-factory.acceptance.*`, and `config/software-factory.install.json` records completion, source revisions and image identities.
-Existing paths and container names are refused; re-running the same command on a completed home verifies the installation and reports it complete.
+Existing paths and all dedicated container names are refused; re-running the same command on a completed home verifies the original services, confirms both screens answer and prints the same addresses.
+Use `--check` to repeat the screen probes and live Claude acceptance.
+Existing homes without these services are refused rather than upgraded implicitly.
 A failed partial installation is left for inspection rather than overwritten or silently retried.
 
 The project registry starts empty, just as in a new FirstMate home.
@@ -94,7 +108,7 @@ Learning consolidation is a required shared profile but is not executed by this 
 Each project's copy is created at `data/software-factory/projects/<registered-name>/agents.json` on first intake; later requests reuse it.
 Edit that project copy when changing an already initialized project's profiles.
 
-`config/software-factory.json` records the factory checkout, current `home`, owner's `fork`, agent template, hook registry, fallback delivery `mode`, `yolo`, `uiOrigin` and `uiPort`.
+`config/software-factory.json` records the factory checkout, current `home`, owner's `fork`, agent template, hook registry, fallback delivery `mode`, `yolo`, `uiOrigin`, `uiPort`, `scottyOrigin` and dedicated `services` container names.
 The skill resolves each request's delivery mode from the registered project and existing owner instructions; the install fallback is local-only with automatic merge off.
 For wrappers without atomic `add --hold-reason`, set `guardTaskId` to an existing permanently held, unfinished guard in the same backlog, following [managed tasks](#managed-execution-tasks---build-08).
 The registry starts empty, so the enabled hook has no unavailable databases to inspect.

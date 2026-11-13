@@ -35,7 +35,7 @@ export class FolderToolkitApi {
         return { status: 200, contentType: 'text/html; charset=utf-8', body: `<!doctype html><html lang="en"><head>
           <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Projects · Software Factory</title>
           <link rel="stylesheet" href="/assets/ui.css"></head><body><a class="skip" href="#main">Skip to content</a>
-          <header><a class="brand" href="/">Software Factory</a><nav aria-label="Main">${this.scottyUrl ? `<a href="${h(this.scottyUrl)}">Scotty tickets and dependencies (read-only)</a>` : ''}</nav></header>
+          <header><a class="brand" href="/">Software Factory</a><nav aria-label="Main">${this.scottyUrl ? `<a href="${h(this.scottyUrl)}/p/factory">Scotty tickets and dependencies (read-only)</a>` : ''}</nav></header>
           <main id="main"><h1>Projects</h1><p class="prose">Requests, features, plans, decisions and work for this factory folder.</p>
           ${projects.length ? rows : '<section><h2>No projects yet</h2><p class="prose">Open Claude in this factory folder and ask FirstMate to work on a registered project. Its factory records will appear here after the first request.</p></section>'}
           </main></body></html>` };
@@ -51,7 +51,7 @@ export class FolderToolkitApi {
         // Active-worker cancellation stays with FirstMate on the host. A UI
         // container cannot attest to host process or tmux session termination.
         const api = new ToolkitApi(store, { fmHome: this.home, tasksExecutable: join(this.home, 'bin/fm-tasks-axi.sh') },
-        { projectId: entry.projectId, ...(this.scottyUrl ? { scottyUrl: this.scottyUrl } : {}) });
+        { projectId: entry.projectId, ...(this.scottyUrl ? { scottyUrl: `${this.scottyUrl}/p/factory` } : {}) });
         return api.handle(method, parts.length === 2 && method === 'GET' ? '/' : path, body);
       } finally { store.close(); }
     } catch (error) {

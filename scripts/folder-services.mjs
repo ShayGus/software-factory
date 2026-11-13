@@ -30,7 +30,7 @@ export async function installFolderServices(args, docker, baseImage) {
   const workspace = join(home, 'beads/workspace');
   writeScottyReader(reader, { workspace: join(workspace, '.beads'), socket: join(home, 'beads/sql/server.sock'),
     database: args.database, canonicalUrl: uiOrigin, folder: true });
-  writeScottyLauncher(launcher, uiOrigin, { projectId: 'factory', folder: true });
+  writeScottyLauncher(launcher, uiOrigin, { projectId: 'factory', folder: true, authority: `127.0.0.1:${scottyPort}` });
   const now = new Date().toISOString();
   writeFileSync(join(directory, 'bead-me-up-scotty/config.json'), JSON.stringify({
     humanActor: args.name, humanAllowlist: [], pollIntervalMs: 5000, orders: {}, gamification: false,
@@ -83,8 +83,15 @@ export async function acceptScreens(home, services, wrapper) {
   try {
     wrapper(['add', probe, 'Software Factory screen acceptance']); added = true;
     wrapper(['add', successor, 'Screen dependency acceptance', '--blocked-by', probe]); dependentAdded = true;
-    const { response, text } = await check('/api/p/factory/beads');
-    if (!response.ok || !text.includes(`fm-${probe}`) || !text.includes(`fm-${successor}`) || !text.includes('dependencies')) throw new Error('Scotty did not show tasks-axi probe and dependencies');
+    const page = await check('/p/factory');
+    if (!page.response.ok || !page.response.headers.get('content-type')?.includes('text/html')) throw new Error('Scotty page did not answer');
+    const { response, text } = await check('/api/p/factory/beads', { headers: { cookie: 'scotty-viewer-mode=editing' } });
+    const payload = JSON.parse(text);
+    const beads = payload.beads;
+    if (!response.ok || payload.meta?.readOnly !== true || !Array.isArray(beads) || !beads.some(bead => bead.id === `fm-${probe}`) ||
+      !beads.some(bead => bead.id === `fm-${successor}` && bead.dependencies?.some(edge => edge.depends_on_id === `fm-${probe}` && edge.type === 'blocks'))) {
+      throw new Error('Scotty did not show tasks-axi probe and dependency edge');
+    }
     for (const [method, path, body] of [
       ['POST', '/api/p/factory/beads', { title: 'Must be refused' }],
       ['PATCH', `/api/p/factory/beads/fm-${probe}`, { title: 'Must be refused' }],

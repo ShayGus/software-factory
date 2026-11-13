@@ -2,25 +2,25 @@
 
 This is the focused toolkit UI selected by BUILD-05. Beads remains the execution
 store, through FirstMate/tasks-axi; Scotty remains a read-only execution list and
-graph. This companion project's local fixture UI neither copies nor replaces an
-existing FirstMate workspace. No FirstMate, tasks-axi, Beads or Scotty data changes
-are made by the shipped fixture launcher.
+graph. The folder service edits canonical project records through the same application functions as the CLI.
+Execution-task edits go through the installed FirstMate/tasks-axi wrapper.
 
 ## Start and configuration
 
-`npm run ui` builds TypeScript and runs `scripts/ui.mjs`. It binds exclusively to
-`127.0.0.1`, defaults to port 3185, and accepts `SF_UI_PORT` (1–65535). A port in use
-fails without stopping another service. `SF_SCOTTY_URL` may name a loopback HTTP
-origin for a plain navigation link. Nothing in the UI invokes Scotty operations.
+Factory-folder setup owns the persistent screens and prints their addresses; see [Run it from FirstMate](../README.md#run-it-from-firstmate).
+The index at `/` lists initialized factory projects from `config/software-factory.projects.json`, or explains how to make the first request when it is empty.
+New registry entries appear on the next request without a server restart.
+`/projects/:project` opens that project's feature overview; every project route and canonical edit resolves to its registered database.
+Unavailable project records remain visible with an error instead of disappearing from the index.
 
-Every launch imports `fixtures/ui-overview.json` into a new temporary SQLite
-store and uses the same isolated subprocess task fixture as the adapter tests.
-The browser and its task edits exercise real canonical functions and receipts;
-the transport and evidence are synthetic. The common task is done while the
-second-system behavior remains unverified. Ctrl-C closes the listener and deletes
-that session's scratch directory. Restarting creates a fresh fixture session.
-There is no data-directory migration, external command configuration, listener
-startup, model call or real project access hidden in tests.
+For standalone development, `npm run ui` builds TypeScript and runs `scripts/ui.mjs`.
+Set `SF_UI_DB` to an existing absolute SQLite path and `SF_UI_PROJECT` to its project ID, with optional `SF_UI_ADAPTER_CONFIG` for task operations.
+Folder mode instead uses `SF_UI_REGISTRY` and `SF_UI_HOME`.
+The host listener binds to `127.0.0.1`, defaults to port 3185 and accepts `SF_UI_PORT` (1–65535).
+The setup-owned container sets `SF_UI_HOST=0.0.0.0` internally and publishes only on host loopback.
+A port in use fails without stopping another service.
+`SF_SCOTTY_URL` may name a loopback HTTP origin for a plain navigation link; nothing in the UI invokes Scotty operations.
+The standalone fixture demo remains `scripts/ui-spike-demo.mjs`; it is separate from the installed folder service.
 
 ## Application and HTTP boundaries
 
@@ -31,7 +31,8 @@ the single TypeScript request handler; it contains no independent stub server.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /` | Feature overview and focused feature/task editors |
+| `GET /` | Factory project index in folder mode; feature overview in standalone project mode |
+| `GET /projects/:project` | Feature overview and focused feature/task editors |
 | `GET /projects/:project/features/:feature[?bundle=encoded-ref-JSON]` | Selected or explicitly named bundle, original request, revisions, plan tasks, briefs, criteria/evidence and corrections |
 | `GET /projects/:project/decisions` | Contextual product questions, answer editors and existing answers |
 | `GET /projects/:project/learning` | Observation inbox, scoped guidance/history, conflicts, last consolidation diff and next window |

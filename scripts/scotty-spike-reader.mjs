@@ -11,6 +11,7 @@ export function scottyReadArgsAllowed(args, folder = false) {
 
 export function scottyReadRequestAllowed(method, rawPath, projectId = 'sf-build05', folder = false) {
   if (!['GET', 'HEAD'].includes(method)) return false;
+  if (!rawPath.startsWith('/') || rawPath.startsWith('//')) return false;
   const url = new URL(rawPath, 'http://scratch.invalid');
   // Scotty needs no caller-controlled query parameters for these reads.
   if (url.search) return false;
@@ -33,7 +34,7 @@ export function scottyReadRequestAllowed(method, rawPath, projectId = 'sf-build0
 /** Published port reaches only this guard. Next listens on container loopback
  * at 3001; no cookie can enable native writes or AI/update/publish endpoints.
  */
-export function writeScottyLauncher(path, canonicalUrl, { projectId = 'sf-build05', folder = false } = {}) {
+export function writeScottyLauncher(path, canonicalUrl, { projectId = 'sf-build05', folder = false, authority } = {}) {
   writeFileSync(path, `import { spawn } from 'node:child_process';
 import { createServer, request } from 'node:http';
 const allowed = ${scottyReadRequestAllowed.toString()};
@@ -42,6 +43,11 @@ const child = spawn(process.execPath, ['/app/server.js'], {cwd:'/app', stdio:'in
 child.once('exit', code => process.exit(code ?? 1));
 for (const signal of ['SIGINT','SIGTERM']) process.once(signal, () => {child.kill(signal); process.exit(0);});
 createServer((req, res) => {
+  const authority = ${JSON.stringify(authority) ?? 'undefined'};
+  if (authority && (req.headers.host !== authority ||
+    (req.headers.origin && req.headers.origin !== 'http://' + authority) || req.headers['sec-fetch-site'] === 'cross-site')) {
+    res.writeHead(403).end(); return;
+  }
   if (!allowed(req.method, req.url, ${JSON.stringify(projectId)}, ${folder})) {
     res.writeHead(405, {'Content-Type':'application/json', 'Allow':'GET, HEAD'});
     res.end(JSON.stringify({code:'canonical_operation_required',error:'Use the canonical operation',operation:${JSON.stringify(canonicalUrl)}}));
