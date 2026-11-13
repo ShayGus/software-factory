@@ -17,6 +17,7 @@ export function run(command, args, options = {}) {
   if (result.status !== 0 || result.error) {
     throw new Error(`${command} ${args.join(' ')} failed: ${result.error?.message ?? result.stderr ?? result.stdout}`);
   }
+  if (result.stderr) process.stderr.write(result.stderr);
   return result.stdout?.trim() ?? '';
 }
 

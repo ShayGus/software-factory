@@ -36,7 +36,10 @@ export function verifyClaudeEvidence(events, { home, probe, pathEvidencePath }) 
   const startup = events.filter((event) => event.type === 'system' && event.hook_event === 'SessionStart');
   if (!startup.some((event) => event.exit_code === 0 && event.stdout?.includes('The digest above is complete for this session start.')) ||
       !existsSync(join(home, 'state/.session-start-complete'))) throw new Error('Normal FirstMate session start did not complete');
-  if (startup.some((event) => /(?:TANGLE:|CREW_DISPATCH: invalid|BACKEND_INVALID:|MISSING(?:_MANUAL)?:|OUTDATED:)/.test(event.stdout ?? ''))) {
+  if (startup.some((event) => (event.stdout ?? '').includes('READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED'))) {
+    throw new Error('Claude acceptance did not acquire verified fleet-lock ownership');
+  }
+  if (startup.some((event) => /^\s*(?:TANGLE:|CREW_DISPATCH: invalid|BACKEND_INVALID:|MISSING(?:_MANUAL)?:|OUTDATED:)/m.test(event.stdout ?? ''))) {
     throw new Error('FirstMate startup reported an invalid home branch, configuration or missing/outdated prerequisite');
   }
 }

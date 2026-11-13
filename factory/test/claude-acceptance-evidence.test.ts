@@ -51,3 +51,21 @@ test('acceptance ignores final prose and refuses missing or contradictory machin
   rmSync(valid.context.pathEvidencePath);
   assert.throws(() => verifyClaudeEvidence(valid.events, valid.context), /session command evidence/);
 });
+
+
+test('startup diagnostics prevent claiming a complete working installation', async t => {
+  const { verifyClaudeEvidence } = await import(new URL('../../scripts/claude-acceptance-evidence.mjs', import.meta.url).href);
+  for (const diagnostic of ['MISSING: treehouse', 'OUTDATED: tasks-axi', 'BACKEND_INVALID: example', 'CREW_DISPATCH: invalid', 'TANGLE: wrong branch']) {
+    const valid = evidence(t);
+    valid.events[0].stdout += '\n' + diagnostic;
+    assert.throws(() => verifyClaudeEvidence(valid.events, valid.context), /prerequisite/);
+  }
+});
+
+
+test('a read-only competing session cannot reuse an older completion marker', async t => {
+  const { verifyClaudeEvidence } = await import(new URL('../../scripts/claude-acceptance-evidence.mjs', import.meta.url).href);
+  const valid = evidence(t);
+  valid.events[0].stdout += '\n●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED';
+  assert.throws(() => verifyClaudeEvidence(valid.events, valid.context), /fleet-lock ownership/);
+});
