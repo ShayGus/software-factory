@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,9 @@ function fixture() {
   const bin = join(root, 'bin');
   mkdirSync(join(home, 'factory/scripts'), { recursive: true });
   mkdirSync(bin);
+  // Container-conflict refusal must not depend on tmux being installed on CI.
+  // This preflight only checks executability and never invokes the placeholder.
+  symlinkSync(process.execPath, join(bin, 'tmux'));
   cpSync(source, join(home, 'services'), { recursive: true });
   for (const name of ['home-acceptance.mjs', 'claude-acceptance-evidence.mjs', 'folder-services.mjs', 'scotty-spike-reader.mjs']) {
     cpSync(join(dirname(legacy), name), join(home, 'factory/scripts', name));
