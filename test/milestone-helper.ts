@@ -15,7 +15,7 @@ const badCode = 'export function feature(system) { if (system.name !== "ERPNext"
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 const script = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
 
-export function scenario(options: { bootstrap: boolean; originalRequest?: string; twoTasks?: boolean; factoryLayout?: boolean } = { bootstrap: true }) {
+export function scenario(options: { bootstrap: boolean; originalRequest?: string; twoTasks?: boolean; factoryLayout?: boolean; independentBranch?: boolean } = { bootstrap: true }) {
   const original = options.originalRequest ?? defaultOriginal;
   const root = mkdtempSync(join(tmpdir(), 'sf-milestone-'));
   const save = (path: string, value: unknown) => writeFileSync(path, JSON.stringify(value, null, 2));
@@ -32,7 +32,8 @@ export function scenario(options: { bootstrap: boolean; originalRequest?: string
   const requestFile = join(root, 'request.txt'); writeFileSync(requestFile, original);
   const request = { id: stableId('request', 'project-1', 'milestone'), revision: 1 };
   const feature = { id: 'feature-1', revision: 1 };
-  const criteria = [{ id: 'criterion-general', revision: 1 }, { id: 'criterion-second-system', revision: 1 }];
+  const criteria = [{ id: 'criterion-general', revision: 1 }, { id: 'criterion-second-system', revision: 1 },
+    ...(options.independentBranch ? [{ id: 'criterion-independent', revision: 1 }] : [])];
   const base = { schemaVersion: 1, projectId: 'project-1', revision: 1, createdAt: at, updatedAt: at };
   const comparison = (refs: { id: string; revision: number }[]) => ({ result: 'passed', sourceRefs: refs.map(recordSource),
     findings: [], reviewerSession: 'fake-source-analyst', comparedAt: at });
@@ -69,7 +70,7 @@ export function scenario(options: { bootstrap: boolean; originalRequest?: string
     plan: input(stage('plan', plan, 'design'), [plan, draft]),
     detail: input(stage('detail', detailed, 'plan'), [detailed, task]),
   };
-  if (options.twoTasks) {
+  if (options.twoTasks || options.independentBranch) {
     // Split criteria between producer and consumer while preserving full feature scope.
     const draft2 = { ...draft, id: 'task-2', criteria: [criteria[1]!] };
     draft.criteria = [criteria[0]!];
@@ -83,10 +84,17 @@ export function scenario(options: { bootstrap: boolean; originalRequest?: string
       stagePlan.workflow.slices[0]!.tasks = [ref(first), ref(second)];
     }
     outputs.plan.records.push(draft2); outputs.detail.records.push(task2);
+    if (options.independentBranch) {
+      const draft3 = { ...draft, id: 'task-3', criteria: [criteria[2]!] };
+      const task3 = { ...task, id: 'task-3', criteria: [criteria[2]!] };
+      plan.deliverySequence.push(ref(draft3)); detailed.deliverySequence.push(ref(task3));
+      plan.workflow.slices[0]!.tasks.push(ref(draft3)); detailed.workflow.slices[0]!.tasks.push(ref(task3));
+      outputs.plan.records.push(draft3); outputs.detail.records.push(task3);
+    }
   }
   save(join(root, 'outputs.json'), outputs); save(join(root, 'mode.json'), { narrow: false, badDelivery: false, planFailure: false });
   const agent = executable('agent.mjs', `import assert from 'node:assert/strict';
-import {readFileSync,appendFileSync} from 'node:fs';
+import {readFileSync,appendFileSync,copyFileSync} from 'node:fs';
 const root=${JSON.stringify(root)};
 const args=process.argv.slice(2); const step=args[args.indexOf('--model')+1];
 const prompt=readFileSync(0,'utf8'); const snapshot=JSON.parse(prompt.trimEnd().split('\\n').at(-1));
@@ -110,6 +118,7 @@ if(step==='instruction_check') {
 }
 
 if(step==='product_review') {
+ if(mode.publishReturnDuringReview) copyFileSync(mode.publishReturnDuringReview.source,mode.publishReturnDuringReview.path);
  assert.equal(snapshot.originalRequests[0].text,${JSON.stringify(original)});
  assert.equal(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').text,mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)});
  const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};
@@ -159,8 +168,11 @@ writeFileSync(${JSON.stringify(join(root, 'hook-result.json'))},checked.stdout||
 if(checked.status!==0) process.exit(1);
 writeFileSync(${JSON.stringify(join(root, 'worker-started'))},'started');
 const worker=spawnSync(${JSON.stringify(returnWorker)},[process.argv[2]],{encoding:'utf8'});process.stderr.write(worker.stderr);process.exit(worker.status??1);`);
-  executable('roborev', `import assert from 'node:assert/strict';assert.deepEqual(process.argv.slice(2,4),['show','--json']);
-process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict:'pass'},job:{id:42,git_ref:process.argv[4],status:'done',job_type:'review'}}));`);
+  executable('roborev', `import {readFileSync} from 'node:fs';
+const mode=JSON.parse(readFileSync(${JSON.stringify(join(root, 'mode.json'))},'utf8'));
+const verdict=mode.technicalFailureCommits?.includes(process.argv[4])?'fail':'pass';
+import assert from 'node:assert/strict';assert.deepEqual(process.argv.slice(2,4),['show','--json']);
+process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict},job:{id:42,git_ref:process.argv[4],status:'done',job_type:'review'}}));`);
   const project = { ...baseline.find((record) => record.kind === 'project')!, repositories: [{ uri: repository }], firstMateHomeRef: home };
   const runtime = fakeRuntime(home);
   const config: z.input<typeof FeatureRunConfigSchema> = { version: 1, project, database, runDirectory, agentConfig,

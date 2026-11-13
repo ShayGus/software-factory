@@ -310,7 +310,7 @@ function checkReview(ctx: Context, review: ProductReview) {
   if (review.outcome === 'passed') checkCompletion(ctx, review);
 }
 
-function checkCompletion(ctx: Context, review: ProductReview) {
+function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' | 'task' = 'feature') {
   if (review.conformance) {
     const proof = review.conformance;
     if (!proof.verdict || proof.error || proof.qualityError ||
@@ -398,9 +398,13 @@ function checkCompletion(ctx: Context, review: ProductReview) {
       ctx.add(review, 'incomplete_maintenance', 'results', `Maintenance assignment ${assignment.id} lacks passing objective evidence`);
     }
   }
-  for (const ref of feature?.criteria ?? []) {
+  const criteria = scope === 'feature' ? feature?.criteria ?? [] : review.assignments.flatMap((reference) => {
+    const assignment = ctx.index.get(key(reference));
+    return assignment?.kind === 'assignment' ? assignment.criteria : [];
+  });
+  for (const ref of criteria) {
     const criterion = ctx.get(review, ref, 'criterion', 'criteria');
-    if (criterion?.requirement !== 'required' || criterion.disposition.state !== 'active') continue;
+    if (!criterion || criterion.disposition.state !== 'active' || (scope === 'feature' && criterion.requirement !== 'required')) continue;
     const results = review.results.flatMap((resultRef) => {
       const record = ctx.index.get(key(resultRef));
       return record?.kind === 'criterion_result' && sameRef(record.criterion, ref) ? [record] : [];
@@ -926,13 +930,25 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
 }
 
 export function validateReviewForCompletion(input: unknown, reviewRef: Ref): ValidationResult<ProductReview> {
+  return validateProductReview(input, reviewRef, 'feature');
+}
+
+/** A task's delivery depends on its own assigned criteria and exact delivery
+ * evidence. The canonical review can remain feature-incomplete independently. */
+export function validateTaskReviewForDelivery(input: unknown, reviewRef: Ref): ValidationResult<ProductReview> {
+  return validateProductReview(input, reviewRef, 'task');
+}
+
+function validateProductReview(input: unknown, reviewRef: Ref, scope: 'feature' | 'task'): ValidationResult<ProductReview> {
   const validated = validateRecords(input);
   if (!validated.ok) return validated;
   const ctx = new Context(validated.data);
   const owner = validated.data.find((record) => record.kind === 'product_review' && sameRef(record, reviewRef));
   if (!owner || owner.kind !== 'product_review') return { ok: false, issues: [{ code: 'missing_review', recordId: reviewRef.id,
     path: 'review', message: 'Review revision is absent' }] };
-  checkCompletion(ctx, owner);
+  if (scope === 'task' && (owner.assignments.length !== 1 || !owner.conformance)) ctx.add(owner,
+    'invalid_task_review', 'assignments', 'Task delivery requires one assignment and its generated conformance evidence');
+  checkCompletion(ctx, owner, scope);
   // A historical review remains valid history, but cannot complete current work.
   if (owner.feature) {
     const feature = ctx.current.get(owner.feature.id);
@@ -957,7 +973,8 @@ export function validateReviewForCompletion(input: unknown, reviewRef: Ref): Val
   if (owner.conformance) for (const assignment of owner.assignments) {
     if (ctx.current.get(assignment.id)?.revision !== assignment.revision) ctx.add(owner, 'superseded_assignment', 'assignments', 'Completion names an old assignment');
   }
-  if (owner.outcome !== 'passed') ctx.add(owner, 'review_failed', 'outcome', 'Review did not pass');
+  if (owner.outcome === 'failed' || (scope === 'feature' && owner.outcome !== 'passed')) ctx.add(owner,
+    'review_failed', 'outcome', 'Review did not pass');
   return ctx.issues.length ? { ok: false, issues: ctx.issues } : { ok: true, data: owner };
 }
 

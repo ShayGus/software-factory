@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -12,9 +12,9 @@ const materializer = join(factory, 'skills/software-factory/scripts/materialize-
 
 // The fake FirstMate interprets its home registry and selects sources, as the
 // skill instructs. The owner supplies only plain request text, never run.json.
-function intake(twoTasks = false) {
+function intake(twoTasks = false, independentBranch = false) {
   const request = 'Build feature X for every connected system, ERPNext is only an example.\nPreserve "quotes", $values and Unicode: שלום.\n';
-  const flow = scenario({ bootstrap: false, factoryLayout: true, twoTasks, originalRequest: request });
+  const flow = scenario({ bootstrap: false, factoryLayout: true, twoTasks, independentBranch, originalRequest: request });
   const registration = `| project-1 | ${flow.config.repository} | local-only |`;
   writeFileSync(join(flow.data, 'projects.md'), registration + '\n');
   const fork = join(flow.root, 'fork'); mkdirSync(join(fork, 'bin'), { recursive: true });
@@ -74,6 +74,10 @@ test('two dependent tasks stay held until producer evidence, then both receive o
     const planned = runFeature(config, 'plan') as any;
     assert.equal(planned.tasks.length, 2);
     const [producer, consumer] = planned.tasks.map((task: any) => task.taskId);
+    const pending = runFeature(config, 'review-all') as any;
+    assert.equal(pending.state, 'awaiting_worker_returns');
+    assert.deepEqual(pending.pendingTasks, [producer, consumer]);
+    assert.equal(existsSync(join(config.runDirectory, 'review-all.started')), false);
     assert.equal(flow.wrapper.read().tasks[consumer]!.held, true);
     assert.ok(flow.wrapper.read().tasks[consumer]!.deps.some((edge) => edge.id === producer));
     const store = new ProjectStore(config.database, { readOnly: true });
@@ -86,16 +90,31 @@ test('two dependent tasks stay held until producer evidence, then both receive o
     runFeature(config, 'prepare-task', producer); runFeature(config, 'start', producer);
     const producerReview = runFeature(config, 'review', producer) as any;
     assert.equal(producerReview.review.outcome, 'incomplete');
-    assert.equal(producerReview.state, 'awaiting_remaining_deliveries');
+    assert.equal(producerReview.taskOutcome, 'passed');
+    const partial = runFeature(config, 'review-all') as any;
+    assert.deepEqual(partial.pendingTasks, [consumer]);
+    const snapshot = JSON.parse(readFileSync(join(config.runDirectory, 'review-all-snapshot.json'), 'utf8'));
+    assert.deepEqual(snapshot.pendingTasks, [consumer]);
+    assert.equal(snapshot.deliveries.length, 1);
     // Normal FirstMate delivery closes the producer in its existing backlog.
     flow.wrapper.edit((native) => { native.tasks[producer]!.state = 'done'; });
     runFeature(config, 'prepare-task', consumer); runFeature(config, 'start', consumer);
     const consumerReview = runFeature(config, 'review', consumer) as any;
-    assert.equal(consumerReview.review.outcome, 'passed');
+    assert.equal(consumerReview.review.outcome, 'incomplete');
+    assert.equal(consumerReview.taskOutcome, 'passed');
     assert.equal(consumerReview.state, undefined);
-    assert.equal(consumerReview.review.assignments.length, 2);
+    assert.equal(consumerReview.review.assignments.length, 1);
+    const consumerReturnPath = join(config.runDirectory, 'tasks', consumer, 'worker-return.json');
+    const changed = JSON.parse(readFileSync(consumerReturnPath, 'utf8'));
+    changed.results[0].result = 'untested';
+    const changedPath = join(flow.root, 'changed-after-snapshot.json'); flow.save(changedPath, changed);
+    flow.mode({ publishReturnDuringReview: { source: changedPath, path: consumerReturnPath } });
     const final = runFeature(config, 'review-all') as any;
     assert.equal(final.review.outcome, 'passed');
+    assert.equal(JSON.parse(readFileSync(consumerReturnPath, 'utf8')).results[0].result, 'untested');
+    const finalSnapshot = JSON.parse(readFileSync(join(config.runDirectory, 'review-all-snapshot.json'), 'utf8'));
+    assert.deepEqual(finalSnapshot.pendingTasks, []);
+    assert.equal(finalSnapshot.deliveries[1].results[0].result, 'passed');
     const evidence = JSON.parse(readFileSync(join(config.runDirectory, 'review-all-input.json'), 'utf8'));
     assert.equal(evidence.additionalDeliveries.length, 1);
     const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
@@ -185,3 +204,46 @@ for (const twoTasks of [false, true]) {
     } finally { flow.close(); }
   });
 }
+
+test('an independent failing sibling does not block A or its consumer C', () => {
+  const { flow, config } = intake(true, true);
+  try {
+    const planned = runFeature(config, 'plan') as any;
+    const [a, c, b] = planned.tasks.map((task: any) => task.taskId);
+    runFeature(config, 'prepare-task', b); runFeature(config, 'start', b);
+    const bReturn = JSON.parse(readFileSync(join(config.runDirectory, 'tasks', b, 'worker-return.json'), 'utf8'));
+    flow.mode({ technicalFailureCommits: [bReturn.deliveredArtifact.revision] });
+    assert.throws(() => runFeature(config, 'review', b), /product_review_failed/);
+    runFeature(config, 'prepare-task', a); runFeature(config, 'start', a);
+    const aReview = runFeature(config, 'review', a) as any;
+    assert.equal(aReview.taskOutcome, 'passed');
+    assert.equal(aReview.review.assignments.length, 1);
+    flow.wrapper.edit((native) => { native.tasks[a]!.state = 'done'; });
+    runFeature(config, 'prepare-task', c); runFeature(config, 'start', c);
+    const cReview = runFeature(config, 'review', c) as any;
+    assert.equal(cReview.taskOutcome, 'passed');
+    assert.equal(cReview.review.assignments.length, 1);
+    assert.throws(() => runFeature(config, 'review-all'), /review-product_failed/);
+    const aggregate = JSON.parse(readFileSync(join(config.runDirectory, 'review-product.stdout'), 'utf8')).review;
+    assert.equal(aggregate.outcome, 'failed');
+    assert.equal(aggregate.assignments.length, 3);
+  } finally { flow.close(); }
+});
+
+test('a sibling return arriving during A review cannot affect A delivery', () => {
+  const { flow, config } = intake(true, true);
+  try {
+    const planned = runFeature(config, 'plan') as any;
+    const [a, , b] = planned.tasks.map((task: any) => task.taskId);
+    runFeature(config, 'prepare-task', b); runFeature(config, 'start', b);
+    const bReturn = join(config.runDirectory, 'tasks', b, 'worker-return.json');
+    const delayed = join(flow.root, 'delayed-return.json'); renameSync(bReturn, delayed);
+    runFeature(config, 'prepare-task', a); runFeature(config, 'start', a);
+    flow.mode({ publishReturnDuringReview: { source: delayed, path: bReturn } });
+    const reviewed = runFeature(config, 'review', a) as any;
+    assert.equal(existsSync(bReturn), true);
+    assert.equal(reviewed.taskOutcome, 'passed');
+    assert.equal(reviewed.review.assignments.length, 1);
+    assert.equal(reviewed.review.conformance.technicalReviews.length, 1);
+  } finally { flow.close(); }
+});

@@ -197,7 +197,7 @@ The existing runner also exposes task-specific phases so FirstMate can use the i
 /absolute/software-factory/scripts/run-feature.mjs start /absolute/run.json TASK_ID
 # Normal FirstMate supervision, delivery and exact-commit technical evidence:
 /absolute/software-factory/scripts/run-feature.mjs review /absolute/run.json TASK_ID
-# After every task passes, check the whole request and integration together:
+# After every task returns, check the whole request and integration together:
 /absolute/software-factory/scripts/run-feature.mjs review-all /absolute/run.json
 ```
 
@@ -219,10 +219,15 @@ A failed preparation or start check leaves work undispatched.
 Preparation and reviews are single-use; recover failures using saved inputs and existing individual commands with deliberate new keys, rather than deleting markers and blindly replaying effects.
 
 Review each producer before completing its normal FirstMate delivery and releasing consumers.
-A slice review can return `state: awaiting_remaining_deliveries` with canonical outcome `incomplete` when the only remaining completion issues are missing feature criteria outside that slice.
-The runner requires passing comparisons, accomplished assigned criteria and exact-commit technical evidence for this provisional state; failed or uncertain judgments still stop the flow.
+A slice review returns `taskOutcome: passed` only when that task's own assigned criteria, worker results and exact-commit technical evidence pass the shared task-delivery rules.
+The canonical review may remain feature-incomplete.
+Sibling returns do not enter task review inputs or eligibility; a sibling's failed review or concurrent return cannot block unrelated work.
+Failed or uncertain task judgments stop that task's delivery and its dependents, while unrelated eligible branches can proceed.
 The final aggregate review must pass before the feature is reported complete.
-`review-all` calls the existing `review-product` operation with all deliveries and their exact assignment and commit identities, preserving the original request as the authority across slices.
+`review-all` captures the available return bytes once at its start and saves `review-all-snapshot.json` with exact deliveries and `pendingTasks`.
+When any task is pending, it returns `state: awaiting_worker_returns` without an agent call or a single-use review marker, so a later aggregate attempt can include later arrivals.
+With all returns present, it calls the existing `review-product` operation using only that snapshot and exact assignment and commit identities, preserving the original request as the authority across slices.
+Whole-feature completeness is separate from any single task's delivery eligibility.
 A per-task pass does not replace this final integration review.
 No phase polls workers, changes native completion state, installs hooks, enqueues technical review or adds a scheduling service.
 

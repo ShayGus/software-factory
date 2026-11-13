@@ -110,16 +110,19 @@ For each task, use the returned native `taskId`:
    Preserve the return's criterion identities, limitations and evidence; do not manufacture a technical pass or use a result from a different commit.
    Run `run-feature.mjs review <configPath> <taskId>`.
    It calls `review-product` against the original request and actual committed snapshots, with a separate reviewer and existing technical result.
-   A failed or uncertain slice judgment stops dependent work and must be reported plainly, even if technical checks passed.
-   A multi-task slice review can return `state: awaiting_remaining_deliveries` while its canonical review remains incomplete solely because other required feature criteria are outside this slice.
-   This state requires passing slice judgments and technical evidence; continue eligible consumers without calling the whole feature complete.
-   Any other incomplete outcome stops the flow.
+   A failed or uncertain slice judgment stops that task's delivery and its dependents and must be reported plainly, even if technical checks passed.
+   Keep unrelated eligible branches progressing.
+   `taskOutcome: passed` means this task's own criteria, worker results and exact-commit technical evidence passed; its canonical review can remain feature-incomplete.
+   Sibling returns are not inputs to this task's eligibility.
+   Continue eligible consumers after a task pass without calling the whole feature complete.
 5. Complete normal FirstMate delivery/backlog reconciliation for the producer before proceeding to its consumers.
    Native done state alone does not establish the factory's product prerequisites.
    Continue with the next eligible task through the same commands and supervision.
 
-For multiple tasks, after every task has returned with passing slice evidence, run `run-feature.mjs review-all <configPath>`.
-This invokes the existing `review-product` command with all exact assignments and deliveries together, covering the whole original request and integration across slices.
+After every task has returned, run `run-feature.mjs review-all <configPath>`.
+This invokes the existing `review-product` command with all exact assignments and deliveries from one return snapshot taken at aggregate start, covering the whole original request and integration across slices.
+If returns are missing, it reports `state: awaiting_worker_returns` and `pendingTasks`; resume aggregate review on later return wakes.
+Aggregate failure or pending work keeps the feature incomplete and never blocks an independently passing task's delivery.
 For one task the same final phase supplies a whole-request review.
 Use [the command runbook](../../docs/one-feature-run.md) for phase mechanics and recovery.
 After a partial or ambiguous external effect, inspect saved output, `outbox`, native state and the existing recovery operations; never restart planning or blindly spawn a replacement.
