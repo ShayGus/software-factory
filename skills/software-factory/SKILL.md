@@ -130,10 +130,9 @@ After a partial or ambiguous external effect, inspect saved output, `outbox`, na
 ## Chat result and screens
 
 Use the configured `uiOrigin` for `/projects/<encoded-project-id>` and `/projects/<encoded-project-id>/decisions`.
-If no server is serving this project's database there, start the existing `scripts/ui.mjs` through the home's normal persistent-process mechanism with `SF_UI_DB`, `SF_UI_PROJECT` and the configured `SF_UI_PORT`.
-Preserve any existing listener; verify the project served before claiming the link works.
-If the configured port is occupied or serves another project, choose an available loopback port and record the run's actual origin with its evidence and chat links.
-No Scotty page is required.
+The installed folder service discovers projects from `hookRegistry`; after registering the project, verify its link answers.
+Use the installed `scottyOrigin` for the folder’s read-only execution list and dependency graph.
+If either service is unavailable, report the failed link and its dedicated container from the installed `services` settings for diagnosis.
 
 Report in chat: accomplished behavior or the failed gate; delivered commits; technical and product outcomes with saved evidence paths; open product questions with their decisions-screen link; and the factory-screen link.
 Include capture limits and any unverified behavior.

@@ -2,6 +2,7 @@
 // Provision only a NEW home and dedicated Docker containers. No upgrades or cleanup
 // of partial homes: inspect a failed installation before removing its named resources.
 // Run --help for inputs. Sources may be local Git repositories or Git URLs.
+import { installFolderServices, acceptScreens, waitForScreens, serviceNames } from './folder-services.mjs';
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync,
   realpathSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -24,12 +25,17 @@ Options:
   --fork-ref REF         Default: fm/sf-beads-firstmate-fixes
   --tasks-ref REF        Default: main (must include the Beads backend)
   --factory-ref REF      Default: main
-  --check               Re-run live Claude acceptance on a completed home
+  --ui-port PORT        Factory screen port (default: automatic free loopback port)
+  --scotty-port PORT    Scotty port (default: automatic free loopback port)
+  --check               Re-run screen and live Claude acceptance on a completed home
   --help                Show this help
 
 Prerequisites: Linux, Node >=22.13, npm, Git with commit identity, Docker,
 authenticated Codex/Claude, and images local/scotty:v0.4.0-cf6dda1 and
 dolthub/dolt:2.7.2. No pnpm required. Images are not pulled automatically.
+Setup creates dedicated Dolt, guarded Scotty and factory UI containers with
+unless-stopped restart policies. The Docker daemon must start at boot.
+Their loopback addresses and the Claude launch command are printed at completion.
 The final acceptance check spends a real Claude session (claude -p), using
 normal project/local settings and hooks. It must complete startup, load the
 factory skill and add/list/remove a probe through this home's task wrapper.
@@ -84,7 +90,7 @@ function containerExists(docker, name) {
 function parse(argv) {
   if (argv.includes('--help')) { console.log(help); return; }
   const allowed = ['home', 'name', 'container', 'database', 'fork-source', 'tasks-source', 'factory-source',
-    'crew-dispatch', 'docker', 'codex', 'claude', 'fork-ref', 'tasks-ref', 'factory-ref'];
+    'crew-dispatch', 'docker', 'codex', 'claude', 'fork-ref', 'tasks-ref', 'factory-ref', 'ui-port', 'scotty-port'];
   const args = {};
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i].slice(2);
@@ -102,6 +108,10 @@ function parse(argv) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(args.container)) throw new Error('Invalid --container');
   if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(args.database)) throw new Error('Invalid --database: use an SQL identifier');
   if (Buffer.byteLength(join(args.home, 'beads/sql/server.sock')) > 100) throw new Error('--home is too long for the Dolt Unix socket; choose a shorter path');
+  for (const key of ['ui-port', 'scotty-port']) {
+    args[key] ??= 'auto';
+    if (args[key] !== 'auto' && (!/^[0-9]+$/.test(args[key]) || Number(args[key]) < 1 || Number(args[key]) > 65535)) throw new Error(`Invalid --${key}`);
+  }
   args.docker ??= 'auto';
   if (!['auto', 'docker', 'sg-docker'].includes(args.docker)) throw new Error('Invalid --docker');
   args['fork-ref'] ??= 'fm/sf-beads-firstmate-fixes';
@@ -122,7 +132,7 @@ function startCommand(home) {
   return `cd ${shellPath(home)} && claude`;
 }
 
-async function installFactory(root, home, codex, claude) {
+async function installFactory(root, home, codex, claude, services) {
   const agentTemplate = join(home, 'config/software-factory.agents.json');
   const hookRegistry = join(home, 'config/software-factory.projects.json');
   const agents = json(join(root, 'fixtures/workflow-agents.json'));
@@ -136,7 +146,8 @@ async function installFactory(root, home, codex, claude) {
   WorkerHookConfigSchema.parse(json(hookRegistry));
   save(join(home, 'config/software-factory.json'), {
     factoryRoot: root, home, fork: home, agentTemplate, hookRegistry,
-    mode: 'local-only', yolo: 'off', uiOrigin: 'http://127.0.0.1:3185', uiPort: 3185
+    mode: 'local-only', yolo: 'off', uiOrigin: services.uiOrigin, uiPort: services.uiPort,
+    scottyOrigin: services.scottyOrigin, services: services.names
   });
   const hooksPath = join(home, 'config/hooks.json');
   const hooks = existsSync(hooksPath) ? json(hooksPath) : { version: 1, hooks: [] };
@@ -156,6 +167,11 @@ async function installFactory(root, home, codex, claude) {
     } else symlinkSync(join(root, 'skills/software-factory'), target, 'dir');
   }
   save(join(home, '.claude/settings.local.json'), { env: { PATH: `${join(home, '.tools/bin')}:${process.env.PATH ?? ''}` } });
+}
+
+function taskWrapper(home) {
+  return argv => run('bash', [join(home, 'bin/fm-tasks-axi.sh'), ...argv], { cwd: home,
+    env: { ...cleanEnv(), FM_HOME: home, PATH: `${join(home, '.tools/bin')}:${process.env.PATH ?? ''}`, BEADS_DOLT_AUTO_START: '0' } });
 }
 
 function acceptWithClaude(home, claude) {
@@ -226,7 +242,7 @@ Only if everything succeeded, end with the exact text SOFTWARE_FACTORY_ACCEPTANC
   console.log('Claude acceptance passed: normal startup, software-factory skill, backlog add/list/rm');
 }
 
-function verifyCompleted(args, docker) {
+async function verifyCompleted(args, docker) {
   const home = args.home;
   const marker = join(home, markerName);
   if (!existsSync(marker)) throw new Error(`Refusing existing home: ${home} (no completion record)`);
@@ -256,7 +272,25 @@ function verifyCompleted(args, docker) {
       !container.Mounts.some((mount) => mount.Source === join(home, 'beads') && mount.Destination === join(home, 'beads'))) {
     throw new Error('Completed home needs its original running Dolt container; refusing to change containers');
   }
+  const services = installed.services;
+  if (!services) throw new Error('Completed home predates folder screens; refusing an implicit upgrade');
+  for (const [kind, image, port, internal] of [['scotty', installed.images[bdImage], services.scottyPort, 3000],
+    ['ui', services.runtimeImage, services.uiPort, services.uiPort]]) {
+    const [service] = JSON.parse(docker(['inspect', services.names[kind]]));
+    const bindings = service.HostConfig.PortBindings[`${internal}/tcp`];
+    if (!service.State.Running || service.Image !== image || service.HostConfig.RestartPolicy.Name !== 'unless-stopped' ||
+      !bindings || bindings.length !== 1 || bindings[0].HostIp !== '127.0.0.1' || bindings[0].HostPort !== String(port) ||
+      !service.Mounts.some(mount => mount.Source === home && mount.Destination === home && mount.RW === (kind === 'ui'))) {
+      throw new Error(`Completed home needs its original running ${kind} container; refusing to change containers`);
+    }
+  }
+  const settings = json(join(home, 'config/software-factory.json'));
+  if (settings.uiOrigin !== services.uiOrigin || settings.scottyOrigin !== services.scottyOrigin ||
+    settings.hookRegistry !== join(home, 'config/software-factory.projects.json')) throw new Error('Completed home has changed screen settings');
+  await waitForScreens(services);
   console.log(`Software Factory home complete: ${home}`);
+  console.log(`Factory screens: ${services.uiOrigin}`);
+  console.log(`Scotty (read-only): ${services.scottyOrigin}/p/factory`);
   console.log(startCommand(home));
 }
 
@@ -274,13 +308,16 @@ async function main() {
   }
   const docker = dockerRunner(args.docker);
   if (present(args.home)) {
-    verifyCompleted(args, docker);
-    if (check) acceptWithClaude(args.home, executable(args.claude, 'claude'));
+    await verifyCompleted(args, docker);
+    if (check) {
+      await acceptScreens(args.home, json(join(args.home, markerName)).services, taskWrapper(args.home));
+      acceptWithClaude(args.home, executable(args.claude, 'claude'));
+    }
     return;
   }
   if (check) throw new Error('--check requires a completed home');
   const extractName = `${args.container}-bd-extract`;
-  for (const name of [args.container, extractName]) if (containerExists(docker, name)) throw new Error(`Refusing existing container: ${name}`);
+  for (const name of [args.container, extractName, ...Object.values(serviceNames(args.container))]) if (containerExists(docker, name)) throw new Error(`Refusing existing container: ${name}`);
   const codex = executable(args.codex, 'codex');
   const claude = executable(args.claude, 'claude');
   if (args['crew-dispatch']) json(args['crew-dispatch']);
@@ -348,7 +385,7 @@ async function main() {
   clone('tasks', tasks);
   run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: tasks });
   run(join(tasks, 'node_modules/.bin/tsc'), [], { cwd: tasks });
-  writeFileSync(join(home, '.tools/bin/tasks-axi'), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(tasks, 'dist/bin/tasks-axi.js'))} "$@"\n`, { flag: 'wx', mode: 0o755 });
+  writeFileSync(join(home, '.tools/bin/tasks-axi'), `#!/bin/sh\nexec \"\${SF_NODE_BINARY:-${process.execPath}}\" ${quote(join(tasks, 'dist/bin/tasks-axi.js'))} "$@"\n`, { flag: 'wx', mode: 0o755 });
   const env = { ...cleanEnv(), FM_HOME: home, PATH: `${join(home, '.tools/bin')}:${process.env.PATH ?? ''}`, BEADS_DOLT_AUTO_START: '0' };
   const wrapper = (argv) => run('bash', [join(home, 'bin/fm-tasks-axi.sh'), ...argv], { cwd: home, env });
   const probeId = 'sf-install-check';
@@ -360,12 +397,15 @@ async function main() {
   clone('factory', factory);
   run('npm', ['ci'], { cwd: factory });
   run('npm', ['run', 'build'], { cwd: factory });
-  await installFactory(factory, home, codex, claude);
+  console.log('Installing persistent folder screens');
+  const services = await installFolderServices(args, docker, images[bdImage]);
+  await installFactory(factory, home, codex, claude, services);
+  await acceptScreens(home, services, wrapper);
   console.log('Running automatic Claude acceptance with normal session startup');
   acceptWithClaude(home, claude);
-  save(join(home, markerName), { version: 1, state: 'complete', inputs: args, revisions, images,
+  save(join(home, markerName), { version: 1, state: 'complete', inputs: args, revisions, images, services,
     bdVersion: version, homeCommit: run('git', ['-C', home, 'rev-parse', 'HEAD']), completedAt: new Date().toISOString() });
-  verifyCompleted(args, docker);
+  await verifyCompleted(args, docker);
 }
 
 main().catch((error) => {

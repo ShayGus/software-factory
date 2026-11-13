@@ -52,3 +52,34 @@ process.stdout.write(JSON.stringify({args:process.argv.slice(2), workspace:proce
   assert.match(readFileSync(launcher, 'utf8'), /cookie:'scotty-viewer-mode=read-only'/);
   assert.equal(spawnSync(process.execPath, ['--check', launcher]).status, 0);
 });
+
+test('folder Scotty reads arbitrary folder tickets but refuses alternate endpoints, options and every write', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-folder-reader-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const { scottyReadArgsAllowed, scottyReadRequestAllowed, writeScottyReader } =
+    await import(new URL('../../scripts/scotty-spike-reader.mjs', import.meta.url).href);
+  const fake = join(directory, 'bd.cjs');
+  // Use an executable fake to observe whether refused arguments reached bd.
+  writeFileSync(fake, `#!${process.execPath}\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)))`, { mode: 0o755 });
+  const reader = join(directory, 'reader.cjs');
+  writeScottyReader(reader, { binary: fake, workspace: directory, socket: `${directory}/sql.sock`, database: 'folder', canonicalUrl: 'http://127.0.0.1:3999', folder: true });
+  for (const args of [['show', 'fm-new-task.2', '--json'], ['export', '--json']]) {
+    assert.equal(scottyReadArgsAllowed(args, true), true);
+    const result = spawnSync(process.execPath, [reader, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), args);
+  }
+  for (const args of [['show', '--help', '--json'], ['show', 'other-ticket', '--json'],
+    ['show', 'fm-task', '--json', '--db', '/elsewhere'], ['sql', 'SELECT 1'], ['create', 'bad'], ['update', 'fm-task', '--title', 'bad']]) {
+    const result = spawnSync(process.execPath, [reader, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 2);
+    assert.equal(result.stdout, '');
+  }
+  const allowed = (method: string, path: string) => scottyReadRequestAllowed(method, path, 'factory', true);
+  assert.equal(allowed('GET', '/api/p/factory/beads/fm-any-task'), true);
+  assert.equal(allowed('GET', '/api/p/factory/beads/stream'), true);
+  for (const method of ['POST', 'PATCH', 'DELETE', 'PUT']) assert.equal(allowed(method, '/api/p/factory/beads'), false);
+  for (const path of ['/api/fs', '/api/projects/scan', '/api/update/run', '/api/p/other/beads',
+    '/api/p/factory/beads/fm-task/assist', '/api/p/factory/publish', '/api/p/factory/beads?db=other',
+    '/api/p/factory/beads/%66m-task', '/_next/anything']) assert.equal(allowed('GET', path), false, path);
+});

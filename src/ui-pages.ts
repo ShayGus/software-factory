@@ -38,7 +38,7 @@ function edit(context: EditContext, title: string, fields: string) {
 function shell(view: ProjectView, title: string, body: string) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${h(title)} · Software Factory</title><link rel="stylesheet" href="/assets/ui.css"><script type="module" src="/assets/ui-client.js"></script></head>
-    <body><a class="skip" href="#main">Skip to content</a><header><a class="brand" href="/">Software Factory</a><nav aria-label="Main"><a href="/">Features</a>
+    <body><a class="skip" href="#main">Skip to content</a><header><a class="brand" href="/">Software Factory</a><nav aria-label="Main"><a href="/projects/${enc(view.options.projectId)}">Features</a>
     <a href="/projects/${enc(view.options.projectId)}/decisions">Needs input (${view.questions.length})</a><a href="/projects/${enc(view.options.projectId)}/learning">Learning</a>
     <a href="/projects/${enc(view.options.projectId)}/work">Work</a><a href="/projects/${enc(view.options.projectId)}/dependencies">Dependencies</a>
     ${view.options.scottyUrl && /^https?:\/\//u.test(view.options.scottyUrl) ? `<a href="${h(view.options.scottyUrl)}" rel="noreferrer">Scotty execution list (read-only)</a>` : '<span>Scotty link not configured</span>'}</nav></header>

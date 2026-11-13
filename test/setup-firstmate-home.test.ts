@@ -56,7 +56,7 @@ test('existing directories and dangling symlinks are refused without touching Do
   } finally { f.close(); }
 });
 
-for (const container of ['test-dolt', 'test-dolt-bd-extract']) {
+for (const container of ['test-dolt', 'test-dolt-bd-extract', 'test-dolt-scotty', 'test-dolt-ui']) {
   test(`existing ${container} is refused before a home is created or Docker mutates`, () => {
     const f = fixture();
     try {
@@ -77,6 +77,8 @@ test('invalid database and duplicate arguments are refused before resource alloc
     const invalid = [...f.args]; invalid[invalid.indexOf('--database') + 1] = 'db;drop';
     assert.match(f.invoke(invalid).stderr, /Invalid --database/);
     assert.match(f.invoke([...f.args, '--home', f.home]).stderr, /duplicate/);
+    assert.match(f.invoke([...f.args, '--ui-port', '65536']).stderr, /Invalid --ui-port/);
+    assert.match(f.invoke([...f.args, '--scotty-port', '0']).stderr, /Invalid --scotty-port/);
     assert.equal(existsSync(f.home), false);
     assert.equal(existsSync(f.log), false);
   } finally { f.close(); }
