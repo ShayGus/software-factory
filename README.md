@@ -88,6 +88,7 @@ Docker access is detected automatically, including this computer's `sg docker` r
 
 The command finishes by opening a real non-interactive Claude session with normal startup hooks and settings.
 That session must load the factory skill and add, list and remove a probe through the home's task wrapper; a failure makes setup fail.
+Acceptance uses tool results, startup-hook events and the exact task-executable path recorded by the session's own command in `data/software-factory.acceptance-path.*.txt`; Claude's final prose does not determine the verdict.
 The built-in screen check also requires both screens to answer, a tasks-axi probe and its dependency to appear in Scotty, and Scotty creation, editing, deletion and editing-mode requests to be refused.
 Screen-check responses are retained under `data/software-factory.screens.*.json`.
 Full acceptance output is retained under the home's `data/software-factory.acceptance.*`, and `config/software-factory.install.json` records completion, source revisions and image identities.

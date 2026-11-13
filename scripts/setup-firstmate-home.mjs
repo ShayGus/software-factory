@@ -2,6 +2,7 @@
 // Provision only a NEW home and dedicated Docker containers. No upgrades or cleanup
 // of partial homes: inspect a failed installation before removing its named resources.
 // Run --help for inputs. Sources may be local Git repositories or Git URLs.
+import { verifyClaudeEvidence } from './claude-acceptance-evidence.mjs';
 import { installFolderServices, acceptScreens, waitForScreens, serviceNames } from './folder-services.mjs';
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync,
@@ -176,22 +177,26 @@ function taskWrapper(home) {
 
 function acceptWithClaude(home, claude) {
   const probe = 'sf-claude-install-check';
+  const started = Date.now();
+  const pathEvidencePath = join(home, `data/software-factory.acceptance-path.${started}.txt`);
+  if (present(pathEvidencePath)) throw new Error('Refusing to reuse existing Claude path evidence');
   const prompt = `This is an installation acceptance check in ${home}, not a factory feature request.
 Use the normal FirstMate session-start digest from the SessionStart hook. If it is absent, run bash ${quote(join(home, 'bin/fm-session-start.sh'))} once.
 Do not start workers, create projects, run factory phases, change source, install tools, update shared services, or inspect another home's state.
 Load the software-factory skill with the Skill tool solely to confirm it is available; do not execute its workflow.
-Use Bash to verify that command -v tasks-axi is exactly ${quote(join(home, '.tools/bin/tasks-axi'))} without changing PATH.
+Use Bash to run this command without changing PATH; the evidence file must contain only the command's stdout:
+command -v tasks-axi > ${quote(pathEvidencePath)}
+The path in that file must be exactly ${quote(join(home, '.tools/bin/tasks-axi'))}.
 Then run these commands separately, checking each exit code and reading each result:
 bash ${quote(join(home, 'bin/fm-tasks-axi.sh'))} add ${probe} 'Claude installation acceptance'
 bash ${quote(join(home, 'bin/fm-tasks-axi.sh'))} list
 bash ${quote(join(home, 'bin/fm-tasks-axi.sh'))} rm ${probe}
 The list must contain ${probe}. Confirm normal session start completed and the software-factory skill loaded.
-Only if everything succeeded, end with the exact text SOFTWARE_FACTORY_ACCEPTANCE_OK. Otherwise report the failure and do not print that text.`;
+Report the result and any command failure. Setup checks machine evidence, not your final wording.`;
   // A setup launched by a worker must not route its child session into that
   // worker's home/inbox. Leave PATH unchanged: Claude's installed local settings
   // must supply the tasks-axi shim, just as they will on an ordinary launch.
   const env = cleanEnv();
-  const started = Date.now();
   const result = spawnSync(claude, ['--tools', 'Bash,Read,Skill', '-p', prompt, '--verbose', '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions'], {
     cwd: home, env, encoding: 'utf8', timeout: 600000, maxBuffer: 32 * 1024 * 1024
@@ -203,39 +208,7 @@ Only if everything succeeded, end with the exact text SOFTWARE_FACTORY_ACCEPTANC
   process.stderr.write(result.stderr ?? '');
   if (result.status !== 0 || result.error) throw new Error(`Claude acceptance failed: ${result.error?.message ?? `exit ${result.status}`}`);
   const events = (result.stdout ?? '').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  const final = events.findLast((event) => event.type === 'result');
-  const calls = events.filter((event) => event.type === 'assistant').flatMap((event) => event.message?.content ?? [])
-    .filter((block) => block.type === 'tool_use');
-  const results = events.filter((event) => event.type === 'user').flatMap((event) => event.message?.content ?? [])
-    .filter((block) => block.type === 'tool_result');
-  const output = (call) => {
-    const result = results.find((result) => result.tool_use_id === call.id && !result.is_error);
-    if (!result) return '';
-    return typeof result.content === 'string' ? result.content : (result.content ?? []).map((block) => block.text ?? '').join('\n');
-  };
-  if (!final || final.is_error || final.subtype !== 'success' || !final.result?.includes('SOFTWARE_FACTORY_ACCEPTANCE_OK')) {
-    throw new Error('Claude did not report successful installation acceptance');
-  }
-  if (!calls.some((call) => call.name === 'Skill' && call.input?.skill === 'software-factory' && output(call).includes('Launching skill: software-factory'))) {
-    throw new Error('Claude did not successfully load the software-factory skill');
-  }
-  for (const action of ['add', 'list', 'rm']) {
-    if (!calls.some((call) => call.name === 'Bash' && call.input?.command?.includes('fm-tasks-axi.sh') &&
-        new RegExp(`\\b${action}\\b`).test(call.input.command) && output(call).includes(
-          action === 'add' ? `ok: added ${probe} -> Queued` : action === 'rm' ? `ok: removed ${probe}` : `${probe},queued,`))) {
-      throw new Error(`Claude did not successfully run the backlog ${action} check`);
-    }
-  }
-  if (!calls.some((call) => call.name === 'Bash' && call.input?.command?.includes('command -v tasks-axi') &&
-      output(call).split('\n').includes(join(home, '.tools/bin/tasks-axi')))) {
-    throw new Error('Claude local settings did not expose the home-local tasks-axi');
-  }
-  const startup = events.filter((event) => event.type === 'system' && event.hook_event === 'SessionStart');
-  if (!startup.some((event) => event.exit_code === 0 && event.stdout?.includes('The digest above is complete for this session start.')) ||
-      !existsSync(join(home, 'state/.session-start-complete'))) throw new Error('Normal FirstMate session start did not complete');
-  if (startup.some((event) => /(?:TANGLE:|CREW_DISPATCH: invalid)/.test(event.stdout ?? ''))) {
-    throw new Error('FirstMate startup reported an invalid home branch or crew dispatch configuration');
-  }
+  verifyClaudeEvidence(events, { home, probe, pathEvidencePath });
   const remaining = run('bash', [join(home, 'bin/fm-tasks-axi.sh'), 'list'], { cwd: home,
     env: { ...cleanEnv(), FM_HOME: home, PATH: `${join(home, '.tools/bin')}:${process.env.PATH ?? ''}` } });
   if (remaining.includes(probe)) throw new Error('Claude left its acceptance probe in the backlog');
