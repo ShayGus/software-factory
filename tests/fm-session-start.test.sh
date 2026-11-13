@@ -120,9 +120,21 @@ make_fake_tasks_axi_compact() {
 #!/usr/bin/env bash
 set -u
 log=${FM_FAKE_TASKS_AXI_LOG:-}
-[ -n "$log" ] && printf '%s\n' "$*" >> "$log"
+if [ -n "$log" ]; then
+  printf '%s\n' "$*" >> "$log"
+  case "${1:-}" in
+    list|ready) [ -z "${TASKS_AXI_FILE:-}" ] || printf 'addressed-file: %s\n' "$TASKS_AXI_FILE" >> "$log" ;;
+  esac
+fi
 ready_count=${FM_FAKE_TASKS_AXI_READY:-2}
 require_file() {
+  if [ "${FM_FAKE_TASKS_AXI_BACKEND:-}" = beads ]; then
+    [ "$PWD" = "$FM_FAKE_TASKS_AXI_ROOT" ] || { printf '%s\n' 'wrong configured backend root' >&2; exit 9; }
+    [ -z "${TASKS_AXI_FILE:-}" ] || { printf '%s\n' 'inherited markdown pin overrides Beads' >&2; exit 9; }
+    case "$*" in *'--file '*) printf '%s\n' 'markdown file overrides Beads' >&2; exit 9 ;; esac
+    return 0
+  fi
+  [ -z "${TASKS_AXI_FILE:-}" ] || return 0
   case "$*" in *'--file '*) return 0 ;; esac
   printf '%s\n' 'missing explicit backlog file' >&2
   exit 9
@@ -1991,7 +2003,7 @@ EOF
   probes=$(grep -c -- 'update --help' "$log" || true)
   [ "$probes" -eq 1 ] \
     || fail "tasks-axi update --help ran $probes times in one session start: $(cat "$log")"
-  assert_grep 'ready --file' "$log" "the backlog listing never ran, so the verdict was not actually reused"
+  grep -Fx -- ready "$log" >/dev/null || fail "the backlog listing never ran, so the verdict was not actually reused"
   pass "session start: the tasks-axi compatibility verdict is computed once and reused"
 }
 
@@ -2024,6 +2036,36 @@ EOF
 ## Done
 - [x] landed-earlier - DONE-ROW-LINE already landed and torn down (repo: firstmate) (kind: ship)
 EOF
+}
+
+# Beads homes have no Markdown backlog. A stale file must not change the
+# selected backend either; the wrapper must clear inherited Markdown pins.
+test_backlog_beads_uses_configured_home_without_markdown() {
+  local rec root home fakebin out log variant
+  for variant in absent shadow; do
+    rec=$(new_world "backlog-beads-$variant")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_tasks_axi_compact "$fakebin"
+    make_fake_ps_claude "$fakebin"
+    printf 'backend = "beads"\n' > "$home/.tasks.toml"
+    if [ "$variant" = shadow ]; then
+      printf '## Queued\n- [ ] shadow-only - Wrong Markdown backlog\n' > "$home/data/backlog.md"
+    fi
+    log="$home/tasks-axi.log"
+    out=$(FM_FAKE_TASKS_AXI_LOG="$log" FM_FAKE_TASKS_AXI_BACKEND=beads \
+      FM_FAKE_TASKS_AXI_ROOT="$home" TASKS_AXI_FILE="$root/shadow.md" \
+      run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    assert_contains "$out" 'ready-1,queued,ship,firstmate,Ready item 1' "Beads queued task missing when Markdown is $variant"
+    assert_contains "$out" 'held-queued,queued,ship,firstmate,Held queued work' "Beads held task missing when Markdown is $variant"
+    assert_contains "$out" 'blocked-followup,queued,scout,firstmate,Follow compact startup' "Beads blocked task missing when Markdown is $variant"
+    assert_not_contains "$out" 'shadow-only' 'Beads startup displayed a stale Markdown row'
+    assert_not_contains "$(cat "$log")" '--file' 'Beads startup was redirected by a Markdown file argument'
+    assert_not_contains "$(cat "$log")" 'addressed-file:' 'Beads startup retained an inherited Markdown pin'
+  done
+  pass "Beads startup lists queued, held and blocked tasks through the home wrapper without a Markdown backlog"
 }
 
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata() {
@@ -2078,7 +2120,7 @@ EOF
     "session start did not ask tasks-axi for the held group"
   assert_grep "--state queued --blocked --fields blocked_by,hold_kind,hold_reason" "$log" \
     "session start did not ask tasks-axi for the blocked queued group"
-  assert_grep "ready --file $home/data/backlog.md" "$log" \
+  assert_grep "addressed-file: $home/data/backlog.md" "$log" \
     "session start did not ask tasks-axi for the dispatchable queued set"
 
   pass "compatible tasks-axi backlog rendering drops done rows and keeps every in-flight, held, and blocked row"
@@ -3094,6 +3136,7 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+test_backlog_beads_uses_configured_home_without_markdown
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path

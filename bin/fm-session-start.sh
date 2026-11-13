@@ -6,7 +6,7 @@
 # instead of the six-plus separate reads the old docs required: run
 # fm-bootstrap.sh, then separately read data/projects.md, data/secondmates.md,
 # data/captain.md, data/captain-shared.md, data/learnings.md, then run
-# fm-lock.sh, fm-wake-drain.sh, then read data/backlog.md, every state/*.meta,
+# fm-lock.sh, fm-wake-drain.sh, then read the configured backlog, every state/*.meta,
 # and every state/*.status.
 # Every one of those reads is UNCONDITIONAL at every session start, so they
 # belong in a script, not in N agent turns.
@@ -48,7 +48,7 @@
 #                       detected primary harness.
 #   5. read-once contract - the do-not-re-read contract covering every source
 #                       represented by the two digests below.
-#   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
+#   6. fleet digest   - a compact configured-backlog identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
 #                       the away posture (state/.afk-contract and the legacy
 #                       state/.afk daemon flag), and a cheap per-task
@@ -155,13 +155,15 @@
 #     listing indiscriminately and so could drop a held or blocked row.)
 # When compatible tasks-axi is selected and available, the shared tasks-axi
 # backend probe remains the compatibility owner and this script asks
-# `tasks-axi list` for the compact identity fields plus blocked_by, hold_kind,
+# `bin/fm-tasks-axi.sh list` for the compact identity fields plus blocked_by, hold_kind,
 # and hold_reason, never body. The groups are the tool's own filters
 # (`--state in_flight`, `--state held`, `--state queued --blocked`, and
 # `tasks-axi ready`), so this script never reimplements task state; the groups
 # can overlap, because an in-flight item that is also held appears under both.
-# When manual mode is selected, or tasks-axi is unavailable or incompatible,
-# this script prints only backlog section headings and item title lines, so
+# The home wrapper owns backend addressing: non-Markdown stores require no
+# data/backlog.md and must never receive --file, even if a stale file exists.
+# For Markdown, manual mode or unavailable/incompatible tasks-axi prints only
+# backlog section headings and item title lines, so
 # title-line hold and blocked-by metadata remain visible while indented bodies
 # stay out of the startup digest; the same never-bound-a-held-or-blocked-row
 # rule applies, recognized there from the title line's own hold/blocked-by
@@ -367,6 +369,8 @@ PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-backlog-transition-lib.sh
+. "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-public-followup-lib.sh
 . "$SCRIPT_DIR/fm-public-followup-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
@@ -429,7 +433,7 @@ print_file_or_absent() {
 }
 
 print_backlog_pointer() {
-  printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full when compatible tasks-axi is available, or data/backlog.md.\n'
+  printf 'Full task bodies remain available on demand: bin/fm-tasks-axi.sh show <id> --full when compatible tasks-axi is available, or data/backlog.md for Markdown.\n'
 }
 
 # A queued title line whose own text already marks it held or blocked. The
@@ -519,13 +523,13 @@ print_ready_queued_bounded() {
 
 print_backlog_tasks_axi_compact() {
   local path=$1 in_flight held blocked ready err
-  if ! in_flight=$(tasks-axi list --file "$path" --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
+  if ! in_flight=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-tasks-axi.sh" list --state in_flight --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$in_flight
-  elif ! held=$(tasks-axi list --file "$path" --state held --fields "$BACKLOG_FIELDS" 2>&1); then
+  elif ! held=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-tasks-axi.sh" list --state held --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$held
-  elif ! blocked=$(tasks-axi list --file "$path" --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
+  elif ! blocked=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-tasks-axi.sh" list --state queued --blocked --fields "$BACKLOG_FIELDS" 2>&1); then
     err=$blocked
-  elif ! ready=$(tasks-axi ready --file "$path" 2>&1); then
+  elif ! ready=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-tasks-axi.sh" ready 2>&1); then
     err=$ready
   else
     printf 'compact backlog listing (tasks-axi; done rows omitted; every in-flight, held, and blocked row shown in full; ready queued bounded to %s; task bodies omitted)\n' \
@@ -540,13 +544,33 @@ print_backlog_tasks_axi_compact() {
     print_ready_queued_bounded "$ready"
     return 0
   fi
-  printf 'tasks-axi compact listing failed; falling back to title-line rendering.\n'
+  printf 'tasks-axi compact listing failed.\n'
   printf '%s\n' "$err"
-  print_backlog_manual_compact "$path" "fallback"
+  if [ -n "$path" ] && [ -s "$path" ]; then
+    printf 'Falling back to Markdown title-line rendering.\n'
+    print_backlog_manual_compact "$path" "fallback"
+  fi
 }
 
 print_backlog_compact() {
   local path=$1 label=$2
+  if ! fm_backlog_backend_manual "$CONFIG"; then
+    if ! fm_backlog_tasks_axi_addressing "$DATA"; then
+      subsection "$label"
+      printf 'Configured backlog could not be resolved: %s\n' "$FM_BACKLOG_TRANSITION_ERROR"
+      return
+    fi
+    if [ -z "$FM_BACKLOG_AXI_FILE" ]; then
+      subsection 'backlog (configured tasks-axi backend)'
+      if fm_tasks_axi_backend_available "$CONFIG"; then
+        print_backlog_tasks_axi_compact ""
+      else
+        printf 'Configured backlog unavailable: tasks-axi is missing or incompatible.\n'
+      fi
+      print_backlog_pointer
+      return
+    fi
+  fi
   subsection "$label"
   if [ -f "$path" ]; then
     if [ -s "$path" ]; then
@@ -895,7 +919,7 @@ stage read-once
 section "READ-ONCE CONTRACT"
 cat <<'EOF'
 Everything below is printed in full for this session start: every state/*.meta,
-a compact data/backlog.md listing, a bounded tail of every state/*.status,
+a compact listing from this home's configured backlog, a bounded tail of every state/*.status,
 data/projects.md, data/secondmates.md, data/captain.md, data/captain-shared.md,
 and data/learnings.md.
 Do NOT re-read any of them after reading this digest, and do NOT bulk-read

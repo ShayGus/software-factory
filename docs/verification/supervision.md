@@ -6,6 +6,24 @@ This record supports current session-start, turn-end, watcher-continuity, superv
 Operator behavior and active limits remain in the linked current guides.
 Task-specific chronology, temporary paths, run identifiers, and delivery transcripts remain in private reports or PR evidence.
 
+## Configured backlog startup rendering
+
+On 2026-11-13 the portable startup regression exercised a configured Beads home with no Markdown backlog and with a stale Markdown backlog, including an inherited Markdown-file pin.
+The task-tool boundary rejected file overrides and the wrong working root while providing queued, held and blocked records.
+The existing Markdown, manual-backend, compatibility-probe and queued-bound cases exercise the same startup command.
+The shared addressing contract remains owned by `bin/fm-tasks-axi.sh`; startup composition remains owned by the `bin/fm-session-start.sh` header.
+
+```sh
+bash tests/fm-session-start.test.sh
+bash tests/fm-tasks-axi.test.sh
+```
+
+The startup regression emitted:
+
+```text
+ok - Beads startup lists queued, held and blocked tasks through the home wrapper without a Markdown backlog
+```
+
 ## Native session-start delivery
 
 The cross-harness transport pass ran on 2026-07-17 with Codex 0.144.4, Grok 0.2.103, OpenCode 1.17.18, Pi 0.80.10, and the tracked Claude hook wiring.
