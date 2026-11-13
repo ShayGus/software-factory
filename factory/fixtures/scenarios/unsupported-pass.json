@@ -1,0 +1,23 @@
+{
+  "description": "A claimed pass without verification evidence is rejected.",
+  "edits": [
+    {
+      "record": {
+        "id": "result-general",
+        "revision": 1
+      },
+      "path": [
+        "evidence"
+      ],
+      "value": []
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "schema"
+    ]
+  },
+  "gate": "records"
+}

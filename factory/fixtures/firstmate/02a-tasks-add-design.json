@@ -1,0 +1,26 @@
+{
+  "source": "02a-tasks-add-design.txt",
+  "schema": "task_mutation",
+  "valid": true,
+  "input": {
+    "ok": true,
+    "action": "add",
+    "task": {
+      "id": "pilot-design",
+      "title": "design and plan for feature X",
+      "state": "queued",
+      "kind": "scout",
+      "repo": "fronto-bif",
+      "priority": null,
+      "created": "2026-11-10",
+      "closed": null,
+      "deps": [],
+      "hold": null,
+      "links": [],
+      "body": null,
+      "blocked": false,
+      "blocked_by": [],
+      "held": false
+    }
+  }
+}

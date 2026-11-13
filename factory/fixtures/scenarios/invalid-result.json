@@ -1,0 +1,23 @@
+{
+  "description": "Unknown criterion result tokens are rejected at the schema boundary.",
+  "edits": [
+    {
+      "record": {
+        "id": "result-general",
+        "revision": 1
+      },
+      "path": [
+        "result"
+      ],
+      "value": "done"
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "schema"
+    ]
+  },
+  "gate": "records"
+}

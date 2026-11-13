@@ -1,0 +1,23 @@
+{
+  "description": "A future schema version needs an explicit migration.",
+  "edits": [
+    {
+      "record": {
+        "id": "assignment-1",
+        "revision": 1
+      },
+      "path": [
+        "schemaVersion"
+      ],
+      "value": 2
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "schema"
+    ]
+  },
+  "gate": "records"
+}

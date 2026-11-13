@@ -1,0 +1,272 @@
+{
+  "description": "Code follows the bad brief and technical review passes; product review still rejects missing general behavior.",
+  "edits": [
+    {
+      "record": {
+        "id": "assignment-1",
+        "revision": 1
+      },
+      "path": [
+        "instructionText"
+      ],
+      "value": "Implement feature X for ERPNext only."
+    },
+    {
+      "record": {
+        "id": "assignment-1",
+        "revision": 1
+      },
+      "path": [
+        "instructionFidelity"
+      ],
+      "value": {
+        "result": "failed",
+        "sourceRefs": [
+          {
+            "uri": "fixture://records/request-1",
+            "record": {
+              "id": "request-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/design-1",
+            "record": {
+              "id": "design-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/plan-1",
+            "record": {
+              "id": "plan-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/task-1",
+            "record": {
+              "id": "task-1",
+              "revision": 1
+            }
+          }
+        ],
+        "findings": [
+          {
+            "criterionId": "criterion-general",
+            "result": "failed",
+            "description": "ERPNext-only instructions narrow the original every-system request.",
+            "sourceRefs": [
+              {
+                "uri": "fixture://records/request-1",
+                "record": {
+                  "id": "request-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/design-1",
+                "record": {
+                  "id": "design-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "evidence": []
+          }
+        ],
+        "reviewerSession": "fixture-reviewer",
+        "comparedAt": "2026-11-10T10:36:43Z"
+      }
+    },
+    {
+      "record": {
+        "id": "review-1",
+        "revision": 1
+      },
+      "path": [
+        "instructionFidelity"
+      ],
+      "value": {
+        "result": "failed",
+        "sourceRefs": [
+          {
+            "uri": "fixture://records/request-1",
+            "record": {
+              "id": "request-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/design-1",
+            "record": {
+              "id": "design-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/plan-1",
+            "record": {
+              "id": "plan-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/task-1",
+            "record": {
+              "id": "task-1",
+              "revision": 1
+            }
+          }
+        ],
+        "findings": [
+          {
+            "criterionId": "criterion-general",
+            "result": "failed",
+            "description": "ERPNext-only instructions narrow the original every-system request.",
+            "sourceRefs": [
+              {
+                "uri": "fixture://records/request-1",
+                "record": {
+                  "id": "request-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/design-1",
+                "record": {
+                  "id": "design-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "evidence": []
+          }
+        ],
+        "reviewerSession": "fixture-reviewer",
+        "comparedAt": "2026-11-10T10:36:43Z"
+      }
+    },
+    {
+      "record": {
+        "id": "review-1",
+        "revision": 1
+      },
+      "path": [
+        "sourceComparison"
+      ],
+      "value": {
+        "result": "failed",
+        "sourceRefs": [
+          {
+            "uri": "fixture://records/request-1",
+            "record": {
+              "id": "request-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/design-1",
+            "record": {
+              "id": "design-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/plan-1",
+            "record": {
+              "id": "plan-1",
+              "revision": 1
+            }
+          },
+          {
+            "uri": "fixture://records/task-1",
+            "record": {
+              "id": "task-1",
+              "revision": 1
+            }
+          }
+        ],
+        "findings": [
+          {
+            "criterionId": "criterion-general",
+            "result": "failed",
+            "description": "ERPNext-only instructions narrow the original every-system request.",
+            "sourceRefs": [
+              {
+                "uri": "fixture://records/request-1",
+                "record": {
+                  "id": "request-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/design-1",
+                "record": {
+                  "id": "design-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "evidence": []
+          }
+        ],
+        "reviewerSession": "fixture-reviewer",
+        "comparedAt": "2026-11-10T10:36:43Z"
+      }
+    },
+    {
+      "record": {
+        "id": "review-1",
+        "revision": 1
+      },
+      "path": [
+        "outcome"
+      ],
+      "value": "failed"
+    },
+    {
+      "record": {
+        "id": "result-general",
+        "revision": 1
+      },
+      "path": [
+        "result"
+      ],
+      "value": "failed"
+    },
+    {
+      "record": {
+        "id": "result-general",
+        "revision": 1
+      },
+      "path": [
+        "accomplishedBehavior"
+      ],
+      "value": "ERPNext works; the common system interface is missing."
+    },
+    {
+      "record": {
+        "id": "result-second",
+        "revision": 1
+      },
+      "path": [
+        "result"
+      ],
+      "value": "untested"
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "review_failed",
+      "incomplete_criterion"
+    ]
+  },
+  "gate": "completion",
+  "target": {
+    "id": "review-1",
+    "revision": 1
+  }
+}

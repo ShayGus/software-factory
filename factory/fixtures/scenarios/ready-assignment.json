@@ -1,0 +1,14 @@
+{
+  "description": "The full-scope assignment is dispatch eligible.",
+  "edits": [],
+  "addRecords": [],
+  "expected": {
+    "valid": true,
+    "codes": []
+  },
+  "gate": "dispatch",
+  "target": {
+    "id": "assignment-1",
+    "revision": 1
+  }
+}

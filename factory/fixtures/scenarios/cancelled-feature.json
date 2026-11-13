@@ -1,0 +1,64 @@
+{
+  "description": "Cancelled is a disposition, and dispatch refuses it.",
+  "edits": [
+    {
+      "record": {
+        "id": "feature-1",
+        "revision": 1
+      },
+      "path": [
+        "disposition"
+      ],
+      "value": {
+        "state": "cancelled",
+        "reason": "Synthetic selected cancellation.",
+        "decision": {
+          "id": "decision-cancel",
+          "revision": 1
+        }
+      }
+    }
+  ],
+  "addRecords": [
+    {
+      "kind": "decision_change",
+      "id": "decision-cancel",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 1,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "questionOrChange": "Cancel this feature.",
+      "affectedRecords": [
+        {
+          "id": "feature-1",
+          "revision": 1
+        }
+      ],
+      "rationale": "Synthetic operator cancellation.",
+      "disposition": "selected",
+      "originalInstruction": "Cancel this feature.",
+      "sourceRefs": [
+        {
+          "uri": "fixture://records/request-1",
+          "record": {
+            "id": "request-1",
+            "revision": 1
+          }
+        }
+      ],
+      "scopeChanges": []
+    }
+  ],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "inactive_feature"
+    ]
+  },
+  "gate": "dispatch",
+  "target": {
+    "id": "assignment-1",
+    "revision": 1
+  }
+}

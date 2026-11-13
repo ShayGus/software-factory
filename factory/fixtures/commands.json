@@ -1,0 +1,1000 @@
+[
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "capture_request",
+      "payload": {
+        "clientRequestId": "req-001",
+        "originalText": "Build feature X for every connected system, ERPNext is only an example.",
+        "source": {
+          "uri": "build-01-fixtures/01a-inbox-note-first.txt"
+        },
+        "channel": "FirstMate inbox",
+        "capturedAt": "2026-11-10T10:36:43Z",
+        "attachments": []
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "design_plan_feature",
+      "payload": {
+        "feature": {
+          "id": "feature-1",
+          "revision": 1
+        },
+        "sourceRefs": [
+          {
+            "uri": "fixture://records/request-1",
+            "record": {
+              "id": "request-1",
+              "revision": 1
+            }
+          }
+        ],
+        "existingDesignRefs": [],
+        "expectedRevisions": [
+          {
+            "id": "feature-1",
+            "revision": 1
+          }
+        ],
+        "design": {
+          "kind": "design_revision",
+          "id": "design-1",
+          "projectId": "project-1",
+          "schemaVersion": 1,
+          "revision": 1,
+          "createdAt": "2026-11-10T10:36:43Z",
+          "updatedAt": "2026-11-10T10:36:43Z",
+          "sourceRefs": [
+            {
+              "uri": "fixture://records/request-1",
+              "record": {
+                "id": "request-1",
+                "revision": 1
+              }
+            }
+          ],
+          "feature": {
+            "id": "feature-1",
+            "revision": 1
+          },
+          "productBehavior": "Expose feature X through the common connected-system interface.",
+          "examples": [
+            "ERPNext is an example, not the full scope.",
+            "A second connected system also works."
+          ],
+          "technicalDesign": "Reuse the connection interface; keep per-system details behind it.",
+          "reuseFindings": [
+            "Synthetic existing connection interface can serve both systems."
+          ],
+          "interfaces": [
+            "Common system interface"
+          ],
+          "dataFlow": "Request -> common interface -> connected system",
+          "decisions": [],
+          "alternatives": [
+            "Implement one-off ERPNext handling: rejected as narrower than requested."
+          ],
+          "testingApproach": "Common-interface and second-system acceptance cases.",
+          "exclusions": [],
+          "unresolvedQuestions": [],
+          "sourceComparison": {
+            "result": "passed",
+            "sourceRefs": [
+              {
+                "uri": "fixture://records/request-1",
+                "record": {
+                  "id": "request-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "findings": [],
+            "reviewerSession": "fixture-reviewer",
+            "comparedAt": "2026-11-10T10:36:43Z"
+          }
+        },
+        "plan": {
+          "kind": "implementation_plan_revision",
+          "id": "plan-1",
+          "projectId": "project-1",
+          "schemaVersion": 1,
+          "revision": 1,
+          "createdAt": "2026-11-10T10:36:43Z",
+          "updatedAt": "2026-11-10T10:36:43Z",
+          "feature": {
+            "id": "feature-1",
+            "revision": 1
+          },
+          "design": {
+            "id": "design-1",
+            "revision": 1
+          },
+          "deliverySequence": [
+            {
+              "id": "task-1",
+              "revision": 1
+            }
+          ],
+          "strategy": "focused",
+          "strategyReason": "One tightly coupled feature slice.",
+          "integrationApproach": "Integrate and verify the common interface in the same slice.",
+          "dependencies": [],
+          "priorities": [
+            {
+              "taskId": "task-1",
+              "priority": 1
+            }
+          ],
+          "readiness": {
+            "ready": true,
+            "comparison": {
+              "result": "passed",
+              "sourceRefs": [
+                {
+                  "uri": "fixture://records/request-1",
+                  "record": {
+                    "id": "request-1",
+                    "revision": 1
+                  }
+                },
+                {
+                  "uri": "fixture://records/design-1",
+                  "record": {
+                    "id": "design-1",
+                    "revision": 1
+                  }
+                }
+              ],
+              "findings": [],
+              "reviewerSession": "fixture-reviewer",
+              "comparedAt": "2026-11-10T10:36:43Z"
+            }
+          }
+        },
+        "tasks": [
+          {
+            "kind": "detailed_plan_task",
+            "id": "task-1",
+            "projectId": "project-1",
+            "schemaVersion": 1,
+            "revision": 1,
+            "createdAt": "2026-11-10T10:36:43Z",
+            "updatedAt": "2026-11-10T10:36:43Z",
+            "plan": {
+              "id": "plan-1",
+              "revision": 1
+            },
+            "design": {
+              "id": "design-1",
+              "revision": 1
+            },
+            "feature": {
+              "id": "feature-1",
+              "revision": 1
+            },
+            "expectedBehavior": "Feature X across connected systems, including a second-system acceptance case.",
+            "criteria": [
+              {
+                "id": "criterion-general",
+                "revision": 1
+              },
+              {
+                "id": "criterion-second-system",
+                "revision": 1
+              }
+            ],
+            "designRefs": [
+              {
+                "uri": "fixture://records/design-1",
+                "record": {
+                  "id": "design-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "boundaries": [
+              "Preserve the common interface and original generality."
+            ],
+            "reuseTargets": [
+              {
+                "uri": "fixture://repository/common-interface"
+              }
+            ],
+            "inputs": [
+              "Connected-system fixtures"
+            ],
+            "outputs": [
+              "Implementation and acceptance evidence"
+            ],
+            "blockers": [],
+            "verificationCases": [
+              "ERPNext case",
+              "Second-system case"
+            ],
+            "returnRequirements": [
+              "Return one result per assigned criterion with versioned evidence."
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "record_decision_suggestion",
+      "payload": {
+        "decision": {
+          "kind": "decision_change",
+          "id": "decision-suggestion",
+          "projectId": "project-1",
+          "schemaVersion": 1,
+          "revision": 1,
+          "createdAt": "2026-11-10T10:36:43Z",
+          "updatedAt": "2026-11-10T10:36:43Z",
+          "questionOrChange": "Consider adding another example.",
+          "affectedRecords": [
+            {
+              "id": "feature-1",
+              "revision": 1
+            }
+          ],
+          "rationale": "An example might help documentation; no scope change selected.",
+          "disposition": "proposed",
+          "sourceRefs": [
+            {
+              "uri": "fixture://records/request-1",
+              "record": {
+                "id": "request-1",
+                "revision": 1
+              }
+            }
+          ],
+          "scopeChanges": []
+        }
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "map_manage_execution_task",
+      "payload": {
+        "feature": {
+          "id": "feature-1",
+          "revision": 1
+        },
+        "criteria": [
+          {
+            "id": "criterion-general",
+            "revision": 1
+          },
+          {
+            "id": "criterion-second-system",
+            "revision": 1
+          }
+        ],
+        "detailedPlanTask": {
+          "id": "task-1",
+          "revision": 1
+        },
+        "task": {
+          "kind": "existing",
+          "firstMateTaskId": "pilot-build"
+        },
+        "action": "map",
+        "dependencies": [
+          "pilot-design"
+        ],
+        "reason": "Link the managed task without inferring delivery."
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "prepare_assignment",
+      "payload": {
+        "detailedPlanTask": {
+          "id": "task-1",
+          "revision": 1
+        },
+        "feature": {
+          "id": "feature-1",
+          "revision": 1
+        },
+        "design": {
+          "id": "design-1",
+          "revision": 1
+        },
+        "plan": {
+          "id": "plan-1",
+          "revision": 1
+        },
+        "firstMateTaskId": "pilot-build",
+        "selectedContext": [
+          {
+            "source": {
+              "uri": "fixture://records/request-1",
+              "record": {
+                "id": "request-1",
+                "revision": 1
+              }
+            },
+            "extract": "Build feature X for every connected system, ERPNext is only an example.",
+            "truncated": false
+          },
+          {
+            "source": {
+              "uri": "fixture://records/task-1",
+              "record": {
+                "id": "task-1",
+                "revision": 1
+              }
+            },
+            "truncated": false
+          }
+        ],
+        "returnLocation": "data/pilot-build/report.md"
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "deliver_correction",
+      "payload": {
+        "affectedRevision": {
+          "id": "feature-1",
+          "revision": 1
+        },
+        "assignment": {
+          "id": "assignment-1",
+          "revision": 1
+        },
+        "originalCorrection": "Keep every-system scope.",
+        "action": "clarification",
+        "sequence": 2,
+        "supersedes": []
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "record_review_result",
+      "payload": {
+        "originalRequests": [
+          {
+            "id": "request-1",
+            "revision": 1
+          }
+        ],
+        "feature": {
+          "id": "feature-1",
+          "revision": 1
+        },
+        "design": {
+          "id": "design-1",
+          "revision": 1
+        },
+        "plan": {
+          "id": "plan-1",
+          "revision": 1
+        },
+        "assignment": {
+          "id": "assignment-1",
+          "revision": 1
+        },
+        "deliveredArtifact": {
+          "uri": "fixture://implementation/feature-x",
+          "revision": "fixture-commit-1"
+        },
+        "results": [
+          {
+            "kind": "criterion_result",
+            "id": "result-general",
+            "projectId": "project-1",
+            "schemaVersion": 1,
+            "revision": 1,
+            "createdAt": "2026-11-10T10:36:43Z",
+            "updatedAt": "2026-11-10T10:36:43Z",
+            "assignment": {
+              "id": "assignment-1",
+              "revision": 1
+            },
+            "criterion": {
+              "id": "criterion-general",
+              "revision": 1
+            },
+            "result": "passed",
+            "accomplishedBehavior": "Synthetic common-interface case passed.",
+            "artifact": {
+              "uri": "fixture://implementation/feature-x",
+              "revision": "fixture-commit-1"
+            },
+            "evidence": [
+              {
+                "artifact": {
+                  "uri": "fixture://implementation/feature-x",
+                  "revision": "fixture-commit-1"
+                },
+                "description": "Synthetic fixture: ERPNext and a second system use one interface.",
+                "observedAt": "2026-11-10T10:36:43Z"
+              }
+            ],
+            "limitations": [],
+            "suggestions": []
+          },
+          {
+            "kind": "criterion_result",
+            "id": "result-second",
+            "projectId": "project-1",
+            "schemaVersion": 1,
+            "revision": 1,
+            "createdAt": "2026-11-10T10:36:43Z",
+            "updatedAt": "2026-11-10T10:36:43Z",
+            "assignment": {
+              "id": "assignment-1",
+              "revision": 1
+            },
+            "criterion": {
+              "id": "criterion-second-system",
+              "revision": 1
+            },
+            "result": "passed",
+            "accomplishedBehavior": "Synthetic second-system acceptance case passed.",
+            "artifact": {
+              "uri": "fixture://implementation/feature-x",
+              "revision": "fixture-commit-1"
+            },
+            "evidence": [
+              {
+                "artifact": {
+                  "uri": "fixture://implementation/feature-x",
+                  "revision": "fixture-commit-1"
+                },
+                "description": "Synthetic fixture: ERPNext and a second system use one interface.",
+                "observedAt": "2026-11-10T10:36:43Z"
+              }
+            ],
+            "limitations": [],
+            "suggestions": []
+          }
+        ],
+        "review": {
+          "kind": "product_review",
+          "id": "review-1",
+          "projectId": "project-1",
+          "schemaVersion": 1,
+          "revision": 1,
+          "createdAt": "2026-11-10T10:36:43Z",
+          "updatedAt": "2026-11-10T10:36:43Z",
+          "originalRequests": [
+            {
+              "id": "request-1",
+              "revision": 1
+            }
+          ],
+          "sourceRefs": [
+            {
+              "uri": "fixture://records/request-1",
+              "record": {
+                "id": "request-1",
+                "revision": 1
+              }
+            },
+            {
+              "uri": "fixture://records/design-1",
+              "record": {
+                "id": "design-1",
+                "revision": 1
+              }
+            },
+            {
+              "uri": "fixture://records/plan-1",
+              "record": {
+                "id": "plan-1",
+                "revision": 1
+              }
+            }
+          ],
+          "feature": {
+            "id": "feature-1",
+            "revision": 1
+          },
+          "design": {
+            "id": "design-1",
+            "revision": 1
+          },
+          "plan": {
+            "id": "plan-1",
+            "revision": 1
+          },
+          "detailedPlanTasks": [
+            {
+              "id": "task-1",
+              "revision": 1
+            }
+          ],
+          "assignments": [
+            {
+              "id": "assignment-1",
+              "revision": 1
+            }
+          ],
+          "results": [
+            {
+              "id": "result-general",
+              "revision": 1
+            },
+            {
+              "id": "result-second",
+              "revision": 1
+            }
+          ],
+          "reviewedArtifacts": [
+            {
+              "uri": "fixture://implementation/feature-x",
+              "revision": "fixture-commit-1"
+            }
+          ],
+          "technicalReviewRefs": [
+            {
+              "uri": "fixture://technical-review/passed"
+            }
+          ],
+          "sourceComparison": {
+            "result": "passed",
+            "sourceRefs": [
+              {
+                "uri": "fixture://records/request-1",
+                "record": {
+                  "id": "request-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/design-1",
+                "record": {
+                  "id": "design-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/plan-1",
+                "record": {
+                  "id": "plan-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/task-1",
+                "record": {
+                  "id": "task-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "findings": [],
+            "reviewerSession": "fixture-reviewer",
+            "comparedAt": "2026-11-10T10:36:43Z"
+          },
+          "instructionFidelity": {
+            "result": "passed",
+            "sourceRefs": [
+              {
+                "uri": "fixture://records/request-1",
+                "record": {
+                  "id": "request-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/design-1",
+                "record": {
+                  "id": "design-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/plan-1",
+                "record": {
+                  "id": "plan-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/task-1",
+                "record": {
+                  "id": "task-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "findings": [],
+            "reviewerSession": "fixture-reviewer",
+            "comparedAt": "2026-11-10T10:36:43Z"
+          },
+          "planConformance": {
+            "result": "passed",
+            "sourceRefs": [
+              {
+                "uri": "fixture://records/request-1",
+                "record": {
+                  "id": "request-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/design-1",
+                "record": {
+                  "id": "design-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/plan-1",
+                "record": {
+                  "id": "plan-1",
+                  "revision": 1
+                }
+              },
+              {
+                "uri": "fixture://records/task-1",
+                "record": {
+                  "id": "task-1",
+                  "revision": 1
+                }
+              }
+            ],
+            "findings": [],
+            "reviewerSession": "fixture-reviewer",
+            "comparedAt": "2026-11-10T10:36:43Z"
+          },
+          "baselineEvidence": [
+            {
+              "artifact": {
+                "uri": "fixture://implementation/feature-x",
+                "revision": "fixture-commit-1"
+              },
+              "description": "Synthetic baseline: feature X absent.",
+              "observedAt": "2026-11-10T10:36:43Z"
+            }
+          ],
+          "improvementEvidence": [
+            {
+              "artifact": {
+                "uri": "fixture://implementation/feature-x",
+                "revision": "fixture-commit-1"
+              },
+              "description": "Synthetic fixture: ERPNext and a second system use one interface.",
+              "observedAt": "2026-11-10T10:36:43Z"
+            }
+          ],
+          "unresolvedQuestions": [],
+          "outcome": "passed",
+          "reviewerSession": "fixture-independent-reviewer",
+          "reviewedAt": "2026-11-10T10:36:43Z"
+        }
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "capture_consolidate_learning",
+      "payload": {
+        "action": "capture",
+        "observation": {
+          "kind": "observation",
+          "id": "observation-1",
+          "projectId": "project-1",
+          "schemaVersion": 1,
+          "revision": 1,
+          "createdAt": "2026-11-10T10:36:43Z",
+          "updatedAt": "2026-11-10T10:36:43Z",
+          "finding": "Acknowledgement is transport evidence, not proof of incorporation.",
+          "affectedScope": [
+            {
+              "uri": "fixture://records/assignment-1",
+              "record": {
+                "id": "assignment-1",
+                "revision": 1
+              }
+            }
+          ],
+          "evidence": [
+            {
+              "artifact": {
+                "uri": "fixture://implementation/feature-x",
+                "revision": "fixture-commit-1"
+              },
+              "description": "Synthetic fixture: ERPNext and a second system use one interface.",
+              "observedAt": "2026-11-10T10:36:43Z"
+            }
+          ],
+          "proposedGeneralization": "Keep correction delivery facts separate.",
+          "consolidationState": "consolidated",
+          "correction": {
+            "action": "clarification",
+            "originalText": "ERPNext is an example; keep the general interface.",
+            "assignment": {
+              "id": "assignment-1",
+              "revision": 1
+            },
+            "affectedRevision": {
+              "id": "feature-1",
+              "revision": 1
+            },
+            "sequence": 1,
+            "supersedes": [],
+            "facts": [
+              {
+                "fact": "recorded",
+                "at": "2026-11-10T10:36:43Z",
+                "evidence": [
+                  {
+                    "artifact": {
+                      "uri": "fixture://implementation/feature-x",
+                      "revision": "fixture-commit-1"
+                    },
+                    "description": "Synthetic fixture: ERPNext and a second system use one interface.",
+                    "observedAt": "2026-11-10T10:36:43Z"
+                  }
+                ]
+              },
+              {
+                "fact": "delivered",
+                "at": "2026-11-10T10:36:43Z",
+                "evidence": [
+                  {
+                    "artifact": {
+                      "uri": "fixture://implementation/feature-x",
+                      "revision": "fixture-commit-1"
+                    },
+                    "description": "Synthetic fixture: ERPNext and a second system use one interface.",
+                    "observedAt": "2026-11-10T10:36:43Z"
+                  }
+                ]
+              },
+              {
+                "fact": "acknowledged",
+                "at": "2026-11-10T10:36:43Z",
+                "evidence": [
+                  {
+                    "artifact": {
+                      "uri": "fixture://implementation/feature-x",
+                      "revision": "fixture-commit-1"
+                    },
+                    "description": "Synthetic fixture: ERPNext and a second system use one interface.",
+                    "observedAt": "2026-11-10T10:36:43Z"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "capture_consolidate_learning",
+      "payload": {
+        "action": "consolidate",
+        "scheduledWindowId": "2026-11-10-AM",
+        "observationRefs": [
+          {
+            "id": "observation-1",
+            "revision": 1
+          }
+        ],
+        "guidanceRefs": [
+          {
+            "id": "guidance-1",
+            "revision": 1
+          }
+        ],
+        "timezone": "Asia/Jerusalem"
+      }
+    }
+  },
+  {
+    "valid": true,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "command": "read_project_state_export",
+      "payload": {
+        "export": true,
+        "revision": 1
+      }
+    }
+  },
+  {
+    "valid": false,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "capture_request",
+      "payload": {
+        "clientRequestId": "req-001",
+        "originalText": "Build feature X for every connected system, ERPNext is only an example.",
+        "source": {
+          "uri": "build-01-fixtures/01a-inbox-note-first.txt"
+        },
+        "channel": "FirstMate inbox",
+        "capturedAt": "2026-11-10T10:36:43Z",
+        "attachments": []
+      }
+    }
+  },
+  {
+    "valid": false,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": -1,
+      "command": "prepare_assignment",
+      "payload": {
+        "detailedPlanTask": {
+          "id": "task-1",
+          "revision": 1
+        },
+        "feature": {
+          "id": "feature-1",
+          "revision": 1
+        },
+        "design": {
+          "id": "design-1",
+          "revision": 1
+        },
+        "plan": {
+          "id": "plan-1",
+          "revision": 1
+        },
+        "firstMateTaskId": "pilot-build",
+        "selectedContext": [
+          {
+            "source": {
+              "uri": "fixture://records/request-1",
+              "record": {
+                "id": "request-1",
+                "revision": 1
+              }
+            },
+            "extract": "Build feature X for every connected system, ERPNext is only an example.",
+            "truncated": false
+          },
+          {
+            "source": {
+              "uri": "fixture://records/task-1",
+              "record": {
+                "id": "task-1",
+                "revision": 1
+              }
+            },
+            "truncated": false
+          }
+        ],
+        "returnLocation": "data/pilot-build/report.md"
+      }
+    }
+  },
+  {
+    "valid": false,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "expectedRevision": 1,
+      "command": "prepare_assignment",
+      "payload": {}
+    }
+  },
+  {
+    "valid": false,
+    "input": {
+      "schemaVersion": 1,
+      "id": "command-1",
+      "projectId": "project-1",
+      "issuedAt": "2026-11-10T10:36:43Z",
+      "idempotencyKey": "client-key-1",
+      "targetId": "feature-1",
+      "command": "capture_request",
+      "payload": {
+        "clientRequestId": "req-001",
+        "originalText": "Build feature X for every connected system, ERPNext is only an example.",
+        "source": {
+          "uri": "build-01-fixtures/01a-inbox-note-first.txt"
+        },
+        "channel": "FirstMate inbox",
+        "capturedAt": "2026-11-10T10:36:43Z",
+        "attachments": []
+      }
+    }
+  }
+]

@@ -1,0 +1,12 @@
+{
+  "source": "06a-crew-state-bif-stock-assumptions.txt",
+  "schema": "execution",
+  "valid": true,
+  "expectedToken": "unknown",
+  "input": {
+    "firstMateTaskId": "bif-stock-assumptions",
+    "raw": "state: unknown · source: run-step · selected run code identity unverified; run ids: 01M6VG9461W93JFHANWM4248QJ, 01M6SEHBPQB2DDZNW858EN701T, 01M6S5DASCMXR2ZDTFYTYB3SJ9",
+    "observedAt": "2026-11-10T10:36:43Z",
+    "sampleRef": "build-01-fixtures/06a-crew-state-bif-stock-assumptions.txt"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@software-factory/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runtime contracts for the FirstMate product-development workflow",
+  "type": "module",
+  "bin": { "software-factory": "./dist/src/cli.js" },
+  "exports": { ".": { "types": "./dist/src/index.d.ts", "import": "./dist/src/index.js" } },
+  "files": ["dist/src", "scripts", "skills", "docs", "fixtures", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test dist/test/*.test.js dist/test/release-checks/*.test.js",
+    "ui": "npm run build && node scripts/ui.mjs",
+    "test:beads-spike": "npm run build && SF_BEADS_INTEGRATION=1 node --test dist/test/ui-spike.integration.test.js"
+  },
+  "engines": { "node": ">=22.13.0" },
+  "dependencies": { "zod": "4.6.7" },
+  "devDependencies": { "@types/node": "^22.0.0", "typescript": "^5.9.0" }
+}

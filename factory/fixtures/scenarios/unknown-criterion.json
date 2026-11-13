@@ -1,0 +1,32 @@
+{
+  "description": "An assignment cannot refer to an unknown criterion ID.",
+  "edits": [
+    {
+      "record": {
+        "id": "assignment-1",
+        "revision": 1
+      },
+      "path": [
+        "criteria"
+      ],
+      "value": [
+        {
+          "id": "criterion-general",
+          "revision": 1
+        },
+        {
+          "id": "criterion-missing",
+          "revision": 1
+        }
+      ]
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "unknown_criterion"
+    ]
+  },
+  "gate": "records"
+}

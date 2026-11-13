@@ -1,0 +1,37 @@
+{
+  "source": "02c-tasks-hold.txt",
+  "schema": "task_mutation",
+  "valid": true,
+  "input": {
+    "ok": true,
+    "action": "hold",
+    "task": {
+      "id": "pilot-build",
+      "title": "build feature X",
+      "state": "queued",
+      "kind": "ship",
+      "repo": "fronto-bif",
+      "priority": null,
+      "created": "2026-11-10",
+      "closed": null,
+      "deps": [
+        {
+          "type": "blocked-by",
+          "id": "pilot-design"
+        }
+      ],
+      "hold": {
+        "reason": "plan check pending",
+        "kind": "captain",
+        "until": null
+      },
+      "links": [],
+      "body": null,
+      "blocked": true,
+      "blocked_by": [
+        "pilot-design"
+      ],
+      "held": true
+    }
+  }
+}

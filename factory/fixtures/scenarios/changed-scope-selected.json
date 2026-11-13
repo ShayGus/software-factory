@@ -1,0 +1,89 @@
+{
+  "description": "A selected decision names the exact criterion and feature revision transition.",
+  "edits": [],
+  "addRecords": [
+    {
+      "kind": "feature_revision",
+      "id": "feature-1",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 2,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "outcome": "Feature X works across connected systems.",
+      "sourceRequests": [
+        {
+          "id": "request-1",
+          "revision": 1
+        }
+      ],
+      "criteria": [
+        {
+          "id": "criterion-general",
+          "revision": 1
+        }
+      ],
+      "exclusions": [],
+      "priority": 1,
+      "decisions": [
+        {
+          "id": "decision-scope",
+          "revision": 1
+        }
+      ],
+      "changeReason": "Remove second-system acceptance.",
+      "state": "in_review",
+      "methodStage": "product_review",
+      "disposition": {
+        "state": "active"
+      },
+      "previousRevision": 1
+    },
+    {
+      "kind": "decision_change",
+      "id": "decision-scope",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 1,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "questionOrChange": "Select removal of the second-system criterion.",
+      "affectedRecords": [
+        {
+          "id": "feature-1",
+          "revision": 2
+        },
+        {
+          "id": "criterion-second-system",
+          "revision": 1
+        }
+      ],
+      "rationale": "Synthetic explicit selected change for the scope-transition test.",
+      "disposition": "selected",
+      "originalInstruction": "For this fixture, select the narrower second revision.",
+      "sourceRefs": [
+        {
+          "uri": "fixture://records/request-1",
+          "record": {
+            "id": "request-1",
+            "revision": 1
+          }
+        }
+      ],
+      "scopeChanges": [
+        {
+          "featureId": "feature-1",
+          "fromRevision": 1,
+          "toRevision": 2,
+          "criterionId": "criterion-second-system",
+          "action": "remove"
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "valid": true,
+    "codes": []
+  },
+  "gate": "records"
+}

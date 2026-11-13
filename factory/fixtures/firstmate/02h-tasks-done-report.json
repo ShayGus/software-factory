@@ -1,0 +1,32 @@
+{
+  "source": "02h-tasks-done-report.txt",
+  "schema": "task_mutation",
+  "valid": true,
+  "input": {
+    "ok": true,
+    "action": "done",
+    "pruned": 0,
+    "task": {
+      "id": "pilot-design",
+      "title": "design and plan for feature X data/pilot-design/report.md",
+      "state": "done",
+      "kind": "scout",
+      "repo": "fronto-bif",
+      "priority": null,
+      "created": "2026-11-10",
+      "closed": "2026-11-10",
+      "deps": [],
+      "hold": null,
+      "links": [
+        {
+          "kind": "report",
+          "url": "data/pilot-design/report.md"
+        }
+      ],
+      "body": null,
+      "blocked": false,
+      "blocked_by": [],
+      "held": false
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "description": "Original source capture must remain immutable across record revisions.",
+  "edits": [],
+  "addRecords": [
+    {
+      "kind": "request",
+      "id": "request-1",
+      "projectId": "project-1",
+      "schemaVersion": 1,
+      "revision": 2,
+      "createdAt": "2026-11-10T10:36:43Z",
+      "updatedAt": "2026-11-10T10:36:43Z",
+      "originalText": "Build feature X for ERPNext only.",
+      "source": {
+        "uri": "build-01-fixtures/01a-inbox-note-first.txt"
+      },
+      "channel": "FirstMate inbox",
+      "capturedAt": "2026-11-10T10:36:43Z",
+      "clientRequestId": "req-001",
+      "attachments": [],
+      "interpretationRefs": [
+        {
+          "id": "feature-1",
+          "revision": 1
+        }
+      ],
+      "disposition": "work",
+      "dispositionRefs": []
+    }
+  ],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "source_mutation"
+    ]
+  },
+  "gate": "records"
+}

@@ -1,0 +1,23 @@
+{
+  "description": "Passing regression checks are not proof of the requested improvement.",
+  "edits": [
+    {
+      "record": {
+        "id": "review-1",
+        "revision": 1
+      },
+      "path": [
+        "improvementEvidence"
+      ],
+      "value": []
+    }
+  ],
+  "addRecords": [],
+  "expected": {
+    "valid": false,
+    "codes": [
+      "missing_improvement"
+    ]
+  },
+  "gate": "records"
+}
