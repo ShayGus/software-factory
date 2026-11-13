@@ -90,7 +90,10 @@ test('two dependent tasks stay held until producer evidence, then both receive o
     // Normal FirstMate delivery closes the producer in its existing backlog.
     flow.wrapper.edit((native) => { native.tasks[producer]!.state = 'done'; });
     runFeature(config, 'prepare-task', consumer); runFeature(config, 'start', consumer);
-    assert.equal((runFeature(config, 'review', consumer) as any).state, 'awaiting_remaining_deliveries');
+    const consumerReview = runFeature(config, 'review', consumer) as any;
+    assert.equal(consumerReview.review.outcome, 'passed');
+    assert.equal(consumerReview.state, undefined);
+    assert.equal(consumerReview.review.assignments.length, 2);
     const final = runFeature(config, 'review-all') as any;
     assert.equal(final.review.outcome, 'passed');
     const evidence = JSON.parse(readFileSync(join(config.runDirectory, 'review-all-input.json'), 'utf8'));
@@ -159,3 +162,26 @@ test('a failed product judgment cannot become a provisional slice pass', () => {
     assert.equal(review.conformance.technicalReviews[0].verdict, 'passed');
   } finally { flow.close(); }
 });
+
+for (const twoTasks of [false, true]) {
+  test(`an untested worker result cannot become pending delivery evidence (${twoTasks ? 'dependent' : 'single'} plan)`, () => {
+    const { flow, config } = intake(twoTasks);
+    try {
+      const planned = runFeature(config, 'plan') as any;
+      const taskId = planned.tasks[0].taskId;
+      runFeature(config, 'prepare-task', taskId); runFeature(config, 'start', taskId);
+      const returnPath = join(config.runDirectory, 'tasks', taskId, 'worker-return.json');
+      const returned = JSON.parse(readFileSync(returnPath, 'utf8'));
+      for (const result of returned.results) result.result = 'untested';
+      flow.save(returnPath, returned);
+      assert.throws(() => runFeature(config, 'review', taskId), /product_review_incomplete/);
+      const review = JSON.parse(readFileSync(join(config.runDirectory, 'tasks', taskId, 'review-product.stdout'), 'utf8')).review;
+      assert.equal(review.outcome, 'incomplete');
+      assert.equal(review.conformance.technicalReviews[0].verdict, 'passed');
+      assert.equal(review.sourceComparison.result, 'passed');
+      assert.equal(review.instructionFidelity.result, 'passed');
+      assert.equal(review.planConformance.result, 'passed');
+      assert.ok(review.conformance.verdict.criteria.every((criterion: { state: string }) => criterion.state === 'accomplished'));
+    } finally { flow.close(); }
+  });
+}

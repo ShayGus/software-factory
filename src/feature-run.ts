@@ -12,6 +12,7 @@ import { MapRequestInputSchema, ref, stableId } from './intake.js';
 import { InstructionJudgeVerdictSchema } from './instruction-judge.js';
 import { digestText, requiredAssignmentContext, sameSource } from './instruction-context.js';
 import { RecordStageInputSchema } from './planning.js';
+import { planningRecord, samePlanningRef } from './planning-checks.js';
 import { EvidenceSchema, RefSchema } from './primitives.js';
 import { ProjectSchema, ProductReviewSchema, type FactoryRecord } from './records.js';
 import { ReviewProductInputSchema, snapshotDelivery } from './product-review.js';
@@ -98,6 +99,7 @@ function bootstrapRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
  * ambiguous result. */
 export function runFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string) {
   let config = FeatureRunConfigSchema.parse(configInput);
+  const baseConfig = config;
   const planDirectory = config.runDirectory;
   let selected: z.infer<typeof PlannedSchema>['tasks'][number] | undefined;
   let planned: z.infer<typeof PlannedSchema> | undefined;
@@ -162,6 +164,14 @@ export function runFeature(configInput: unknown, phase: FeatureRunPhase, selecte
   const history = () => {
     const store = new ProjectStore(config.database);
     try { return store.history(project.id); } finally { store.close(); }
+  };
+  const taskReturnPath = (taskId: string) => join(planDirectory, 'tasks', taskId, 'worker-return.json');
+  const plannedDelivery = (taskId: string) => {
+    const taskDirectory = join(planDirectory, 'tasks', taskId);
+    const prepared = PreparedSchema.parse(json(join(taskDirectory, 'prepared.json')));
+    const taskConfig = { ...baseConfig, taskId, runDirectory: taskDirectory };
+    if (prepared.configDigest !== digestText(JSON.stringify(taskConfig))) throw new Error('prepared_run_config_changed');
+    return { ...FeatureWorkerReturnSchema.parse(json(taskReturnPath(taskId))), assignment: prepared.assignment };
   };
   const issuedAt = () => new Date().toISOString();
   let selectedPlan: FactoryRecord | undefined; let selectedDetailedTask: FactoryRecord | undefined; let selectedMappingId: string; let selectedRequestId: string;
@@ -318,13 +328,7 @@ Each detailed task must require its worker to commit code, verify each assigned 
   if (phase === 'review-all') {
     const manifest = PlannedSchema.parse(json(join(directory, 'planned.json')));
     if (manifest.configDigest !== digestText(JSON.stringify(config))) throw new Error('planned_run_config_changed');
-    const deliveries = manifest.tasks.map(({ taskId }) => {
-      const taskDirectory = join(directory, 'tasks', taskId);
-      const prepared = PreparedSchema.parse(json(join(taskDirectory, 'prepared.json')));
-      const taskConfig = { ...config, taskId, runDirectory: taskDirectory };
-      if (prepared.configDigest !== digestText(JSON.stringify(taskConfig))) throw new Error('prepared_run_config_changed');
-      return { ...FeatureWorkerReturnSchema.parse(json(join(taskDirectory, 'worker-return.json'))), assignment: prepared.assignment };
-    });
+    const deliveries = manifest.tasks.map(({ taskId }) => plannedDelivery(taskId));
     begin();
     return command('review-product', ['--input', save('review-all-input', { ...deliveries[0],
       additionalDeliveries: deliveries.slice(1), projectId: project.id, reviewId: `${config.taskId}-aggregate-review`,
@@ -349,17 +353,54 @@ Each detailed task must require its worker to commit code, verify each assigned 
     } finally { store.close(); }
   }
   const returned = FeatureWorkerReturnSchema.parse(json(join(directory, 'worker-return.json')));
+  // Already delivered tasks are evidence, not remaining work. Include their
+  // exact returns so a later slice cannot misclassify their criteria as pending.
+  const additionalDeliveries = planned?.tasks.filter(({ taskId }) => taskId !== config.taskId && existsSync(taskReturnPath(taskId)))
+    .map(({ taskId }) => plannedDelivery(taskId)) ?? [];
   begin();
   const result = command('review-product', ['--input', save('review-input', { ...returned, projectId: project.id,
     reviewId: `${config.taskId}-review`, expectedRevision: 0, idempotencyKey: `${config.taskId}-review`,
-    issuedAt: issuedAt(), assignment: prepared.assignment, baselineEvidence: config.baselineEvidence }), '--agent-config', config.agentConfig], !!planned);
+    issuedAt: issuedAt(), assignment: prepared.assignment, baselineEvidence: config.baselineEvidence,
+    additionalDeliveries }), '--agent-config', config.agentConfig], !!planned);
   const review = ProductReviewSchema.parse(result.review);
   if (review.outcome === 'passed') return result;
   // A slice cannot complete a feature whose other required criteria have no
   // returns yet. Keep the canonical outcome incomplete; only a fully passing
   // slice judgment with no other completion issues may unblock its consumers.
-  const completion = validateReviewForCompletion(history(), ref(review));
+  const records = history();
+  const completion = validateReviewForCompletion(records, ref(review));
+  const reviewedAssignments = review.assignments.flatMap((reference) => {
+    const assignment = planningRecord(records, reference);
+    return assignment?.kind === 'assignment' ? [assignment] : [];
+  });
+  const workerResults = review.results.flatMap((reference) => {
+    const result = planningRecord(records, reference);
+    return result?.kind === 'criterion_result' ? [result] : [];
+  });
+  const pendingTasks = planned?.tasks.filter(({ taskId, task }) => taskId !== config.taskId &&
+    !existsSync(taskReturnPath(taskId)) && !records.some((record) => {
+      if (record.kind !== 'criterion_result') return false;
+      const assignment = planningRecord(records, record.assignment);
+      return assignment?.kind === 'assignment' && samePlanningRef(assignment.detailedPlanTask, task);
+    })).flatMap(({ task }) => {
+    const detailed = planningRecord(records, task);
+    return detailed?.kind === 'detailed_plan_task' ? [detailed] : [];
+  }) ?? [];
+  const feature = review.feature && planningRecord(records, review.feature);
+  const requiredCriteria = feature?.kind === 'feature_revision' ? feature.criteria.filter((reference) => {
+    const criterion = planningRecord(records, reference);
+    return criterion?.kind === 'criterion' && criterion.requirement === 'required' && criterion.disposition.state === 'active';
+  }) : [];
+  const onlyPendingWorkerEvidence = requiredCriteria.every((criterion) => {
+    const results = workerResults.filter((result) => result.criterion && samePlanningRef(result.criterion, criterion));
+    if (results.length && results.every((result) => result.result === 'passed')) return true;
+    // A reviewed task's failed, blocked or untested result is never pending
+    // delivery, even when another task also owns the same criterion.
+    return !reviewedAssignments.some((assignment) => assignment.criteria.some((reference) => samePlanningRef(reference, criterion))) &&
+      pendingTasks.some((task) => task.criteria.some((reference) => samePlanningRef(reference, criterion)));
+  });
   if (planned && review.outcome === 'incomplete' && !completion.ok &&
+    onlyPendingWorkerEvidence &&
     completion.issues.some((issue) => issue.code === 'incomplete_criterion') &&
     completion.issues.every((issue) => issue.code === 'incomplete_criterion' || issue.code === 'review_failed') &&
     review.conformance?.verdict?.criteria.every((criterion) => criterion.state === 'accomplished') &&
