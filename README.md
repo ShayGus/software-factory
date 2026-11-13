@@ -38,6 +38,105 @@ from a `tasks-axi` install on `PATH`. Those are optional prerequisites, not
 requirements for `npm ci`, `npm test`, or type checking. This check never opens
 a real Beads database or starts Docker. See [the UI spike report](docs/ui-beads-scotty.md).
 
+## Run it from FirstMate
+
+Install the [software-factory skill](skills/software-factory/SKILL.md) once in the FirstMate home that owns your projects.
+Then ask in normal chat, for example: "In pilot, add a connection label and verify that it appears in the picker."
+FirstMate selects the registered project, captures your request, chooses repository snapshots, creates or reuses its project database, plans, checks, dispatches, supervises and reviews the result.
+It writes the per-request inputs itself; you do not write a run file or execute phase commands.
+A failed check stops the run and produces a chat explanation with evidence and screen links.
+
+Prerequisites: Node.js 22.13.0+, Git, the owner's FirstMate fork with version 1 lifecycle hooks (`worker.start.before`), and that home's working `fm-tasks-axi.sh` configured for its existing Beads backlog through `.tasks.toml`.
+Register target projects in that home's `data/projects.md` through the normal FirstMate setup, including delivery posture.
+Keep the factory checkout and fork at stable absolute paths.
+This installation creates no home, project clone or backlog and changes no FirstMate or tasks-axi code.
+
+Run the following once, substituting your installation paths:
+
+```sh
+factory_root=/absolute/software-factory
+factory_home=/absolute/firstmate-home
+factory_fork=/absolute/owners-firstmate-fork
+factory_codex=$(command -v codex)
+factory_claude=$(command -v claude)
+npm --prefix "$factory_root" ci
+npm --prefix "$factory_root" run build
+mkdir -p "$factory_home/.agents/skills" "$factory_home/config"
+ln -s "$factory_root/skills/software-factory" "$factory_home/.agents/skills/software-factory"
+node --input-type=module - "$factory_root" "$factory_home" "$factory_fork" "$factory_codex" "$factory_claude" <<'NODE'
+import { existsSync, readFileSync, writeFileSync, renameSync, realpathSync } from 'node:fs';
+import { join, isAbsolute } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [rootArg, homeArg, forkArg, codex, claude] = process.argv.slice(2);
+const [factoryRoot, home, fork] = [rootArg, homeArg, forkArg].map((path) => realpathSync(path));
+for (const path of [codex, claude]) if (!isAbsolute(path)) throw Error('Install/authenticate Codex and Claude before setup');
+const saveNew = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+const agentTemplate = join(home, 'config/software-factory.agents.json');
+const agents = JSON.parse(readFileSync(join(factoryRoot, 'fixtures/workflow-agents.json'), 'utf8'));
+agents.executables = { codex, claude };
+agents.timeoutMs = 120000;
+agents.cwd = home;
+saveNew(agentTemplate, agents);
+const hookRegistry = join(home, 'config/software-factory.projects.json');
+if (!existsSync(hookRegistry)) saveNew(hookRegistry, { version: 1, projects: [] });
+const { ProjectStore, WorkerHookConfigSchema } = await import(pathToFileURL(join(factoryRoot, 'dist/src/index.js')).href);
+for (const entry of WorkerHookConfigSchema.parse(JSON.parse(readFileSync(hookRegistry, 'utf8'))).projects) {
+  const store = new ProjectStore(entry.database, { readOnly: true });
+  try {
+    if (store.get(entry.projectId, entry.projectId)?.kind !== 'project') throw Error('Bootstrap registered databases before enabling the hook');
+  } finally { store.close(); }
+}
+saveNew(join(home, 'config/software-factory.json'), {
+  factoryRoot, home, fork, agentTemplate, hookRegistry,
+  mode: 'local-only', yolo: 'off', uiOrigin: 'http://127.0.0.1:3185', uiPort: 3185
+});
+const hooksPath = join(home, 'config/hooks.json');
+const hooks = existsSync(hooksPath) ? JSON.parse(readFileSync(hooksPath, 'utf8')) : { version: 1, hooks: [] };
+if (hooks.version !== 1 || !Array.isArray(hooks.hooks)) throw Error('Expected FirstMate version 1 hook configuration');
+const hook = { id: 'software-factory-instruction-check', event: 'worker.start.before',
+  argv: [join(factoryRoot, 'scripts/worker-start-before.mjs'), hookRegistry], timeout_seconds: 300 };
+const existing = hooks.hooks.find((entry) => entry.id === hook.id);
+if (existing && JSON.stringify(existing) !== JSON.stringify(hook)) throw Error('Reconcile the existing factory hook before installing');
+if (!existing) hooks.hooks.push(hook);
+const temp = hooksPath + '.factory-install.tmp';
+saveNew(temp, hooks); renameSync(temp, hooksPath);
+NODE
+```
+
+Existing installation files are preserved with an explicit refusal rather than overwritten; for an upgrade retain their configuration and update the checkout/build and skill link.
+If the main FirstMate harness discovers skills under `.claude/skills` instead of `.agents/skills`, also link this same skill there:
+
+```sh
+mkdir -p "$factory_home/.claude/skills"
+ln -s "$factory_root/skills/software-factory" "$factory_home/.claude/skills/software-factory"
+```
+
+Review `config/software-factory.agents.json` before the first request.
+Its exact profile shape is [fixtures/workflow-agents.json](fixtures/workflow-agents.json): `understand`, `design`, `plan`, `detail`, `plan_check`, `instruction_check`, `build`, `product_review` and `learning_consolidation`, plus absolute installed `executables`.
+Select accessible models and supported effort values for each step; the template's models are examples, not an availability promise.
+The build profile becomes the native `fm-spawn.sh` harness/model/effort selection; planning and review run in fresh independent processes.
+Learning consolidation is a required shared profile but is not executed by this skill.
+Each project's copy is created at `data/software-factory/projects/<registered-name>/agents.json` on first intake; later requests reuse it.
+Edit that project copy when changing an already initialized project's profiles.
+
+`config/software-factory.json` records the factory checkout, current `home`, owner's `fork`, agent template, hook registry, fallback delivery `mode`, `yolo`, `uiOrigin` and `uiPort`.
+The skill resolves each request's delivery mode from the registered project and existing owner instructions; the install fallback is local-only with automatic merge off.
+For wrappers without atomic `add --hold-reason`, set `guardTaskId` to an existing permanently held, unfinished guard in the same backlog, following [managed tasks](#managed-execution-tasks---build-08).
+The registry starts empty, so the enabled hook has no unavailable databases to inspect.
+FirstMate bootstraps each selected project's database before adding its registry entry, and preserves existing entries.
+Keep every registered database available while its managed tasks can launch or relaunch.
+The 300-second hook budget covers the template's 120-second agent deadline; the runner validates the total hook and spawn budgets before releasing work.
+For larger deadlines or additional hooks, follow the [runbook budget rules](docs/one-feature-run.md#worker-start-hook).
+
+Start a fresh FirstMate session in this home so its harness discovers the skill.
+Ask for a change to a registered project in plain chat.
+FirstMate records snapshot choices, uses the existing individual task commands for a plan of any size, waits for prerequisite evidence, and runs a final whole-request product review across deliveries.
+It serves the existing project UI at the configured loopback origin if needed and reports `/projects/<project-id>` and `/projects/<project-id>/decisions` links in chat.
+Explicit capture covers text available to the skill; it does not prove automatic capture of every chat or inbox message.
+
+Offline verification: `npm run build && node --test dist/test/firstmate-skill.test.js` exercises generated intake, bootstrap/reuse, source snapshots, a single task, two dependent tasks, plan failure and instruction-check failure with fake agents and fake FirstMate commands.
+These tests do not establish live model, hook-host or Beads compatibility; this change includes no live run.
+
 ## Local feature, work and dependency UI — BUILD-12/13
 
 Serve an existing project and its imported FirstMate observations:

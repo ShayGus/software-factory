@@ -15,7 +15,7 @@ const badCode = 'export function feature(system) { if (system.name !== "ERPNext"
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 const script = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
 
-export function scenario(options: { bootstrap: boolean; originalRequest?: string } = { bootstrap: true }) {
+export function scenario(options: { bootstrap: boolean; originalRequest?: string; twoTasks?: boolean; factoryLayout?: boolean } = { bootstrap: true }) {
   const original = options.originalRequest ?? defaultOriginal;
   const root = mkdtempSync(join(tmpdir(), 'sf-milestone-'));
   const save = (path: string, value: unknown) => writeFileSync(path, JSON.stringify(value, null, 2));
@@ -28,7 +28,7 @@ export function scenario(options: { bootstrap: boolean; originalRequest?: string
   git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
   writeFileSync(join(repository, 'baseline.txt'), 'Feature X absent.'); git('add', '.'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Baseline');
   const before = git('rev-parse', 'HEAD');
-  const database = join(root, 'project.sqlite'); const runDirectory = join(root, 'run');
+  const database = options.factoryLayout ? join(data, 'software-factory/projects/project-1/project.sqlite') : join(root, 'project.sqlite'); const runDirectory = join(root, 'run');
   const requestFile = join(root, 'request.txt'); writeFileSync(requestFile, original);
   const request = { id: stableId('request', 'project-1', 'milestone'), revision: 1 };
   const feature = { id: 'feature-1', revision: 1 };
@@ -69,6 +69,21 @@ export function scenario(options: { bootstrap: boolean; originalRequest?: string
     plan: input(stage('plan', plan, 'design'), [plan, draft]),
     detail: input(stage('detail', detailed, 'plan'), [detailed, task]),
   };
+  if (options.twoTasks) {
+    // Split criteria between producer and consumer while preserving full feature scope.
+    const draft2 = { ...draft, id: 'task-2', criteria: [criteria[1]!] };
+    draft.criteria = [criteria[0]!];
+    const task2 = { ...task, id: 'task-2', criteria: [criteria[1]!] };
+    task.criteria = [criteria[0]!];
+    const edge = { prerequisiteTaskId: task.id, consumerTaskId: task2.id,
+      reason: 'The second system uses the shared interface', needs: { kind: 'criterion' as const, criterion: criteria[0]! } };
+    for (const [stagePlan, first, second] of [[plan, draft, draft2], [detailed, task, task2]] as const) {
+      stagePlan.deliverySequence = [ref(first), ref(second)];
+      stagePlan.dependencies = [edge];
+      stagePlan.workflow.slices[0]!.tasks = [ref(first), ref(second)];
+    }
+    outputs.plan.records.push(draft2); outputs.detail.records.push(task2);
+  }
   save(join(root, 'outputs.json'), outputs); save(join(root, 'mode.json'), { narrow: false, badDelivery: false, planFailure: false });
   const agent = executable('agent.mjs', `import assert from 'node:assert/strict';
 import {readFileSync,appendFileSync} from 'node:fs';
@@ -81,7 +96,7 @@ assert.equal(Object.keys(process.env).some(k=>k.startsWith('FM_')||k==='CODEX_TH
 appendFileSync(root+'/agents.jsonl',JSON.stringify({step,pid:process.pid,args,prompt})+'\\n');
 let out=JSON.parse(readFileSync(root+'/outputs.json','utf8'))[step];
 // This scenario authors records after capture; other tests' fixed fixtures stay unchanged.
-if(out) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()));
+if(out) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()).replaceAll(${JSON.stringify(request.id)},snapshot.request.id).replaceAll(${JSON.stringify(requestFile)},snapshot.request.source.uri));
 if(step==='plan_check') out=mode.planFailure ? {verdict:'fail',findings:[{type:'omission',message:'Missing required behavior',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} : {verdict:'pass',findings:[]};
 if(step==='instruction_check') {
  assert.ok(snapshot.originalRequests[0].text===${JSON.stringify(original)});
@@ -99,7 +114,7 @@ if(step==='product_review') {
  assert.equal(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').text,mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)});
  const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};
  out={sourceComparison:'passed',instructionFidelity:mode.badDelivery?'failed':'passed',planConformance:mode.badDelivery?'failed':'passed',
- criteria:${JSON.stringify(criteria)}.map((criterion,i)=>({criterion,state:mode.badDelivery&&i===1?'failed':'accomplished',behavior:'Common interface behavior',quotes:[{source:'delivery',text:code.trim()}],limitations:[]})),
+ criteria:snapshot.assignedCriteria.map((criterion,i)=>({criterion,state:mode.badDelivery&&i===1?'failed':'accomplished',behavior:'Common interface behavior',quotes:[{source:'delivery',text:code.trim()}],limitations:[]})),
  findings:mode.badDelivery?['instructionFidelity','planConformance'].map(check=>({check,type:'narrowed_generality',message:'ERPNext only violates original generality',quotes:[{source:'original_request',text:${JSON.stringify(original)}},{source:'delivery',text:code.trim()}]})):[],suggestions:[],unresolvedQuestions:[]};
 }
 process.stdout.write(JSON.stringify(out));`);
@@ -114,22 +129,27 @@ writeFileSync(path+'/brief.md',readFileSync(${JSON.stringify(fileURLToPath(new U
   const inbox = executable('inbox.mjs', `import {readFileSync} from 'node:fs'; import assert from 'node:assert/strict';
 assert.equal(readFileSync(0,'utf8'),${JSON.stringify(original)});
 process.stdout.write(JSON.stringify({schema:'fm-inbox-note.v1',outcome:'created',id:'note-1',request_id:process.argv[4],saved:true,announced:true,acknowledged:false,path:${JSON.stringify(join(data, 'note.md'))}}));`);
-  const returnWorker = executable('return-worker.mjs', `import {readFileSync,writeFileSync} from 'node:fs'; import {execFileSync} from 'node:child_process';
-const root=${JSON.stringify(root)}, repository=${JSON.stringify(repository)}, run=${JSON.stringify(runDirectory)};
-const mode=JSON.parse(readFileSync(root+'/mode.json','utf8')); const prepared=JSON.parse(readFileSync(run+'/prepared.json','utf8'));
+  const returnWorker = executable('return-worker.mjs', `import {readFileSync,writeFileSync} from 'node:fs'; import {execFileSync} from 'node:child_process'; import {dirname} from 'node:path';
+const root=${JSON.stringify(root)}, repository=${JSON.stringify(repository)};
+const taskId=process.argv[2]||'milestone-worker';
+const {ProjectStore}=await import(${JSON.stringify(new URL('../src/index.js', import.meta.url).href)});
+const store=new ProjectStore(${JSON.stringify(database)});
+const assignment=store.records('project-1').find(r=>r.kind==='assignment'&&r.firstMateTaskId===taskId);store.close();
+const run=dirname(assignment.returnLocation);
+const mode=JSON.parse(readFileSync(root+'/mode.json','utf8')); const prepared={assignment:{id:assignment.id,revision:assignment.revision}};
 writeFileSync(repository+'/feature.mjs',mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)});
-const git=(...a)=>execFileSync('git',['-C',repository,...a],{encoding:'utf8'}).trim();git('add','feature.mjs');git('-c','core.hooksPath=/dev/null','commit','-qm','Fake worker delivery');
+const git=(...a)=>execFileSync('git',['-C',repository,...a],{encoding:'utf8'}).trim();git('add','feature.mjs');git('-c','core.hooksPath=/dev/null','commit','--allow-empty','-qm','Fake worker delivery '+taskId);
 const artifact={uri:'git:'+repository,revision:git('rev-parse','HEAD')};
-writeFileSync(run+'/worker-return.json',JSON.stringify({repository,deliveredArtifact:artifact,results:${JSON.stringify(criteria)}.map((criterion,i)=>({
-kind:'criterion_result',id:'result-'+i,projectId:'project-1',schemaVersion:1,revision:1,createdAt:${JSON.stringify(at)},updatedAt:${JSON.stringify(at)},
+writeFileSync(run+'/worker-return.json',JSON.stringify({repository,deliveredArtifact:artifact,paths:['feature.mjs'],results:assignment.criteria.map((criterion,i)=>({
+kind:'criterion_result',id:taskId+'-result-'+i,projectId:'project-1',schemaVersion:1,revision:1,createdAt:${JSON.stringify(at)},updatedAt:${JSON.stringify(at)},
 assignment:prepared.assignment,criterion,result:'passed',accomplishedBehavior:'Synthetic worker claims both systems work',artifact,
 evidence:[{artifact,description:'Synthetic acceptance evidence',observedAt:${JSON.stringify(at)}}],limitations:[],suggestions:[]}))}));`);
   const hookRegistry = join(root, 'hook-projects.json');
   save(hookRegistry, { version: 1, projects: [{ home, projectId: 'project-1', database, agentConfig }] });
   const hookSettings = { version: 1, hooks: [{ id: 'software-factory', event: 'worker.start.before', argv: [script, hookRegistry], timeout_seconds: 300 }] };
   const spawn = executable('spawn.mjs', `import {readFileSync,writeFileSync} from 'node:fs';import {spawnSync} from 'node:child_process';import {createHash} from 'node:crypto';
-const source=${JSON.stringify(join(data, 'milestone-worker', 'brief.md'))};
-const candidate=${JSON.stringify(join(data, 'milestone-worker', 'launch-brief.md'))};
+const source=${JSON.stringify(data)}+'/'+process.argv[2]+'/brief.md';
+const candidate=${JSON.stringify(data)}+'/'+process.argv[2]+'/launch-brief.md';
 const mode=JSON.parse(readFileSync(${JSON.stringify(join(root, 'mode.json'))},'utf8'));
 const text='# Current worker role contract\\nYou are a crewmate.\\n\\n'+readFileSync(source,'utf8')+(mode.narrow?'\\nImplement feature X for ERPNext only.\\n':'');writeFileSync(candidate,text);
 writeFileSync(${JSON.stringify(join(root, 'spawn-args.json'))},JSON.stringify(process.argv.slice(2)));
@@ -138,10 +158,10 @@ const checked=spawnSync(${JSON.stringify(script)},[${JSON.stringify(hookRegistry
 writeFileSync(${JSON.stringify(join(root, 'hook-result.json'))},checked.stdout||checked.stderr);
 if(checked.status!==0) process.exit(1);
 writeFileSync(${JSON.stringify(join(root, 'worker-started'))},'started');
-const worker=spawnSync(${JSON.stringify(returnWorker)},[],{encoding:'utf8'});process.stderr.write(worker.stderr);process.exit(worker.status??1);`);
+const worker=spawnSync(${JSON.stringify(returnWorker)},[process.argv[2]],{encoding:'utf8'});process.stderr.write(worker.stderr);process.exit(worker.status??1);`);
   executable('roborev', `import assert from 'node:assert/strict';assert.deepEqual(process.argv.slice(2,4),['show','--json']);
 process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict:'pass'},job:{id:42,git_ref:process.argv[4],status:'done',job_type:'review'}}));`);
-  const project = baseline.find((record) => record.kind === 'project')!;
+  const project = { ...baseline.find((record) => record.kind === 'project')!, repositories: [{ uri: repository }], firstMateHomeRef: home };
   const runtime = fakeRuntime(home);
   const config: z.input<typeof FeatureRunConfigSchema> = { version: 1, project, database, runDirectory, agentConfig,
     hookRegistry, requestFile, clientRequestId: 'milestone', taskId: 'milestone-worker', repository,

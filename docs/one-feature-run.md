@@ -1,6 +1,7 @@
 # One feature through FirstMate
 
-This milestone connects the existing commands for one captured request, one feature,
+For normal chat-driven use, install the [FirstMate skill](../README.md#run-it-from-firstmate).
+This operator runbook also connects the existing commands for one captured request, one feature,
 and one independent implementation task. Software Factory is a parallel project
 and uses **the FirstMate home given in the settings**, with the FirstMate fork's
 code and a Beads backlog selected from that home's configuration. No workspace,
@@ -120,8 +121,8 @@ The phases call the existing CLI and FirstMate commands in this order:
 
 Stage agents return the existing `RecordStageInputSchema`; Understand also returns
 `MapRequestInputSchema`. Their prompts include the runtime JSON schemas and complete
-record context. The run path rejects multiple features, multiple tasks and plan
-dependencies; use the existing individual commands for larger plans. A failed plan
+record context. The `prepare` convenience phase rejects multiple features, multiple tasks and plan dependencies.
+The skill uses `plan` followed by task-specific phases for larger plans; those phases invoke the existing individual commands described below. A failed plan
 review stops before queueing. The native task stays held until brief preparation,
 instruction checking and hook/registry verification succeed.
 `check-brief --preparation-gate factory:brief-preparation/<task-id>` is a read-only preparation
@@ -184,6 +185,46 @@ an ambiguous FirstMate effect. Inspect the saved output and use the existing
 `outbox`/`reconcile-task`, idempotent command replay and FirstMate recovery commands
 to reconcile the original operation. Repeating start uses the same worker-start operation; see [Recovery and incremental adoption](recovery.md). After incomplete product review, inspect its saved input and receipt,
 then use `review-product` directly with a new review key if fresh evidence is needed.
+
+## Plans with several tasks
+
+The existing runner also exposes task-specific phases so FirstMate can use the individual commands without combining task dispatch with supervision:
+
+```sh
+/absolute/software-factory/scripts/run-feature.mjs plan /absolute/run.json
+# For each eligible taskId returned in planned.json:
+/absolute/software-factory/scripts/run-feature.mjs prepare-task /absolute/run.json TASK_ID
+/absolute/software-factory/scripts/run-feature.mjs start /absolute/run.json TASK_ID
+# Normal FirstMate supervision, delivery and exact-commit technical evidence:
+/absolute/software-factory/scripts/run-feature.mjs review /absolute/run.json TASK_ID
+# After every task passes, check the whole request and integration together:
+/absolute/software-factory/scripts/run-feature.mjs review-all /absolute/run.json
+```
+
+`plan` performs capture, understand, design, plan, detail, independent plan review and `check-plan`, then queues every task and reconciles each native task through the existing adapter.
+All tasks remain held for brief preparation.
+The existing task mappings derive product requirements and native dependency edges from the checked plan.
+`planned.json` binds the request, checked plan, detailed tasks and operation IDs to the unchanged run configuration; it is not a scheduler or a second source of task state.
+After partial task reconciliation, use its operation IDs with `outbox`/`reconcile-task` rather than repeating planning.
+`requestChannel` selects capture provenance and defaults to `cli`; the chat skill sets `chat`.
+
+FirstMate selects the next eligible task through its normal supervision.
+`prepare-task` scaffolds and checks its brief, then reconciles its preparation-hold release through `manage-task`.
+Prerequisites must have the existing current producer criterion/artifact evidence; a native done flag alone is insufficient.
+Producer return artifacts are materialized from their exact Git commits with the existing delivery snapshot reader and included as handover context.
+Task inputs, checks, worker return and phase outputs live under `runDirectory/tasks/<taskId>`.
+The build instructions receive the exact assignment identity and return location from the prepared brief.
+The start hook checks every launch candidate, just as for the single-task convenience phase.
+A failed preparation or start check leaves work undispatched.
+Preparation and reviews are single-use; recover failures using saved inputs and existing individual commands with deliberate new keys, rather than deleting markers and blindly replaying effects.
+
+Review each producer before completing its normal FirstMate delivery and releasing consumers.
+A slice review can return `state: awaiting_remaining_deliveries` with canonical outcome `incomplete` when the only remaining completion issues are missing feature criteria outside that slice.
+The runner requires passing comparisons, accomplished assigned criteria and exact-commit technical evidence for this provisional state; failed or uncertain judgments still stop the flow.
+The final aggregate review must pass before the feature is reported complete.
+`review-all` calls the existing `review-product` operation with all deliveries and their exact assignment and commit identities, preserving the original request as the authority across slices.
+A per-task pass does not replace this final integration review.
+No phase polls workers, changes native completion state, installs hooks, enqueues technical review or adds a scheduling service.
 
 ## Worker-start hook
 
