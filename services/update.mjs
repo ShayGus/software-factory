@@ -1,23 +1,27 @@
 #!/usr/bin/env node
 // Factory update: refuse unfinished work, use fm-update.sh, then rebuild with
 // the UPDATED installer in a fresh Node process. No force/reset/stash or DB migration.
-// Usage: node services/update.mjs [--docker auto|docker|sg-docker] [--help]
+// Usage: node services/update.mjs [--docker auto|docker|sg-docker] [--local] [--help]
 // Private config, projects, databases and settings remain authoritative.
-import { readdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { home, marker, pins, assertClone, build, verify, inspectOwned, accept, report, writeJson } from './setup.mjs';
 import { cleanEnv, dockerRunner, json, run } from '../factory/scripts/home-acceptance.mjs';
 import { installFolderServices } from '../factory/scripts/folder-services.mjs';
 
-export function preflight() {
-  assertClone();
-  if (!existsSync(marker)) throw new Error('Run setup before updating');
-  if (existsSync(join(home, 'state/software-factory.update.pending.json'))) throw new Error('An incomplete factory update needs inspection; source and private data were retained');
+function refuseUnfinished() {
   const meta = readdirSync(join(home, 'state')).filter(name => name.endsWith('.meta'));
   if (meta.length) throw new Error(`Refusing unfinished workers or secondmates: ${meta.join(', ')}; finish their delivery first`);
   const unmerged = run('git', ['-C', home, 'branch', '--format=%(refname:short)', '--no-merged', 'HEAD']);
   if (unmerged) throw new Error(`Refusing unlanded local branches: ${unmerged}`);
+}
+
+export function preflight() {
+  assertClone();
+  if (!existsSync(marker)) throw new Error('Run setup before updating');
+  if (existsSync(join(home, 'state/software-factory.update.pending.json'))) throw new Error('An incomplete factory update needs inspection; source and private data were retained');
+  refuseUnfinished();
 }
 
 async function rebuild(docker) {
@@ -26,6 +30,7 @@ async function rebuild(docker) {
   const transaction = json(pending);
   const installed = json(marker);
   if (transaction.home !== home || transaction.target !== run('git', ['-C', home, 'rev-parse', 'HEAD'])) throw new Error('Update transaction/source mismatch');
+  refuseUnfinished();
   await verify(installed, docker);
   if (installed.pins.dolt !== pins.dolt || installed.pins.beads.version !== pins.beads.version || installed.pins.scotty.commit !== pins.scotty.commit) {
     throw new Error('Service/database dependency pins changed; an explicit migration is required before replacing a running service');
@@ -50,11 +55,12 @@ async function rebuild(docker) {
 
 export async function main(argv = process.argv.slice(2)) {
   if (argv.length === 1 && argv[0] === '--help') {
-    console.log('Usage: node services/update.mjs [--docker auto|docker|sg-docker]\nGuarded source update, rebuild and real Claude acceptance. Refuses unfinished work; never discards private data.');
+    console.log('Usage: node services/update.mjs [--docker auto|docker|sg-docker] [--local]\n--local rebuilds an approved committed local landing without fetching.\nGuarded source update, rebuild and real Claude acceptance. Refuses unfinished work; never discards private data.');
     return;
   }
   const internal = argv[0] === '--rebuild';
-  const args = internal ? argv.slice(1) : argv;
+  const local = !internal && argv.includes('--local');
+  const args = (internal ? argv.slice(1) : argv).filter(value => value !== '--local');
   let mode = 'auto';
   if (args.length) {
     if (args.length !== 2 || args[0] !== '--docker' || !['auto', 'docker', 'sg-docker'].includes(args[1])) throw new Error('Invalid update options; run --help');
@@ -66,11 +72,16 @@ export async function main(argv = process.argv.slice(2)) {
   const installed = json(marker);
   await verify(installed, docker);
   const before = run('git', ['-C', home, 'rev-parse', 'HEAD']);
-  const output = run('bash', [join(home, 'bin/fm-update.sh')], { cwd: home, env: { ...cleanEnv(), FM_HOME: home } });
-  console.log(output);
-  if (!/^firstmate: (updated |already current)/m.test(output) || /^secondmate .*: skipped:/m.test(output)) throw new Error('FirstMate updater refused part of the source update; inspect its output');
-  const transaction = { home, before, target: run('git', ['-C', home, 'rev-parse', 'HEAD']), started: Date.now() };
-  writeJson(join(home, 'state/software-factory.update.pending.json'), transaction);
+  const pending = join(home, 'state/software-factory.update.pending.json');
+  const transaction = { home, before, target: before, local, started: Date.now() };
+  writeJson(pending, transaction);
+  if (!local) {
+    const output = run('bash', [join(home, 'bin/fm-update.sh')], { cwd: home, env: { ...cleanEnv(), FM_HOME: home } });
+    console.log(output);
+    if (!/^firstmate: (updated |already current)/m.test(output) || /^secondmate .*: skipped:/m.test(output)) throw new Error('FirstMate updater refused part of the source update; inspect its output');
+    transaction.target = run('git', ['-C', home, 'rev-parse', 'HEAD']);
+    writeJson(pending, transaction);
+  }
   // exec via a fresh process so code and dependency pins come from the new commit.
   console.log(run(process.execPath, [join(home, 'services/update.mjs'), '--rebuild', '--docker', mode], { cwd: home, timeout: 1800000, maxBuffer: 64 * 1024 * 1024 }));
 }

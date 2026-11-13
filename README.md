@@ -7,9 +7,9 @@ No other FirstMate session is needed to install or operate it.
 
 ## Prerequisites
 
-Use a Linux amd64 or arm64 machine with Node.js 22.13+, npm, Git, Bash, jq, curl, tar, tmux, and Docker Engine configured to start at boot.
+Use a Linux amd64 or arm64 machine with Node.js 22.13+, npm, Git, Bash, Python 3, jq, curl, tar, tmux, GitHub CLI, and Docker Engine configured to start at boot.
 Install and authenticate Claude Code and Codex before setup; model usage is billed through your own accounts.
-FirstMate's worker runtime and quality tools are described in [FirstMate setup](docs/firstmate.md#quick-start).
+Install FirstMate's `treehouse`, `no-mistakes`, `gh-axi`, `chrome-devtools-axi` and `quota-axi` tools as described in [FirstMate setup](docs/firstmate.md#quick-start).
 Setup checks required local tools and reports missing dependencies; it never changes machine-wide Docker or account settings.
 The persistent services use Linux Unix sockets and bind their browser ports to loopback.
 Keep the installed folder at its original absolute path.
@@ -61,14 +61,15 @@ The command is `node services/update.mjs`; failures retain evidence and never re
 
 In this folder's FirstMate chat, say:
 
-> Register this repository as software-factory with local-only delivery, yolo off. Use this clone as the project source. I will approve each landing.
+> Register this running clone itself as software-factory with local-only delivery, yolo off. Use its absolute path as the project target, keeping FirstMate here. I will approve each landing.
 
 Then request the change:
 
 > In software-factory, [describe the desired product change]. Use the normal factory flow and show me the product review before landing.
 
 FirstMate uses an isolated worker checkout, the same checked planning/build/product-review flow and your explicit landing approval.
-After approval, ask it to land the ready branch and run setup with `--check` in the home.
+After approval, ask it to land the ready branch into the running home and run `node services/update.mjs --local`.
+That command rebuilds the approved local commit and repeats acceptance without fetching over local work.
 Local development grants no publication authority; publishing to your fork requires your explicit task consent under the [self-repository rules](.agents/skills/firstmate-self-repo/SKILL.md).
 No upstream contribution or maintainer role is enabled by installation.
 

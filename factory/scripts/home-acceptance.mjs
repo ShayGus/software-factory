@@ -131,4 +131,3 @@ Report the result and any command failure. Setup checks machine evidence, not yo
   if (remaining.includes(probe)) throw new Error('Claude left its acceptance probe in the backlog');
   console.log('Claude acceptance passed: normal startup, software-factory skill, backlog add/list/rm');
 }
-

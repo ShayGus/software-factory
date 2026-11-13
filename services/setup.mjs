@@ -173,6 +173,7 @@ export async function main(argv = process.argv.slice(2)) {
     for (const key of ['claude', 'codex']) if (options[key] && executable(options[key], key) !== installed.executables[key]) throw new Error(`Existing installation has a different --${key}`);
     for (const key of ['ui-port', 'scotty-port']) if (options[key] !== 'auto' && String(options[key]) !== String(installed.services[key === 'ui-port' ? 'uiPort' : 'scottyPort'])) throw new Error(`Existing installation has a different --${key}`);
     await verify(installed, docker);
+    if (installed.commit !== run('git', ['-C', home, 'rev-parse', 'HEAD'])) throw new Error('Source changed since the last build; run node services/update.mjs --local to rebuild and accept the approved commit');
     if (options.check) await accept(installed);
     report(installed);
     return;
