@@ -14,13 +14,13 @@ async function freePort(value) {
   return port;
 }
 
-export async function installFolderServices(args, docker, baseImage) {
+export async function installFolderServices(args, docker, baseImage, previous) {
   const home = args.home;
-  const root = join(home, '.tools/software-factory');
+  const root = args.factoryRoot ?? join(home, '.tools/software-factory');
   const directory = join(home, 'config/software-factory-services');
   mkdirSync(join(directory, 'bead-me-up-scotty'), { recursive: true });
-  const uiPort = await freePort(args['ui-port']);
-  const scottyPort = await freePort(args['scotty-port']);
+  const uiPort = await freePort(previous?.uiPort ?? args['ui-port']);
+  const scottyPort = await freePort(previous?.scottyPort ?? args['scotty-port']);
   if (uiPort === scottyPort) throw new Error('Factory and Scotty ports must differ');
   const uiOrigin = `http://127.0.0.1:${uiPort}`;
   const scottyOrigin = `http://127.0.0.1:${scottyPort}`;
@@ -32,17 +32,12 @@ export async function installFolderServices(args, docker, baseImage) {
     database: args.database, canonicalUrl: uiOrigin, folder: true });
   writeScottyLauncher(launcher, uiOrigin, { projectId: 'factory', folder: true, authority: `127.0.0.1:${scottyPort}` });
   const now = new Date().toISOString();
-  writeFileSync(join(directory, 'bead-me-up-scotty/config.json'), JSON.stringify({
+  if (!previous) writeFileSync(join(directory, 'bead-me-up-scotty/config.json'), JSON.stringify({
     humanActor: args.name, humanAllowlist: [], pollIntervalMs: 5000, orders: {}, gamification: false,
     projects: [{ id: 'factory', name: args.name, path: workspace, addedAt: now, lastOpened: now }],
   }, null, 2) + '\n', { flag: 'wx' });
-  const runtimeTag = `local/sf-folder-${args.container.toLowerCase()}:runtime`;
-  // BuildKit resolves FROM by image name, not the local configuration hash.
-  const baseTag = `local/sf-folder-${args.container.toLowerCase()}:base`;
-  docker(['tag', baseImage, baseTag]);
-  docker(['build', '--build-arg', `BASE=${baseTag}`, '-t', runtimeTag, '-f', join(root, 'scripts/folder-services.Dockerfile'), root]);
-  const runtimeImage = docker(['image', 'inspect', runtimeTag, '--format', '{{.Id}}']);
-  const common = ['--restart', 'unless-stopped', '--user', `${process.getuid()}:${process.getgid()}`];
+  const runtimeImage = baseImage;
+  const common = ['--label', `com.software-factory.home=${home}`, '--restart', 'unless-stopped', '--user', `${process.getuid()}:${process.getgid()}`];
   docker(['run', '--pull', 'never', '-d', '--name', names.scotty, ...common, '-p', `127.0.0.1:${scottyPort}:3000`,
     '-v', `${home}:${home}:ro`, '-e', `BEADS_REPO=${workspace}`, '-e', `BEADS_FS_ROOT=${workspace}`,
     '-e', `XDG_CONFIG_HOME=${directory}`, '-e', `BD_BIN=${reader}`, '-e', 'SCOTTY_READ_ONLY=1', '-e', 'POSTHOG_KEY=',

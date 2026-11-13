@@ -1,101 +1,133 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const setup = fileURLToPath(new URL('../../scripts/setup-firstmate-home.mjs', import.meta.url));
-
+const source = fileURLToPath(new URL('../../../services/', import.meta.url));
+const legacy = fileURLToPath(new URL('../../scripts/setup-firstmate-home.mjs', import.meta.url));
+const linux = { skip: process.platform !== 'linux' && 'Installer requires Linux Unix sockets; portable parsing/help is tested separately' };
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'sf-home-'));
+  const root = mkdtempSync(join(tmpdir(), 'sf-install-'));
   const home = join(root, 'home');
+  const bin = join(root, 'bin');
+  mkdirSync(join(home, 'factory/scripts'), { recursive: true });
+  mkdirSync(bin);
+  cpSync(source, join(home, 'services'), { recursive: true });
+  for (const name of ['home-acceptance.mjs', 'claude-acceptance-evidence.mjs', 'folder-services.mjs', 'scotty-spike-reader.mjs']) {
+    cpSync(join(dirname(legacy), name), join(home, 'factory/scripts', name));
+  }
+  writeFileSync(join(home, '.gitignore'), 'config/\nstate/\n');
+  const git = (...args: string[]) => execFileSync('git', ['-C', home, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('init', '--initial-branch=main');
+  git('config', 'user.email', 'fixture@example.invalid'); git('config', 'user.name', 'Fixture');
+  git('add', '.'); git('commit', '-m', 'Fixture');
+  git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+  git('update-ref', 'refs/remotes/origin/main', 'HEAD');
   const log = join(root, 'docker.jsonl');
-  const docker = join(root, 'docker');
-  writeFileSync(docker, `#!${process.execPath}
-import { appendFileSync } from 'node:fs';
-const args = process.argv.slice(2);
-appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
-if (args[0] === 'info') console.log('27.0');
-else if (args[0] === 'container' && args[1] === 'ls') console.log(process.env.SF_TEST_CONTAINER ?? '');
-else { console.error('Unexpected Docker mutation'); process.exitCode = 99; }
+  writeFileSync(join(bin, 'docker'), `#!${process.execPath}
+const fs=require('node:fs'),a=process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)},JSON.stringify(a)+'\\n');
+if(a[0]==='info') console.log('27.0');
+else if(a[0]==='container'&&a[1]==='ls') console.log(process.env.SF_TEST_CONTAINER||'');
+else {console.error('Unexpected Docker mutation');process.exitCode=99;}
 `, { mode: 0o755 });
-  // Make the fake Docker executable an ESM program even without an extension.
-  writeFileSync(join(root, 'package.json'), '{"type":"module"}');
-  const args = ['--home', home, '--name', 'test', '--container', 'test-dolt', '--database', 'test_db',
-    '--fork-source', '/unused/fork', '--tasks-source', '/unused/tasks', '--factory-source', '/unused/factory'];
-  const invoke = (options: string[] = args, container = '') => spawnSync(process.execPath, [setup, ...options], {
-    encoding: 'utf8', env: { ...process.env, PATH: `${root}:${process.env.PATH}`, SF_TEST_CONTAINER: container }
+  const invoke = (args: string[] = [], command = 'setup', container = '') => spawnSync(process.execPath, [join(home, `services/${command}.mjs`), ...args], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SF_TEST_CONTAINER: container }
   });
-  return { root, home, log, args, invoke, close: () => rmSync(root, { recursive: true, force: true }) };
+  const marker = join(home, 'config/software-factory.install.json');
+  const installed = () => { mkdirSync(join(home, 'config')); mkdirSync(join(home, 'state')); writeFileSync(marker, '{}\n'); };
+  return { root, home, log, invoke, git, marker, installed, close: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-test('setup help is available without Docker or source repositories', () => {
-  const result = spawnSync(process.execPath, [setup, '--help'], { encoding: 'utf8', env: { PATH: '' } });
-  assert.equal(result.status, 0);
-  assert.match(result.stdout, /--fork-source/);
-  assert.match(result.stdout, /--crew-dispatch/);
-  assert.match(result.stdout, /claude -p/);
+test('monorepo and compatibility help need no Docker or authenticated clients', () => {
+  for (const entry of [join(source, 'setup.mjs'), join(source, 'update.mjs'), legacy]) {
+    const result = spawnSync(process.execPath, [entry, '--help'], { encoding: 'utf8', env: { PATH: '' } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Usage:/);
+  }
 });
 
-test('existing directories and dangling symlinks are refused without touching Docker', () => {
+test('invalid ports, duplicates and obsolete external-source arguments fail before resources', () => {
+  for (const args of [['--ui-port', '65536'], ['--scotty-port', '0'], ['--docker', 'docker', '--docker', 'auto'], ['--fork-source', '/unused']]) {
+    const result = spawnSync(process.execPath, [join(source, 'setup.mjs'), ...args], { encoding: 'utf8', env: { PATH: '' } });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Invalid|duplicate|Unknown/);
+  }
+});
+
+test('dirty clone is refused before Docker and private allocation', linux, () => {
   const f = fixture();
   try {
-    mkdirSync(f.home);
-    const sentinel = join(f.home, 'keep'); writeFileSync(sentinel, 'unchanged');
+    writeFileSync(join(f.home, 'unfinished'), 'keep');
     const result = f.invoke();
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /Refusing existing home/);
-    assert.equal(readFileSync(sentinel, 'utf8'), 'unchanged');
+    assert.match(result.stderr, /Refusing dirty/);
     assert.equal(existsSync(f.log), false);
-    rmSync(f.home, { recursive: true });
-    symlinkSync(join(f.root, 'absent'), f.home);
-    assert.match(f.invoke().stderr, /Refusing existing home/);
+    assert.equal(existsSync(join(f.home, 'beads')), false);
+    assert.equal(readFileSync(join(f.home, 'unfinished'), 'utf8'), 'keep');
+  } finally { f.close(); }
+});
+
+test('existing private data without a completion record is never overwritten', linux, () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.home, 'config')); writeFileSync(join(f.home, 'config/keep'), 'original');
+    const result = f.invoke();
+    assert.match(result.stderr, /Refusing existing private path: config/);
+    assert.equal(readFileSync(join(f.home, 'config/keep'), 'utf8'), 'original');
+    assert.equal(existsSync(join(f.home, 'beads')), false);
+  } finally { f.close(); }
+});
+
+test('unrecognized completion marker cannot authorize modifying resources', linux, () => {
+  const f = fixture();
+  try {
+    f.installed(); const before = readFileSync(f.marker, 'utf8');
+    const result = f.invoke();
+    assert.match(result.stderr, /Invalid\/incomplete installation record/);
+    assert.equal(readFileSync(f.marker, 'utf8'), before);
+    assert.equal(existsSync(join(f.home, 'beads')), false);
+  } finally { f.close(); }
+});
+
+test('an existing home-owned-name container is refused before downloads or allocation', linux, () => {
+  const f = fixture();
+  try {
+    const id = createHash('sha256').update(f.home).digest('hex').slice(0, 12);
+    // Client overrides need only be executable for this preflight refusal.
+    const result = f.invoke(['--claude', process.execPath, '--codex', process.execPath], 'setup', `sf-${id}-dolt`);
+    assert.match(result.stderr, /Refusing existing container:/);
+    assert.equal(existsSync(join(f.home, 'beads')), false);
+    const calls = readFileSync(f.log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(calls.every(args => args[0] === 'info' || args[0] === 'container'));
+  } finally { f.close(); }
+});
+
+test('update refuses unfinished workers before Docker or source change', linux, () => {
+  const f = fixture();
+  try {
+    f.installed(); writeFileSync(join(f.home, 'state/build.meta'), 'task');
+    const before = f.git('rev-parse', 'HEAD');
+    const result = f.invoke([], 'update');
+    assert.match(result.stderr, /Refusing unfinished workers/);
+    assert.equal(f.git('rev-parse', 'HEAD'), before);
     assert.equal(existsSync(f.log), false);
   } finally { f.close(); }
 });
 
-for (const container of ['test-dolt', 'test-dolt-bd-extract', 'test-dolt-scotty', 'test-dolt-ui']) {
-  test(`existing ${container} is refused before a home is created or Docker mutates`, () => {
-    const f = fixture();
-    try {
-      const result = f.invoke(f.args, container);
-      assert.equal(result.status, 1);
-      assert.match(result.stderr, new RegExp(`Refusing existing container: ${container}`));
-      assert.equal(existsSync(f.home), false);
-      const calls = readFileSync(f.log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-      assert.ok(calls.length > 0);
-      assert.ok(calls.every((args) => args[0] === 'info' || (args[0] === 'container' && args[1] === 'ls')));
-    } finally { f.close(); }
-  });
-}
-
-test('invalid database and duplicate arguments are refused before resource allocation', () => {
+test('update refuses unlanded branches and pending transactions without discarding either', linux, () => {
   const f = fixture();
   try {
-    const invalid = [...f.args]; invalid[invalid.indexOf('--database') + 1] = 'db;drop';
-    assert.match(f.invoke(invalid).stderr, /Invalid --database/);
-    assert.match(f.invoke([...f.args, '--home', f.home]).stderr, /duplicate/);
-    assert.match(f.invoke([...f.args, '--ui-port', '65536']).stderr, /Invalid --ui-port/);
-    assert.match(f.invoke([...f.args, '--scotty-port', '0']).stderr, /Invalid --scotty-port/);
-    assert.equal(existsSync(f.home), false);
+    f.installed(); f.git('checkout', '-b', 'feature');
+    writeFileSync(join(f.home, 'change'), 'unlanded'); f.git('add', 'change'); f.git('commit', '-m', 'Unlanded');
+    const branch = f.git('rev-parse', 'HEAD'); f.git('checkout', 'main');
+    assert.match(f.invoke([], 'update').stderr, /Refusing unlanded local branches: feature/);
+    assert.equal(f.git('rev-parse', 'feature'), branch);
+    writeFileSync(join(f.home, 'state/software-factory.update.pending.json'), '{}');
+    assert.match(f.invoke([], 'update').stderr, /incomplete factory update needs inspection/);
     assert.equal(existsSync(f.log), false);
-  } finally { f.close(); }
-});
-
-test('completion records with different inputs cannot authorize changing an existing home', () => {
-  const f = fixture();
-  try {
-    mkdirSync(join(f.home, 'config'), { recursive: true });
-    const marker = join(f.home, 'config/software-factory.install.json');
-    const body = '{"version":1,"state":"complete","inputs":{}}\n';
-    writeFileSync(marker, body);
-    const result = f.invoke();
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /different setup inputs/);
-    assert.equal(readFileSync(marker, 'utf8'), body);
-    const calls = readFileSync(f.log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    assert.ok(calls.every((args) => args[0] === 'info'));
   } finally { f.close(); }
 });

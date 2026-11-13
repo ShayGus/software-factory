@@ -14,3 +14,9 @@ config/
 .claude/settings.local.json
 
 .tools/
+
+# Home services and generated component builds
+/beads/
+**/node_modules/
+/factory/dist/
+/tools/tasks-axi/dist/

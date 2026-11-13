@@ -2,6 +2,7 @@
 name: software-factory
 description: >-
   Run the installed Software Factory when an owner asks FirstMate to build or change a registered project in plain chat.
+  Also load when asked to "update the factory" in an installed monorepo home.
   Resume its product review and dependent tasks when a factory-managed worker returns.
   Uses the existing factory toolkit, the current home's Beads backlog and normal FirstMate supervision.
 ---
@@ -15,6 +16,15 @@ Use the home's existing registered projects, delivery posture and backlog.
 The installation contract is [Run it from FirstMate](../../README.md#run-it-from-firstmate).
 Resolve documentation links against the configured factory checkout when reading this skill through a home symlink.
 Read that section if installation facts are missing; report a concrete missing prerequisite rather than asking the owner to compose a run file.
+
+## Update the installed system
+
+For "update the factory", run `node <home>/services/update.mjs` from the installed home.
+This is installation maintenance, not a feature request; do not create a factory plan or worker for it.
+The command uses FirstMate's existing guarded source updater, rebuilds the bundled tools and dedicated screens, preserves private records and finishes with real acceptance.
+On refusal, report the exact unfinished work or failed acceptance; never reset, stash, remove a pending transaction or bypass the guard.
+Read the updated FirstMate instructions when the updater reports `reread-firstmate: yes` and follow the existing update skill's restart/nudge actions.
+Do not report completion until the command and acceptance succeed.
 
 ## Intake and project selection
 

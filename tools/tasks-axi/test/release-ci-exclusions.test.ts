@@ -161,6 +161,7 @@ describe("release-please CI exclusions", () => {
     expect(expected).toEqual([
       "CHANGELOG.md",
       "package.json",
+      "package-lock.json",
       ".release-please-manifest.json",
     ]);
   });
@@ -208,6 +209,7 @@ describe("release-please CI exclusions", () => {
       ".release-please-manifest.json",
       "CHANGELOG.md",
       "package.json",
+      "package-lock.json",
     ]);
     expect(on!.release).toBeUndefined();
     expect(on!.workflow_dispatch).toBeUndefined();

@@ -1,6 +1,11 @@
-backend = "markdown"
+backend = "beads"
 
-[markdown]
-path = "data/backlog.md"
-archive = "data/done-archive.md"
+[beads]
+path = "beads/workspace/.beads"
+binary = "beads/bin/bd"
+prefix = "fm"
+database = "factory_backlog"
+server_socket = "beads/sql/server.sock"
+server_user = "root"
+timeout_ms = 15000
 done_keep = 10

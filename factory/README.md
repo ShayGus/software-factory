@@ -46,56 +46,10 @@ FirstMate selects the registered project, captures your request, chooses reposit
 It writes the per-request inputs itself; you do not write a run file or execute phase commands.
 A failed check stops the run and produces a chat explanation with evidence and screen links.
 
-Create the complete Linux FirstMate home with one command from this repository:
-
-```sh
-node scripts/setup-firstmate-home.mjs \
-  --home /absolute/new-factory-home --name factory \
-  --container factory-dolt --database factory_backlog \
-  --fork-source /home/shayg/code/firstmate-fork \
-  --tasks-source /home/shayg/code/tasks-axi \
-  --factory-source /home/shayg/code/software-factory
-```
-
-The source paths above are the owner’s independent checkouts; substitute your own repositories on another computer.
-Setup prints the folder’s factory-screen address, its view-only Scotty address, and the Claude launch command.
-You start no database or screens yourself.
-Then open it normally:
-
-```sh
-cd /absolute/new-factory-home && claude
-```
-
-Prerequisites are Linux, Node.js 22.13.0+, npm, Git with a commit identity, Docker, authenticated Codex and Claude, and FirstMate's normal host tools described in the fork's README.
-The pinned images `local/scotty:v0.4.0-cf6dda1` (bd 1.1.0 build `8e4e59d39f34`) and `dolthub/dolt:2.7.2` must be available to Docker.
-Every code source accepts a local Git repository or Git URL; the default refs are `fm/sf-beads-firstmate-fixes` for FirstMate and `main` for tasks-axi and the factory.
-Use the Beads-capable tasks-axi source; the published npm 0.2.6 package does not include that backend.
-Workers default to Codex with GPT-6.1 Sol at high effort through FirstMate's normal dispatch configuration; `--crew-dispatch /absolute/rules.json` optionally supplies the owner's rules instead.
-Run `node scripts/setup-firstmate-home.mjs --help` for all inputs, ref overrides and the optional live recheck.
-
-Setup creates a private clone on local `main`, a committed Beads configuration, home-local tools, both skill discovery paths, agent profiles and the version 1 `worker.start.before` hook.
-It uses FirstMate's existing Claude session hooks and puts the private task executable first in Claude's local PATH, without changing the computer's global tools.
-The dedicated Dolt container has no network access and persists under the home; its entry point removes a stale socket before starting.
-Setup also creates dedicated Scotty and factory UI containers, all with `unless-stopped` restart policies so they return with Docker after reboot.
-Both screen addresses bind to loopback and use available ports by default; `--ui-port` and `--scotty-port` optionally reserve explicit ports without replacing an existing listener.
-Scotty’s published port enforces a read allowlist and its Beads executable separately refuses native writes, regardless of browser editing preferences.
-Its ticket list and dependency graph use this home’s Beads database.
-The factory index starts with an empty state and discovers every initialized factory project from the existing hook registry, including projects added after startup.
-The UI runtime image is built locally from the pinned Scotty image with the shell tools required by the home’s task wrapper.
-Features, plans, decisions and task edits use canonical factory operations; execution-task cancellation stays in FirstMate chat on the host.
-The Docker daemon must itself start at boot.
-Docker access is detected automatically, including this computer's `sg docker` requirement.
-
-The command finishes by opening a real non-interactive Claude session with normal startup hooks and settings.
-That session must load the factory skill and add, list and remove a probe through the home's task wrapper; a failure makes setup fail.
-Acceptance uses tool results, startup-hook events and the exact task-executable path recorded by the session's own command in `data/software-factory.acceptance-path.*.txt`; Claude's final prose does not determine the verdict.
-The built-in screen check also requires both screens to answer, a tasks-axi probe and its dependency to appear in Scotty, and Scotty creation, editing, deletion and editing-mode requests to be refused.
-Screen-check responses are retained under `data/software-factory.screens.*.json`.
-Full acceptance output is retained under the home's `data/software-factory.acceptance.*`, and `config/software-factory.install.json` records completion, source revisions and image identities.
-Existing paths and all dedicated container names are refused; re-running the same command on a completed home verifies the original services, confirms both screens answer and prints the same addresses.
-Use `--check` to repeat the screen probes and live Claude acceptance.
-Existing homes without these services are refused rather than upgraded implicitly.
-A failed partial installation is left for inspection rather than overwritten or silently retried.
+The complete system is installed from the monorepo root with `node services/setup.mjs`.
+Follow the [root setup guide](../README.md#clone-setup-and-start) for prerequisites, public dependency pins, startup, updates, acceptance and self-development.
+The clone itself is the FirstMate home; this directory is its bundled factory toolkit, not a separately cloned dependency.
+The older `scripts/setup-firstmate-home.mjs` entry point forwards to that same installer.
 
 The project registry starts empty, just as in a new FirstMate home.
 Register target projects through normal FirstMate chat setup, including delivery posture.

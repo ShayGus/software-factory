@@ -1,7 +1,7 @@
 # Personal Software Factory — extending FirstMate
 
 **Updated:** 9 November 2026 · **Status:** implementation design, not an installed system.  
-**Read first:** [the short recommendation](FirstMate_Short_Recommendation.md).  
+**Supporting material:** the original short recommendation is not included in this distribution.
 **Source of truth:** this Markdown. HTML and the development-task export are generated from it. Wireframes are linked source assets, embedded into the HTML for offline viewing.  
 **Supersedes:** the earlier platform-first design and 84-task implementation baseline. The broader platform survey remains background research, not an additional build specification.
 
@@ -245,25 +245,29 @@ The UI is for one person managing software outcomes. The screens below are propo
 
 Show requested features separately from suggestions, current design/planning stage, demonstrated behavior, remaining criteria, work and decisions needing input. Expose manual feature/task priority and dependency changes. Creation, priority changes, deferral and feature edits use toolkit operations. The overview answers what was requested, what remains, and what needs attention.
 
-![Proposed overview and feature coverage](personal_wireframes/overview.svg)
+Proposed overview and feature coverage.
+The original wireframe source (`personal_wireframes/overview.svg`) is not included in this distribution.
 
 ### Feature detail
 
 Make the original request, product design, detailed plan and their revisions directly accessible. Show which plan task produced each worker assignment. Keep criteria, decisions and changes alongside those references. Show task progress separately from feature completeness. Corrections name the active revision and affected attempts; evidence can be inspected per criterion.
 
-![Proposed feature detail with original request and incomplete criteria](personal_wireframes/feature.svg)
+Proposed feature detail with original request and incomplete criteria.
+The original wireframe source (`personal_wireframes/feature.svg`) is not included in this distribution.
 
 ### Work and dependencies
 
 Provide a task list or board and a dependency view. Cards show feature links and blocking reasons. Task actions go through FirstMate. Include ready-since/review age and next action for PRs, plus execution versus waiting time where observed. A returned worker appears as returned even if the associated product behavior is incomplete. Use the chosen Beads + Scotty list/graph where useful; focused toolkit editors handle product meaning and canonical mutations that Scotty cannot route. The board is a proposed presentation option.
 
-![Proposed task board and dependency view](personal_wireframes/work.svg)
+Proposed task board and dependency view.
+The original wireframe source (`personal_wireframes/work.svg`) is not included in this distribution.
 
 ### Learning and decisions
 
 Show observations, current guidance, scope, supersession and the next consolidation window. A compact needs-input view groups real product questions; it is not an approval queue for routine implementation. On narrow screens, preserve feature review and decision handling before complex graph editing.
 
-![Proposed observations and learning consolidation](personal_wireframes/learning.svg)
+Proposed observations and learning consolidation.
+The original wireframe source (`personal_wireframes/learning.svg`) is not included in this distribution.
 
 ## 8. Interfaces, recovery and adoption
 
@@ -496,7 +500,7 @@ Source inspection supports the existing integration primitives below. New record
 
 ## 11. Evidence sources
 
-The supplied retrospective is direct input to the requirements, preserved in [FirstMate_User_Retrospective.md](FirstMate_User_Retrospective.md). It is distinct from independently inspected public source. Pinned source snapshots provide reproducible references. Current Piyaz documentation was checked on 9 November 2026. Descriptions of future behavior above are design decisions, not claims of shipped functionality.
+The supplied retrospective is direct input to the requirements, preserved in `FirstMate_User_Retrospective.md` (private source, not distributed). It is distinct from independently inspected public source. Pinned source snapshots provide reproducible references. Current Piyaz documentation was checked on 9 November 2026. Descriptions of future behavior above are design decisions, not claims of shipped functionality.
 
 - **[FM1] FirstMate intent, task and brief contract:** [AGENTS.md, pinned bc9370e](https://github.com/kunchenguid/firstmate/blob/bc9370e8868421ce6791d33455301b4287a4cef3/AGENTS.md#L169-L224), including [backlog and brief sections](https://github.com/kunchenguid/firstmate/blob/bc9370e8868421ce6791d33455301b4287a4cef3/AGENTS.md#L367-L394).
 - **[FM2] Idempotent inbox capture and receipt semantics:** [fm-inbox.sh](https://github.com/kunchenguid/firstmate/blob/bc9370e8868421ce6791d33455301b4287a4cef3/bin/fm-inbox.sh#L21-L92).
@@ -538,7 +542,7 @@ The supplied retrospective is direct input to the requirements, preserved in [Fi
 [ALT2]: https://github.com/Paca-AI/paca/blob/2e93cee2c87174e6a8ed02dc08afceb0c6faaba9/docs/architecture/overview.md
 [ALT3]: https://multica.ai/licensing
 
-[USR1]: FirstMate_User_Retrospective.md
+[USR1]: #supporting-private-source
 
 [MF2]: https://github.com/romiluz13/mifal/blob/fbf1eb1197dd4e5cea502a9ddadf2ca92df6d90f/skills/ask-matt/SKILL.md
 
@@ -547,3 +551,8 @@ The supplied retrospective is direct input to the requirements, preserved in [Fi
 [MF4]: https://github.com/romiluz13/mifal/blob/fbf1eb1197dd4e5cea502a9ddadf2ca92df6d90f/skills/to-tickets/SKILL.md
 
 [MF5]: https://github.com/romiluz13/mifal/blob/fbf1eb1197dd4e5cea502a9ddadf2ca92df6d90f/skills/code-review/SKILL.md
+
+## Supporting private source
+
+USR1 identifies the owner-supplied retrospective used during design.
+That private source is not part of this public distribution; references describe the supplied evidence rather than an included document.

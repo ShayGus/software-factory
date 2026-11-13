@@ -1,0 +1,15 @@
+{
+  "dolt": "dolthub/dolt@sha256:1abcdd77083cc7dedce01f91d1314b48e55e5bdd512c575f086b929494c77a31",
+  "node": "node:26.4.0-slim@sha256:a1d9d671994fc2d26e297ac56b4b1522a8bc7fa71c43b14cd1b1fe6c5116f7dc",
+  "scotty": {
+    "repository": "https://github.com/brendan-appstart/bead-me-up-scotty.git",
+    "commit": "cf6dda198db15a77399d1d9e77292618a7d08fa1"
+  },
+  "beads": {
+    "version": "1.1.0",
+    "build": "8e4e59d39f34",
+    "release": "https://github.com/gastownhall/beads/releases/download/v1.1.0",
+    "linux_amd64": "b0f3dd607c3fb989ee08d0a6854fba80d0402971eb108f9af6170bc14d491a34",
+    "linux_arm64": "e64eb6f5f998c9eae3ef9ec786f5f1c907ab3ed04fe220ebf265ca9952e21b2f"
+  }
+}
