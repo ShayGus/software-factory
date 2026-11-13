@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export function verifyClaudeEvidence(events, { home, probe, pathEvidencePath }) {
+export function verifyClaudeEvidence(events, { home, probe, pathEvidencePath, stateDirectory = join(home, 'state') }) {
   const final = events.findLast((event) => event.type === 'result');
   const calls = events.filter((event) => event.type === 'assistant').flatMap((event) => event.message?.content ?? [])
     .filter((block) => block.type === 'tool_use');
@@ -35,7 +35,7 @@ export function verifyClaudeEvidence(events, { home, probe, pathEvidencePath }) 
   }
   const startup = events.filter((event) => event.type === 'system' && event.hook_event === 'SessionStart');
   if (!startup.some((event) => event.exit_code === 0 && event.stdout?.includes('The digest above is complete for this session start.')) ||
-      !existsSync(join(home, 'state/.session-start-complete'))) throw new Error('Normal FirstMate session start did not complete');
+      !existsSync(join(stateDirectory, '.session-start-complete'))) throw new Error('Normal FirstMate session start did not complete');
   if (startup.some((event) => (event.stdout ?? '').includes('READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED'))) {
     throw new Error('Claude acceptance did not acquire verified fleet-lock ownership');
   }

@@ -58,6 +58,9 @@ Re-running setup verifies the existing installation; a partial installation is r
 
 `services/update.mjs` refuses dirty/diverged/wrong-branch source and unfinished workers before running the existing guarded FirstMate updater.
 It rebuilds against the resulting source, preserves private configuration and service data, and finishes with acceptance.
+Update acceptance uses FirstMate's existing `FM_STATE_OVERRIDE` to give its child session a private runtime-state directory under the same home, preserving the live caller's fleet lock.
+The child still uses the actual installed source, local settings, hooks, executable, Beads backlog and screens.
+Initial setup proves ordinary startup with the default state directory.
 An update failure leaves durable evidence rather than resetting source or deleting data.
 
 Acceptance exercises a real non-interactive Claude with normal startup and local settings, factory skill loading and backlog add/list/remove.

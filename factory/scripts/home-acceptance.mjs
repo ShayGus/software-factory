@@ -93,13 +93,19 @@ export function taskWrapper(home) {
     env: { ...cleanEnv(), FM_HOME: home, PATH: `${join(home, '.tools/bin')}:${process.env.PATH ?? ''}`, BEADS_DOLT_AUTO_START: '0' } });
 }
 
-export function acceptWithClaude(home, claude) {
+export function acceptWithClaude(home, claude, { isolatedState = false } = {}) {
   const probe = 'sf-claude-install-check';
   const started = Date.now();
+  // A chat update runs inside a live primary. Its child is a genuinely separate
+  // session, so use FirstMate's existing state override instead of sharing or
+  // stealing the caller's lock. Code, settings, backlog and services stay real.
+  const stateDirectory = isolatedState ? join(home, 'state/software-factory-acceptance', String(started)) : join(home, 'state');
+  if (isolatedState) mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
   const pathEvidencePath = join(home, `data/software-factory.acceptance-path.${started}.txt`);
   if (present(pathEvidencePath)) throw new Error('Refusing to reuse existing Claude path evidence');
   const prompt = `This is an installation acceptance check in ${home}, not a factory feature request.
-Use the normal FirstMate session-start digest from the SessionStart hook. If it is absent, run bash ${quote(join(home, 'bin/fm-session-start.sh'))} once.
+Use the normal FirstMate session-start digest from the SessionStart hook.
+If startup reports READ-ONLY or unverified fleet-lock ownership, stop before any backlog mutation and report failure. If it is absent, run bash ${quote(join(home, 'bin/fm-session-start.sh'))} once.
 Do not start workers, create projects, run factory phases, change source, install tools, update shared services, or inspect another home's state.
 Load the software-factory skill with the Skill tool solely to confirm it is available; do not execute its workflow.
 Use Bash to run this command without changing PATH; the evidence file must contain only the command's stdout:
@@ -115,6 +121,7 @@ Report the result and any command failure. Setup checks machine evidence, not yo
   // worker's home/inbox. Leave PATH unchanged: Claude's installed local settings
   // must supply the tasks-axi shim, just as they will on an ordinary launch.
   const env = cleanEnv();
+  if (isolatedState) env.FM_STATE_OVERRIDE = stateDirectory;
   const result = spawnSync(claude, ['--tools', 'Bash,Read,Skill', '-p', prompt, '--verbose', '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions'], {
     cwd: home, env, encoding: 'utf8', timeout: 600000, maxBuffer: 32 * 1024 * 1024
@@ -126,7 +133,7 @@ Report the result and any command failure. Setup checks machine evidence, not yo
   process.stderr.write(result.stderr ?? '');
   if (result.status !== 0 || result.error) throw new Error(`Claude acceptance failed: ${result.error?.message ?? `exit ${result.status}`}`);
   const events = (result.stdout ?? '').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-  verifyClaudeEvidence(events, { home, probe, pathEvidencePath });
+  verifyClaudeEvidence(events, { home, probe, pathEvidencePath, stateDirectory });
   const remaining = run('bash', [join(home, 'bin/fm-tasks-axi.sh'), 'list'], { cwd: home,
     env: { ...cleanEnv(), FM_HOME: home, PATH: `${join(home, '.tools/bin')}:${process.env.PATH ?? ''}` } });
   if (remaining.includes(probe)) throw new Error('Claude left its acceptance probe in the backlog');

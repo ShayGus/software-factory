@@ -69,3 +69,14 @@ test('a read-only competing session cannot reuse an older completion marker', as
   valid.events[0].stdout += '\n●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED';
   assert.throws(() => verifyClaudeEvidence(valid.events, valid.context), /fleet-lock ownership/);
 });
+
+
+test('isolated update acceptance must prove its own startup marker', async t => {
+  const { verifyClaudeEvidence } = await import(new URL('../../scripts/claude-acceptance-evidence.mjs', import.meta.url).href);
+  const valid = evidence(t);
+  const stateDirectory = join(valid.context.home, 'state/update-acceptance');
+  mkdirSync(stateDirectory);
+  assert.throws(() => verifyClaudeEvidence(valid.events, { ...valid.context, stateDirectory }), /session start/);
+  writeFileSync(join(stateDirectory, '.session-start-complete'), '');
+  assert.doesNotThrow(() => verifyClaudeEvidence(valid.events, { ...valid.context, stateDirectory }));
+});

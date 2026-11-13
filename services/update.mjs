@@ -44,7 +44,7 @@ async function rebuild(docker) {
   }
   const services = await installFolderServices(installed.args, docker, images.runtime, installed.services);
   const next = { ...installed, images, services, pins, commit: transaction.target, updatedAt: new Date().toISOString() };
-  await accept(next);
+  await accept(next, { isolatedState: true });
   await verify(next, docker);
   writeJson(marker, next);
   // Retain the completed transaction as evidence; renaming removes the pending gate.

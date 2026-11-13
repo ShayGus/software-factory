@@ -152,10 +152,10 @@ export async function verify(installed, docker) {
   await waitForScreens(installed.services);
 }
 
-export async function accept(installed) {
+export async function accept(installed, options) {
   await acceptScreens(home, installed.services, taskWrapper(home));
   console.log('Running automatic Claude acceptance with normal session startup');
-  acceptWithClaude(home, installed.executables.claude);
+  acceptWithClaude(home, installed.executables.claude, options);
 }
 
 export function report(installed) {
@@ -174,7 +174,7 @@ export async function main(argv = process.argv.slice(2)) {
     for (const key of ['ui-port', 'scotty-port']) if (options[key] !== 'auto' && String(options[key]) !== String(installed.services[key === 'ui-port' ? 'uiPort' : 'scottyPort'])) throw new Error(`Existing installation has a different --${key}`);
     await verify(installed, docker);
     if (installed.commit !== run('git', ['-C', home, 'rev-parse', 'HEAD'])) throw new Error('Source changed since the last build; run node services/update.mjs --local to rebuild and accept the approved commit');
-    if (options.check) await accept(installed);
+    if (options.check) await accept(installed, { isolatedState: true });
     report(installed);
     return;
   }
