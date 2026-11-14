@@ -11,7 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { run, executable, dockerRunner, containerExists, cleanEnv, present, json, save, quote,
-  installFactory, taskWrapper, acceptWithClaude, startCommand, saveMissing } from '../factory/scripts/home-acceptance.mjs';
+  installFactory, taskWrapper, acceptWithClaude, startCommand, saveMissing, replaceJson } from '../factory/scripts/home-acceptance.mjs';
 import { configureTailnet, verifyTailnet } from '../factory/scripts/tailnet.mjs';
 import { installFolderServices, planFolderServices, serviceNames, waitForScreens, acceptScreens } from '../factory/scripts/folder-services.mjs';
 
@@ -78,9 +78,7 @@ export function assertClone({ defaultBranch = true } = {}) {
 }
 
 export function writeJson(path, value) {
-  const temp = path + '.tmp';
-  writeFileSync(temp, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  renameSync(temp, path);
+  replaceJson(path, value);
 }
 
 export function inspectOwned(docker, name) {
