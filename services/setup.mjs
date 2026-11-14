@@ -62,7 +62,7 @@ export function parse(argv) {
   return args;
 }
 
-export function assertClone() {
+export function assertClone({ defaultBranch = true } = {}) {
   if (process.platform !== 'linux' || !['x64', 'arm64'].includes(process.arch)) throw new Error('Setup supports Linux amd64/arm64 Unix-socket homes');
   const [major, minor] = process.versions.node.split('.').map(Number);
   if (major < 22 || (major === 22 && minor < 13)) throw new Error('Node >=22.13 is required');
@@ -70,6 +70,11 @@ export function assertClone() {
   if (run('git', ['-C', home, 'rev-parse', '--show-toplevel']) !== home) throw new Error('Repository root mismatch');
   if (run('git', ['-C', home, 'status', '--porcelain'])) throw new Error('Refusing dirty source; commit or resolve changes before setup/update');
   if (/[:\n\r]/.test(home) || Buffer.byteLength(join(home, 'beads/sql/server.sock')) > 100) throw new Error('Choose a shorter home path without colons or line breaks (Dolt Unix socket limit)');
+  if (defaultBranch) {
+    const branch = run('git', ['-C', home, 'symbolic-ref', '--short', 'HEAD']);
+    const target = run('git', ['-C', home, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    if (branch !== target.replace(/^origin\//, '')) throw new Error('Refusing non-default branch for update; switch to the default branch without discarding local work');
+  }
 }
 
 export function writeJson(path, value) {
@@ -168,7 +173,7 @@ export function report(installed) {
 export async function main(argv = process.argv.slice(2)) {
   if (argv.length === 1 && argv[0] === '--help') { console.log(help); return; }
   const options = parse(argv);
-  assertClone();
+  assertClone({ defaultBranch: false });
   const docker = dockerRunner(options.docker);
   if (existsSync(marker)) {
     const installed = json(marker);
@@ -265,7 +270,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const argv = process.argv.slice(2);
     if ((argv.length === 1 && argv[0] === '--help') || process.env.SF_FACTORY_SETUP_LOCK === home) return main(argv);
     parse(argv);
-    assertClone();
+    assertClone({ defaultBranch: false });
     executable(undefined, 'flock');
     mkdirSync(join(home, 'state'), { recursive: true });
     // Kernel-owned lock survives neither a crash nor a killed hook, so the

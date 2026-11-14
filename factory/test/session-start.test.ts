@@ -128,3 +128,19 @@ test('first setup restores an existing local status line and preserves other set
     assert.match(line.stdout, /Software Factory: Checking prerequisites \| \d+s elapsed/);
   } finally { f.close(); }
 });
+
+test('a restarted first setup recovers the original status line from a killed hook', () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.home, '.claude'));
+    const settings = join(f.home, '.claude/settings.local.json');
+    const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+    const original = { type: 'command', command: 'printf original' };
+    writeFileSync(join(f.home, 'state/software-factory.setup-display.json'), JSON.stringify({ original }));
+    writeFileSync(settings, JSON.stringify({ statusLine: { type: 'command',
+      command: `${quote(process.execPath)} ${quote(join(f.home, 'services/setup-status.mjs'))}`, refreshInterval: 1 } }));
+    assert.equal(f.invoke().status, 0);
+    assert.deepEqual(JSON.parse(readFileSync(settings, 'utf8')).statusLine, original);
+    assert.equal(existsSync(join(f.home, 'state/software-factory.setup-display.json')), false);
+  } finally { f.close(); }
+});
