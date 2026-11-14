@@ -47,7 +47,7 @@ It writes the per-request inputs itself; you do not write a run file or execute 
 A failed check stops the run and produces a chat explanation with evidence and screen links.
 
 The complete system is installed from the monorepo root with `node services/setup.mjs`.
-Follow the [root setup guide](../README.md#clone-setup-and-start) for prerequisites, public dependency pins, startup, updates, acceptance and self-development.
+Follow the [root setup guide](../README.md#clone-and-start) for prerequisites, public dependency pins, startup, updates, acceptance and self-development.
 The clone itself is the FirstMate home; this directory is its bundled factory toolkit, not a separately cloned dependency.
 The older `scripts/setup-firstmate-home.mjs` entry point forwards to that same installer.
 

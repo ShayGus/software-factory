@@ -168,7 +168,12 @@ SH
   chmod +x "$lab/bin/fm-sessionstart-run.sh"
 
   case "$harness" in
-    claude) mkdir -p "$lab/.claude"; cp "$ROOT/.claude/settings.json" "$lab/.claude/settings.json" ;;
+    claude)
+      mkdir -p "$lab/.claude"
+      cp "$ROOT/.claude/settings.json" "$lab/.claude/settings.json"
+      cp "$ROOT/bin/fm-factory-sessionstart.sh" "$ROOT/bin/fm-gate-refuse-lib.sh" \
+        "$ROOT/bin/fm-hook-host-lib.sh" "$lab/bin/"
+      ;;
     codex) mkdir -p "$lab/.codex"; cp "$ROOT/.codex/hooks.json" "$lab/.codex/hooks.json" ;;
     pi)
       mkdir -p "$lab/.pi/extensions/lib"

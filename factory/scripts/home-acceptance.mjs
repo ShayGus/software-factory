@@ -1,13 +1,19 @@
 // Shared installation/acceptance operations. The service installer owns lifecycle.
 import { verifyClaudeEvidence } from './claude-acceptance-evidence.mjs';
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 export const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 export const present = (path) => { try { lstatSync(path); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
 export const json = (path) => JSON.parse(readFileSync(path, 'utf8'));
 export const save = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+export const saveMissing = (path, value) => { if (!present(path)) save(path, value); };
+export function replaceJson(path, value) {
+  const temp = `${path}.${process.pid}.tmp`;
+  save(temp, value);
+  renameSync(temp, path);
+}
 export const cleanEnv = () => Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   !['FM_', 'BEADS_', 'TASKS_AXI_', 'CODEX_'].some((prefix) => key.startsWith(prefix)) &&
   !['CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID', 'CLAUDECODE'].includes(key)));
@@ -26,7 +32,18 @@ export function executable(value, name) {
   for (const candidate of candidates) {
     try { accessSync(candidate, constants.X_OK); if (lstatSync(realpathSync(candidate)).isFile()) return candidate; } catch { /* Try next PATH entry. */ }
   }
-  throw new Error(`Install/authenticate ${name}, or pass --${name} /absolute/executable`);
+  const remedy = {
+    node: 'install Node.js >=22.13 from https://nodejs.org/en/download',
+    npm: 'install Node.js with npm from https://nodejs.org/en/download',
+    claude: 'install Claude Code from https://code.claude.com/docs/en/setup, then run claude auth login',
+    codex: 'npm install -g @openai/codex && codex login',
+    treehouse: 'curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh',
+    'no-mistakes': 'curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh',
+    'gh-axi': 'npm install -g gh-axi && gh-axi setup hooks',
+    'chrome-devtools-axi': 'npm install -g chrome-devtools-axi && chrome-devtools-axi setup hooks',
+    'quota-axi': 'npm install -g quota-axi',
+  }[name] ?? `install ${name} with your system package manager (Debian/Ubuntu: sudo apt-get install ${name === 'python3' ? 'python3' : name})`;
+  throw new Error(`Missing executable ${name}. Run: ${remedy}. Then start claude again.`);
 }
 
 export function dockerRunner(mode) {
@@ -36,7 +53,8 @@ export function dockerRunner(mode) {
     try { direct(['info', '--format', '{{.ServerVersion}}']); return direct; }
     catch (error) { if (mode === 'docker') throw error; }
   }
-  grouped(['info', '--format', '{{.ServerVersion}}']);
+  try { grouped(['info', '--format', '{{.ServerVersion}}']); }
+  catch (error) { throw new Error(`Docker Engine is unavailable to this user (direct access and sg docker failed). Install/start Docker Engine, then run: sudo usermod -aG docker "$USER"; log out and back in. Test: docker info (or sg docker -c 'docker info'). Then start claude again.\n${error.message}`); }
   return grouped;
 }
 
@@ -58,12 +76,12 @@ export async function installFactory(root, home, codex, claude, services) {
   agents.executables = { codex, claude };
   agents.timeoutMs = 280000;
   agents.cwd = home;
-  save(agentTemplate, agents);
-  save(hookRegistry, { version: 1, projects: [] });
+  saveMissing(agentTemplate, agents);
+  saveMissing(hookRegistry, { version: 1, projects: [] });
   // Validate against the installed factory's contract before enabling its hook.
   const { WorkerHookConfigSchema } = await import(pathToFileURL(join(root, 'dist/src/index.js')).href);
   WorkerHookConfigSchema.parse(json(hookRegistry));
-  save(join(home, 'config/software-factory.json'), {
+  saveMissing(join(home, 'config/software-factory.json'), {
     factoryRoot: root, home, fork: home, agentTemplate, hookRegistry,
     mode: 'local-only', yolo: 'off', uiOrigin: services.uiOrigin, uiPort: services.uiPort,
     scottyOrigin: services.scottyOrigin, services: services.names
@@ -71,11 +89,11 @@ export async function installFactory(root, home, codex, claude, services) {
   const hooksPath = join(home, 'config/hooks.json');
   const hooks = existsSync(hooksPath) ? json(hooksPath) : { version: 1, hooks: [] };
   if (hooks.version !== 1 || !Array.isArray(hooks.hooks)) throw new Error('Expected FirstMate version 1 hook configuration');
-  if (hooks.hooks.some((entry) => entry.id === 'software-factory-instruction-check')) throw new Error('Factory hook already exists in source home');
-  hooks.hooks.push({ id: 'software-factory-instruction-check', event: 'worker.start.before',
-    argv: [join(root, 'scripts/worker-start-before.mjs'), hookRegistry], timeout_seconds: 300 });
-  // A source containing local configuration is not a clean fork; never overwrite it.
-  save(hooksPath, hooks);
+  const entry = { id: 'software-factory-instruction-check', event: 'worker.start.before',
+    argv: [join(root, 'scripts/worker-start-before.mjs'), hookRegistry], timeout_seconds: 300 };
+  const previous = hooks.hooks.find(hook => hook.id === entry.id);
+  if (previous && JSON.stringify(previous) !== JSON.stringify(entry)) throw new Error('Conflicting factory hook; inspect config/hooks.json');
+  if (!previous) { hooks.hooks.push(entry); replaceJson(hooksPath, hooks); }
   for (const harness of ['.agents', '.claude']) {
     const parent = join(home, harness, 'skills');
     mkdirSync(parent, { recursive: true });
@@ -85,7 +103,12 @@ export async function installFactory(root, home, codex, claude, services) {
       if (realpathSync(target) !== realpathSync(join(root, 'skills/software-factory'))) throw new Error(`Conflicting skill link: ${target}`);
     } else symlinkSync(join(root, 'skills/software-factory'), target, 'dir');
   }
-  save(join(home, '.claude/settings.local.json'), { env: { PATH: `${join(home, '.tools/bin')}:${process.env.PATH ?? ''}` } });
+  const settingsPath = join(home, '.claude/settings.local.json');
+  const settings = existsSync(settingsPath) ? json(settingsPath) : {};
+  const path = settings.env?.PATH ?? process.env.PATH ?? '';
+  if (!path.split(':').includes(join(home, '.tools/bin'))) {
+    replaceJson(settingsPath, { ...settings, env: { ...settings.env, PATH: `${join(home, '.tools/bin')}:${path}` } });
+  }
 }
 
 export function taskWrapper(home) {
@@ -121,6 +144,7 @@ Report the result and any command failure. Setup checks machine evidence, not yo
   // worker's home/inbox. Leave PATH unchanged: Claude's installed local settings
   // must supply the tasks-axi shim, just as they will on an ordinary launch.
   const env = cleanEnv();
+  env.SF_FACTORY_SETUP_ACTIVE = home;
   if (isolatedState) env.FM_STATE_OVERRIDE = stateDirectory;
   const result = spawnSync(claude, ['--tools', 'Bash,Read,Skill', '-p', prompt, '--verbose', '--output-format', 'stream-json',
     '--permission-mode', 'bypassPermissions'], {

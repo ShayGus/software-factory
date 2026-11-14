@@ -18,12 +18,12 @@ function fixture() {
   mkdirSync(bin);
   // Container-conflict refusal must not depend on tmux being installed on CI.
   // This preflight only checks executability and never invokes the placeholder.
-  symlinkSync(process.execPath, join(bin, 'tmux'));
+  for (const name of ['tmux', 'gh', 'treehouse', 'no-mistakes', 'gh-axi', 'chrome-devtools-axi', 'quota-axi']) symlinkSync(process.execPath, join(bin, name));
   cpSync(source, join(home, 'services'), { recursive: true });
   for (const name of ['home-acceptance.mjs', 'claude-acceptance-evidence.mjs', 'folder-services.mjs', 'scotty-spike-reader.mjs', 'tailnet.mjs']) {
     cpSync(join(dirname(legacy), name), join(home, 'factory/scripts', name));
   }
-  writeFileSync(join(home, '.gitignore'), 'config/\nstate/\n');
+  writeFileSync(join(home, '.gitignore'), 'config/\nstate/\ndata/\nbeads/\n.tools/\n.claude/settings.local.json\n');
   const git = (...args: string[]) => execFileSync('git', ['-C', home, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '--initial-branch=main');
   git('config', 'user.email', 'fixture@example.invalid'); git('config', 'user.name', 'Fixture');
@@ -74,14 +74,14 @@ test('dirty clone is refused before Docker and private allocation', linux, () =>
   } finally { f.close(); }
 });
 
-test('existing private data without a completion record is never overwritten', linux, () => {
+test('existing factory resources without a transaction are never overwritten', linux, () => {
   const f = fixture();
   try {
-    mkdirSync(join(f.home, 'config')); writeFileSync(join(f.home, 'config/keep'), 'original');
+    mkdirSync(join(f.home, 'beads')); writeFileSync(join(f.home, 'beads/keep'), 'original');
     const result = f.invoke();
-    assert.match(result.stderr, /Refusing existing private path: config/);
-    assert.equal(readFileSync(join(f.home, 'config/keep'), 'utf8'), 'original');
-    assert.equal(existsSync(join(f.home, 'beads')), false);
+    assert.match(result.stderr, /Refusing existing factory path without a setup checkpoint: beads/);
+    assert.equal(readFileSync(join(f.home, 'beads/keep'), 'utf8'), 'original');
+    assert.equal(existsSync(f.marker), false);
   } finally { f.close(); }
 });
 
@@ -132,5 +132,59 @@ test('update refuses unlanded branches and pending transactions without discardi
     writeFileSync(join(f.home, 'state/software-factory.update.pending.json'), '{}');
     assert.match(f.invoke([], 'update').stderr, /incomplete factory update needs inspection/);
     assert.equal(existsSync(f.log), false);
+  } finally { f.close(); }
+});
+
+
+test('an existing checkout retains its home data and does not need origin/HEAD', linux, () => {
+  const f = fixture();
+  try {
+    f.git('symbolic-ref', '--delete', 'refs/remotes/origin/HEAD');
+    mkdirSync(join(f.home, 'config')); mkdirSync(join(f.home, 'data'));
+    writeFileSync(join(f.home, 'config/crew-harness'), 'claude\n');
+    writeFileSync(join(f.home, 'data/preferences'), 'retained');
+    f.git('config', 'remote.origin.url', '/existing/remote');
+    const id = createHash('sha256').update(f.home).digest('hex').slice(0, 12);
+    const result = f.invoke(['--claude', process.execPath, '--codex', process.execPath], 'setup', `sf-${id}-dolt`);
+    assert.match(result.stderr, /Refusing existing container:/);
+    assert.equal(readFileSync(join(f.home, 'config/crew-harness'), 'utf8'), 'claude\n');
+    assert.equal(readFileSync(join(f.home, 'data/preferences'), 'utf8'), 'retained');
+    assert.equal(f.git('config', 'remote.origin.url'), '/existing/remote');
+    assert.equal(existsSync(f.marker), false);
+  } finally { f.close(); }
+});
+
+test('resume refuses a transaction from a different source without changing it', linux, () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.home, 'state'));
+    const pending = join(f.home, 'state/software-factory.setup.pending.json');
+    const original = JSON.stringify({ version: 1, home: f.home, commit: 'different' });
+    writeFileSync(pending, original);
+    const result = f.invoke();
+    assert.match(result.stderr, /checkpoint belongs to a different home or source commit/);
+    assert.equal(readFileSync(pending, 'utf8'), original);
+    assert.equal(existsSync(join(f.home, 'beads')), false);
+  } finally { f.close(); }
+});
+
+test('an owned partial setup reuses its built images and inspects existing containers', linux, () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.home, 'state'));
+    const id = createHash('sha256').update(f.home).digest('hex').slice(0, 12);
+    const container = `sf-${id}-dolt`;
+    mkdirSync(join(f.home, 'config'));
+    const checkpoint = { version: 1, home: f.home, commit: f.git('rev-parse', 'HEAD'),
+      args: { home: f.home, container }, images: { dolt: 'owned-image', runtime: 'owned-runtime' } };
+    const pending = join(f.home, 'state/software-factory.setup.pending.json');
+    writeFileSync(pending, JSON.stringify(checkpoint));
+    const result = f.invoke(['--claude', process.execPath, '--codex', process.execPath], 'setup', container);
+    assert.match(result.stdout, /Resuming with the already-built service images/);
+    const calls = readFileSync(f.log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(calls.some(args => args[0] === 'inspect'));
+    assert.ok(calls.every(args => ['info', 'container', 'inspect'].includes(args[0])));
+    assert.deepEqual(JSON.parse(readFileSync(pending, 'utf8')), checkpoint);
+    assert.equal(existsSync(f.marker), false);
   } finally { f.close(); }
 });

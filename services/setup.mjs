@@ -5,22 +5,23 @@
 //   [--check] [--help]
 // Linux amd64/arm64; Node >=22.13. All persistent resources are home-owned.
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { run, executable, dockerRunner, containerExists, cleanEnv, present, json, save, quote,
-  installFactory, taskWrapper, acceptWithClaude, startCommand } from '../factory/scripts/home-acceptance.mjs';
+  installFactory, taskWrapper, acceptWithClaude, startCommand, saveMissing } from '../factory/scripts/home-acceptance.mjs';
 import { configureTailnet, verifyTailnet } from '../factory/scripts/tailnet.mjs';
-import { installFolderServices, serviceNames, waitForScreens, acceptScreens } from '../factory/scripts/folder-services.mjs';
+import { installFolderServices, planFolderServices, serviceNames, waitForScreens, acceptScreens } from '../factory/scripts/folder-services.mjs';
 
 export const home = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..'));
 export const marker = join(home, 'config/software-factory.install.json');
 export const pins = json(join(home, 'services/dependencies.json'));
 const label = 'com.software-factory.home';
 const help = `Usage: node services/setup.mjs [options]
-Install the complete system into this clean standalone Git clone (Linux amd64/arm64).
-Prerequisites: Node >=22.13, npm, git, bash, jq, curl, tar, tmux, Docker Engine
+Install/resume the complete system in this clean standalone Git checkout (Linux amd64/arm64).
+Prerequisites: Node >=22.13, npm, git, bash, jq, curl, tar, tmux, flock (util-linux), Docker Engine
 (starting at boot), authenticated Claude Code and Codex, and FirstMate runtime tools.
 Options:
   --docker auto|docker|sg-docker  Docker access (default auto)
@@ -32,7 +33,7 @@ Options:
   --help                        Show help without dependencies or side effects
 Setup downloads verified public dependencies, builds bundled sources and starts
 three dedicated persistent containers. It ends with real claude -p acceptance.
-Re-running a completed install verifies it; partial installs are refused for inspection.
+Re-running a completed install verifies it; owned partial installs resume from checkpoints.
 Private data stays inside this folder. Full acceptance logs are in data/.
 When Tailscale HTTPS is available, setup adds persistent tailnet-only Serve entries
 for these ports, preserving other services. Otherwise it reports why it skipped them.
@@ -69,9 +70,6 @@ export function assertClone() {
   if (run('git', ['-C', home, 'rev-parse', '--show-toplevel']) !== home) throw new Error('Repository root mismatch');
   if (run('git', ['-C', home, 'status', '--porcelain'])) throw new Error('Refusing dirty source; commit or resolve changes before setup/update');
   if (/[:\n\r]/.test(home) || Buffer.byteLength(join(home, 'beads/sql/server.sock')) > 100) throw new Error('Choose a shorter home path without colons or line breaks (Dolt Unix socket limit)');
-  const branch = run('git', ['-C', home, 'symbolic-ref', '--short', 'HEAD']);
-  const target = run('git', ['-C', home, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
-  if (branch !== target.replace(/^origin\//, '')) throw new Error('Refusing non-default branch; clone the published default branch');
 }
 
 export function writeJson(path, value) {
@@ -185,45 +183,98 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (options.check) throw new Error('--check requires a completed installation');
-  for (const path of ['config', 'data', 'state', 'projects', 'beads', '.tools', '.claude/settings.local.json']) {
-    if (present(join(home, path))) throw new Error(`Refusing existing private path: ${path} (no completion record); inspect partial installation`);
+  const pending = join(home, 'state/software-factory.setup.pending.json');
+  const commit = run('git', ['-C', home, 'rev-parse', 'HEAD']);
+  let transaction = existsSync(pending) ? json(pending) : undefined;
+  if (transaction && (transaction.version !== 1 || transaction.home !== home || transaction.commit !== commit)) {
+    throw new Error('Setup checkpoint belongs to a different home or source commit; inspect state/software-factory.setup.pending.json. No data was changed');
+  }
+  if (!transaction) {
+    // Existing FirstMate homes are valid input. Only factory-owned resources
+    // need an installation transaction before they may be reused.
+    for (const path of ['beads', '.tools/src/scotty', '.tools/bin/tasks-axi', 'config/software-factory.json',
+      'config/software-factory.agents.json', 'config/software-factory.projects.json', 'config/software-factory-services']) {
+      if (present(join(home, path))) throw new Error(`Refusing existing factory path without a setup checkpoint: ${path}; inspect it before retrying. Other home data was retained`);
+    }
+    if (existsSync(join(home, 'config/hooks.json'))) {
+      const hooks = json(join(home, 'config/hooks.json'));
+      if (hooks.version !== 1 || !Array.isArray(hooks.hooks) || hooks.hooks.some(entry => entry.id === 'software-factory-instruction-check')) {
+        throw new Error('Conflicting config/hooks.json; preserve it and resolve the factory hook conflict before retrying');
+      }
+    }
   }
   const codex = executable(options.codex, 'codex');
   const claude = executable(options.claude, 'claude');
-  for (const tool of ['npm', 'bash', 'jq', 'curl', 'tar', 'tmux']) executable(undefined, tool);
+  for (const tool of ['npm', 'bash', 'python3', 'jq', 'curl', 'tar', 'tmux', 'git', 'gh', 'treehouse', 'no-mistakes', 'gh-axi', 'chrome-devtools-axi', 'quota-axi']) executable(undefined, tool);
   const id = createHash('sha256').update(home).digest('hex').slice(0, 12);
-  const args = { ...options, tailnet: true, home, name: 'factory', database: 'factory_backlog', container: `sf-${id}-dolt`, factoryRoot: join(home, 'factory') };
-  for (const name of [args.container, ...Object.values(serviceNames(args.container))]) if (containerExists(docker, name)) throw new Error(`Refusing existing container: ${name}`);
-  for (const dir of ['config', 'data', 'state', 'projects', '.tools/bin', 'beads/sql', 'beads/server']) mkdirSync(join(home, dir), { recursive: true });
-  const images = await build(docker);
-  writeFileSync(join(home, 'data/projects.md'), '', { flag: 'wx' });
-  writeFileSync(join(home, 'config/crew-harness'), 'codex\n', { flag: 'wx' });
-  save(join(home, 'config/crew-dispatch.json'), { default: { harness: 'codex', model: 'gpt-6.1-sol', effort: 'high' } });
-  writeFileSync(join(home, '.tools/bin/tasks-axi'), `#!/bin/sh\nexec "\${SF_NODE_BINARY:-${process.execPath}}" ${quote(join(home, 'tools/tasks-axi/dist/bin/tasks-axi.js'))} "$@"\n`, { flag: 'wx', mode: 0o755 });
+  const args = transaction?.args ?? { ...options, tailnet: true, home, name: 'factory', database: 'factory_backlog', container: `sf-${id}-dolt`, factoryRoot: join(home, 'factory') };
+  if (!transaction) {
+    for (const name of [args.container, ...Object.values(serviceNames(args.container))]) if (containerExists(docker, name)) throw new Error(`Refusing existing container: ${name}`);
+    for (const dir of ['config', 'data', 'state', 'projects']) mkdirSync(join(home, dir), { recursive: true });
+    transaction = { version: 1, home, commit, args, startedAt: new Date().toISOString() };
+    writeJson(pending, transaction);
+  }
+  const checkpoint = () => writeJson(pending, transaction);
+  for (const dir of ['.tools/bin', 'beads/sql', 'beads/server']) mkdirSync(join(home, dir), { recursive: true });
+  if (!transaction.images) { transaction.images = await build(docker); checkpoint(); }
+  else console.log('Resuming with the already-built service images');
+  const images = transaction.images;
+  for (const [path, content] of [['data/projects.md', ''], ['config/crew-harness', 'codex\n']]) {
+    if (!present(join(home, path))) writeFileSync(join(home, path), content, { flag: 'wx' });
+  }
+  saveMissing(join(home, 'config/crew-dispatch.json'), { default: { harness: 'codex', model: 'gpt-6.1-sol', effort: 'high' } });
+  if (!existsSync(join(home, '.tools/bin/tasks-axi'))) writeFileSync(join(home, '.tools/bin/tasks-axi'), `#!/bin/sh\nexec "\${SF_NODE_BINARY:-${process.execPath}}" ${quote(join(home, 'tools/tasks-axi/dist/bin/tasks-axi.js'))} "$@"\n`, { flag: 'wx', mode: 0o755 });
   const socket = join(home, 'beads/sql/server.sock');
-  console.log(`Starting dedicated Dolt: ${args.container}`);
-  console.log(docker(['run', '-d', '--name', args.container, '--label', `${label}=${home}`, '--restart', 'unless-stopped', '--user', `${process.getuid()}:${process.getgid()}`,
+  console.log(`Starting/resuming dedicated Dolt: ${args.container}`);
+  if (containerExists(docker, args.container)) {
+    const container = inspectOwned(docker, args.container);
+    if (container.Image !== images.dolt || container.HostConfig.NetworkMode !== 'none' ||
+      !container.Mounts.some(m => m.Source === join(home, 'beads') && m.Destination === join(home, 'beads') && m.RW)) throw new Error('Refusing changed Dolt container');
+    if (!container.State.Running) docker(['start', args.container]);
+  } else console.log(docker(['run', '-d', '--name', args.container, '--label', `${label}=${home}`, '--restart', 'unless-stopped', '--user', `${process.getuid()}:${process.getgid()}`,
     '--network', 'none', '-e', 'HOME=/tmp', '-v', `${join(home, 'beads')}:${join(home, 'beads')}`, '-w', join(home, 'beads/server'),
     '--entrypoint', 'sh', images.dolt, '-c', `rm -f ${quote(socket)}; exec dolt sql-server --host 127.0.0.1 --port 3306 --socket ${quote(socket)}`]));
   const deadline = Date.now() + 60000;
   while (!present(socket) || !lstatSync(socket).isSocket()) {
-    if (Date.now() > deadline) throw new Error(`Dolt socket did not appear; inspect dedicated container ${args.container}`);
+    if (Date.now() > deadline) throw new Error(`Dolt socket did not appear; inspect with: docker logs ${args.container}`);
     await delay(250);
   }
   const workspace = join(home, 'beads/workspace');
-  run('git', ['init', workspace]);
-  console.log(run(join(home, 'beads/bin/bd'), ['init', '--server', '--external', '--server-socket', socket, '--database', args.database,
-    '--prefix', 'fm', '--skip-agents', '--skip-hooks', '--non-interactive'], { cwd: workspace, env: { ...cleanEnv(), BEADS_DIR: join(workspace, '.beads'), BEADS_DOLT_AUTO_START: '0' } }));
-  const services = await installFolderServices(args, docker, images.runtime);
+  if (!existsSync(join(workspace, '.beads/metadata.json'))) {
+    run('git', ['init', workspace]);
+    console.log(run(join(home, 'beads/bin/bd'), ['init', '--server', '--external', '--server-socket', socket, '--database', args.database,
+      '--prefix', 'fm', '--skip-agents', '--skip-hooks', '--non-interactive'], { cwd: workspace, env: { ...cleanEnv(), BEADS_DIR: join(workspace, '.beads'), BEADS_DOLT_AUTO_START: '0' } }));
+  }
+  // Persist selected ports before Serve or container mutations. A restart can
+  // reuse the exact owned ports, including after a partially completed phase.
+  if (!transaction.ports) { transaction.ports = await planFolderServices(args); checkpoint(); }
+  console.log('Starting/resuming factory screens and view-only Scotty');
+  const services = await installFolderServices(args, docker, images.runtime, transaction.ports);
   await installFactory(join(home, 'factory'), home, codex, claude, services);
   const installed = { version: 2, state: 'complete', home, args, images, services, executables: { codex, claude }, pins,
-    commit: run('git', ['-C', home, 'rev-parse', 'HEAD']), completedAt: new Date().toISOString() };
-  await accept(installed);
-  save(marker, installed);
+    commit, completedAt: new Date().toISOString() };
+  await accept(installed, { isolatedState: true });
   await verify(installed, docker);
+  save(marker, installed);
+  renameSync(pending, join(home, `data/software-factory.setup.${Date.now()}.json`));
   report(installed);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  main().catch(error => { console.error(`Setup refused/failed: ${error.message}\nExisting resources were not removed. Inspect this home's logs and dedicated containers.`); process.exitCode = 1; });
+  const entry = async () => {
+    const argv = process.argv.slice(2);
+    if ((argv.length === 1 && argv[0] === '--help') || process.env.SF_FACTORY_SETUP_LOCK === home) return main(argv);
+    parse(argv);
+    assertClone();
+    executable(undefined, 'flock');
+    mkdirSync(join(home, 'state'), { recursive: true });
+    // Kernel-owned lock survives neither a crash nor a killed hook, so the
+    // next startup can resume; simultaneous setup commands cannot race writes.
+    const result = spawnSync('flock', ['--nonblock', '--conflict-exit-code', '75', join(home, 'state/software-factory.setup.lock'),
+      process.execPath, fileURLToPath(import.meta.url), ...argv], { stdio: 'inherit', env: { ...process.env, SF_FACTORY_SETUP_LOCK: home } });
+    if (result.status === 75) throw new Error('Another setup is running for this folder; wait for it to finish, then start claude again');
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? 1;
+  };
+  entry().catch(error => { console.error(`Setup refused/failed: ${error.message}\nExisting resources were not removed. Fix the requirement above, then start claude again (or rerun node services/setup.mjs) to resume.`); process.exitCode = 1; });
 }

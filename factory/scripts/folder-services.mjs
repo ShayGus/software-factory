@@ -1,10 +1,11 @@
 // Dedicated services owned by setup-firstmate-home. No shared service changes.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { configureTailnet } from './tailnet.mjs';
 import { writeScottyLauncher, writeScottyReader } from './scotty-spike-reader.mjs';
+import { containerExists } from './home-acceptance.mjs';
 
 export const serviceNames = container => ({ scotty: `${container}-scotty`, ui: `${container}-ui` });
 async function freePort(value) {
@@ -15,14 +16,20 @@ async function freePort(value) {
   return port;
 }
 
+export async function planFolderServices(args) {
+  const uiPort = await freePort(args['ui-port']);
+  let scottyPort = await freePort(args['scotty-port']);
+  if (uiPort === scottyPort && args['scotty-port'] === 'auto') scottyPort = await freePort('auto');
+  if (uiPort === scottyPort) throw new Error('Factory and Scotty ports must differ');
+  return { uiPort, scottyPort };
+}
+
 export async function installFolderServices(args, docker, baseImage, previous) {
   const home = args.home;
   const root = args.factoryRoot ?? join(home, '.tools/software-factory');
   const directory = join(home, 'config/software-factory-services');
   mkdirSync(join(directory, 'bead-me-up-scotty'), { recursive: true });
-  const uiPort = await freePort(previous?.uiPort ?? args['ui-port']);
-  const scottyPort = await freePort(previous?.scottyPort ?? args['scotty-port']);
-  if (uiPort === scottyPort) throw new Error('Factory and Scotty ports must differ');
+  const { uiPort, scottyPort } = previous ?? await planFolderServices(args);
   const uiOrigin = new URL(`http://127.0.0.1:${uiPort}`).origin;
   const scottyOrigin = new URL(`http://127.0.0.1:${scottyPort}`).origin;
   const tailnet = args.tailnet ? configureTailnet({ uiPort, scottyPort, uiOrigin, scottyOrigin }) : undefined;
@@ -34,17 +41,29 @@ export async function installFolderServices(args, docker, baseImage, previous) {
     database: args.database, canonicalUrl: uiOrigin, folder: true });
   writeScottyLauncher(launcher, uiOrigin, { projectId: 'factory', folder: true, authority: new URL(scottyOrigin).host, tailnet: tailnet?.enabled ? tailnet : undefined });
   const now = new Date().toISOString();
-  if (!previous) writeFileSync(join(directory, 'bead-me-up-scotty/config.json'), JSON.stringify({
+  if (!existsSync(join(directory, 'bead-me-up-scotty/config.json'))) writeFileSync(join(directory, 'bead-me-up-scotty/config.json'), JSON.stringify({
     humanActor: args.name, humanAllowlist: [], pollIntervalMs: 5000, orders: {}, gamification: false,
     projects: [{ id: 'factory', name: args.name, path: workspace, addedAt: now, lastOpened: now }],
   }, null, 2) + '\n', { flag: 'wx' });
   const runtimeImage = baseImage;
   const common = ['--label', `com.software-factory.home=${home}`, '--restart', 'unless-stopped', '--user', `${process.getuid()}:${process.getgid()}`];
-  docker(['run', '--pull', 'never', '-d', '--name', names.scotty, ...common, '-p', `127.0.0.1:${scottyPort}:3000`,
+  const ensure = (kind, port, internal, argv) => {
+    if (!containerExists(docker, names[kind])) { docker(argv); return; }
+    const [container] = JSON.parse(docker(['inspect', names[kind]]));
+    const bindings = container.HostConfig.PortBindings[`${internal}/tcp`];
+    if (container.Config.Labels?.['com.software-factory.home'] !== home || container.Image !== baseImage ||
+      container.HostConfig.RestartPolicy.Name !== 'unless-stopped' || !bindings || bindings.length !== 1 ||
+      bindings[0].HostIp !== '127.0.0.1' || bindings[0].HostPort !== String(port) ||
+      !container.Mounts.some(m => m.Source === home && m.Destination === home && m.RW === (kind === 'ui'))) {
+      throw new Error(`Refusing foreign or changed ${kind} container: ${names[kind]}`);
+    }
+    if (!container.State.Running) docker(['start', names[kind]]);
+  };
+  ensure('scotty', scottyPort, 3000, ['run', '--pull', 'never', '-d', '--name', names.scotty, ...common, '-p', `127.0.0.1:${scottyPort}:3000`,
     '-v', `${home}:${home}:ro`, '-e', `BEADS_REPO=${workspace}`, '-e', `BEADS_FS_ROOT=${workspace}`,
     '-e', `XDG_CONFIG_HOME=${directory}`, '-e', `BD_BIN=${reader}`, '-e', 'SCOTTY_READ_ONLY=1', '-e', 'POSTHOG_KEY=',
     '--entrypoint', 'node', baseImage, launcher]);
-  docker(['run', '--pull', 'never', '-d', '--name', names.ui, ...common, '-p', `127.0.0.1:${uiPort}:${uiPort}`,
+  ensure('ui', uiPort, uiPort, ['run', '--pull', 'never', '-d', '--name', names.ui, ...common, '-p', `127.0.0.1:${uiPort}:${uiPort}`,
     '-v', `${home}:${home}`, '-w', home, '-e', `SF_UI_PORT=${uiPort}`, '-e', 'SF_UI_HOST=0.0.0.0',
     '-e', `SF_UI_HOME=${home}`, '-e', `SF_UI_REGISTRY=${join(home, 'config/software-factory.projects.json')}`,
     '-e', `SF_TAILNET=${tailnet?.enabled ? JSON.stringify(tailnet) : ''}`,
