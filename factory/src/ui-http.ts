@@ -17,7 +17,7 @@ export function createToolkitRequestHandler(api: HttpApi, options: { port?: numb
     };
     const error = (status: number, message: string) => send(status, { error: { code: 'validation', message, paths: [], externalReferences: [] } });
     try {
-      const origin = origins.find(value => new URL(value).host === request.headers.host);
+      const origin = request.headers.host ? origins.find(value => new URL(value).host === request.headers.host) : origins[0];
       if (!origin ||
         (request.headers.origin && request.headers.origin !== origin) ||
         request.headers['sec-fetch-site'] === 'cross-site') { error(403, 'local_origin_required'); return; }

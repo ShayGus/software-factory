@@ -20,7 +20,7 @@ function fixture() {
   // This preflight only checks executability and never invokes the placeholder.
   symlinkSync(process.execPath, join(bin, 'tmux'));
   cpSync(source, join(home, 'services'), { recursive: true });
-  for (const name of ['home-acceptance.mjs', 'claude-acceptance-evidence.mjs', 'folder-services.mjs', 'scotty-spike-reader.mjs']) {
+  for (const name of ['home-acceptance.mjs', 'claude-acceptance-evidence.mjs', 'folder-services.mjs', 'scotty-spike-reader.mjs', 'tailnet.mjs']) {
     cpSync(join(dirname(legacy), name), join(home, 'factory/scripts', name));
   }
   writeFileSync(join(home, '.gitignore'), 'config/\nstate/\n');
