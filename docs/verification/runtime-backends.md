@@ -6,6 +6,31 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Software Factory Claude startup
+
+Verified on 2026-11-14 with Claude Code 2.1.325, Node.js 26.8.2 and tmux 3.8 on Linux x64.
+Refresh the live evidence using an independent standalone clone of the current committed source, then start `claude` interactively without running the installer first.
+Repeat with a standalone copy of an existing checkout, retaining its Git history, remotes and local settings, and start each folder a second time.
+The [root setup guide](../../README.md#clone-and-start) owns the operator flow.
+
+Observed output included `Software Factory ready in 64s.` for a fresh clone and `Software Factory ready in 65s.` for an existing checkout.
+During setup, the Claude status bar showed `Starting/resuming factory screens and view-only Scotty` and `Running automatic Claude acceptance with normal session startup`, with advancing elapsed seconds before any prompt.
+Both installations passed local and tailnet screen acceptance and nested Claude startup, skill-load and backlog add/list/remove acceptance without recursion.
+The first interactive sessions also loaded the factory skill and resolved the folder-local `tasks-axi` without changing PATH.
+An existing local hook, environment setting, status bar, preference file and Git remote configuration were retained.
+Second interactive startups completed their ordinary digests in 5.434 seconds for the fresh clone and 5.480 seconds for the existing checkout, and printed `Software Factory ready.` without changing the installation record, local settings, factory configuration or setup log.
+An explicit `node services/setup.mjs` rerun passed without rebuilding.
+
+The factory adapter is registered only in Claude's project settings; linked worktrees, acceptance children, foreign-host events and separate operational homes retain the normal FirstMate adapter.
+Other harness and runtime-backend registrations are unchanged.
+Portable regressions cover those scope boundaries, same-session PATH, prerequisite failure and retry, installed startup, checkpoint reuse, and restoring the prior status bar after setup or an interrupted hook:
+
+```sh
+npm --prefix factory run build
+node --test factory/dist/test/session-start.test.js factory/dist/test/setup-firstmate-home.test.js
+bash tests/fm-sessionstart-nudge.test.sh
+```
+
 ## Polytoken worker lifecycle
 
 Verified on 2026-10-14 with Polytoken 0.9.0 on macOS arm64 using the tmux worker path.

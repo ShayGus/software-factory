@@ -46,7 +46,7 @@ FirstMate selects the registered project, captures your request, chooses reposit
 It writes the per-request inputs itself; you do not write a run file or execute phase commands.
 A failed check stops the run and produces a chat explanation with evidence and screen links.
 
-The complete system is installed from the monorepo root with `node services/setup.mjs`.
+The complete system installs automatically when Claude starts in the monorepo root.
 Follow the [root setup guide](../README.md#clone-and-start) for prerequisites, public dependency pins, startup, updates, acceptance and self-development.
 The clone itself is the FirstMate home; this directory is its bundled factory toolkit, not a separately cloned dependency.
 The older `scripts/setup-firstmate-home.mjs` entry point forwards to that same installer.

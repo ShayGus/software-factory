@@ -35,6 +35,7 @@ export function executable(value, name) {
   const remedy = {
     node: 'install Node.js >=22.13 from https://nodejs.org/en/download',
     npm: 'install Node.js with npm from https://nodejs.org/en/download',
+    flock: 'sudo apt-get install util-linux',
     claude: 'install Claude Code from https://code.claude.com/docs/en/setup, then run claude auth login',
     codex: 'npm install -g @openai/codex && codex login',
     treehouse: 'curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh',

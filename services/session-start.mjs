@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Claude-only session adapter. First setup is synchronous (1800s hook budget),
 // so no prompt can race an incomplete factory. The normal digest keeps its own
-// 180s bound. Setup output streams to verbose hook output and a private log;
-// systemMessage displays the result even before the first user prompt.
+// 180s bound. A temporary status line shows live progress; detailed output
+// stays in a private log. systemMessage reports the result before a prompt.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';

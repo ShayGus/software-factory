@@ -188,3 +188,16 @@ test('an owned partial setup reuses its built images and inspects existing conta
     assert.equal(existsSync(f.marker), false);
   } finally { f.close(); }
 });
+
+test('checkpoint replacement tolerates a temporary file left by an interrupted save', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sf-checkpoint-'));
+  try {
+    const path = join(root, 'checkpoint.json');
+    writeFileSync(path, '{"previous":true}');
+    writeFileSync(path + '.tmp', 'interrupted write');
+    const { writeJson } = await import(new URL('../../../services/setup.mjs', import.meta.url).href);
+    writeJson(path, { resumed: true });
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { resumed: true });
+    assert.equal(readFileSync(path + '.tmp', 'utf8'), 'interrupted write');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
