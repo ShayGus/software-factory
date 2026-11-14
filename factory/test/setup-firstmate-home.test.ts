@@ -174,7 +174,7 @@ test('an owned partial setup reuses its built images and inspects existing conta
     mkdirSync(join(f.home, 'state'));
     const id = createHash('sha256').update(f.home).digest('hex').slice(0, 12);
     const container = `sf-${id}-dolt`;
-    mkdirSync(join(f.home, 'config'));
+    mkdirSync(join(f.home, 'config')); mkdirSync(join(f.home, 'data'));
     const checkpoint = { version: 1, home: f.home, commit: f.git('rev-parse', 'HEAD'),
       args: { home: f.home, container }, images: { dolt: 'owned-image', runtime: 'owned-runtime' } };
     const pending = join(f.home, 'state/software-factory.setup.pending.json');
