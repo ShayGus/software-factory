@@ -117,8 +117,8 @@ export function taskWrapper(home) {
 }
 
 export function acceptWithClaude(home, claude, { isolatedState = false } = {}) {
-  const probe = 'sf-claude-install-check';
   const started = Date.now();
+  const probe = `sf-claude-install-check-${started}`;
   // A chat update runs inside a live primary. Its child is a genuinely separate
   // session, so use FirstMate's existing state override instead of sharing or
   // stealing the caller's lock. Code, settings, backlog and services stay real.

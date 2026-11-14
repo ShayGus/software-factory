@@ -3,11 +3,11 @@
 // so no prompt can race an incomplete factory. The normal digest keeps its own
 // 180s bound. Setup output streams to verbose hook output and a private log;
 // systemMessage displays the result even before the first user prompt.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { quote } from '../factory/scripts/home-acceptance.mjs';
+import { quote, replaceJson } from '../factory/scripts/home-acceptance.mjs';
 
 const home = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const marker = join(home, 'config/software-factory.install.json');
@@ -23,10 +23,37 @@ function addresses(record) {
     (services.tailnet?.enabled ? `Factory screens (tailnet): ${services.tailnet.uiOrigin}\nScotty (tailnet, view-only): ${services.tailnet.scottyOrigin}/p/factory` : `Tailnet unavailable: ${services.tailnet?.reason ?? 'not configured'}`);
 }
 
+const displayBackup = join(home, 'state/software-factory.setup-display.json');
+const settingsPath = join(home, '.claude/settings.local.json');
+const statusLine = { type: 'command', command: `${quote(process.execPath)} ${quote(join(home, 'services/setup-status.mjs'))}`, refreshInterval: 1 };
+function restoreDisplay() {
+  if (!existsSync(displayBackup)) return;
+  const settings = read(settingsPath);
+  if (settings.statusLine?.command !== statusLine.command) return;
+  const { original } = read(displayBackup);
+  if (original === null) delete settings.statusLine;
+  else settings.statusLine = original;
+  replaceJson(settingsPath, settings);
+  unlinkSync(displayBackup);
+}
+function showProgress() {
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  const settings = existsSync(settingsPath) ? read(settingsPath) : {};
+  // A killed hook can leave the temporary line active. Keep its original
+  // backup when resuming, rather than backing up the temporary line itself.
+  if (settings.statusLine?.command !== statusLine.command || !existsSync(displayBackup)) {
+    replaceJson(displayBackup, { original: settings.statusLine ?? null });
+  }
+  replaceJson(settingsPath, { ...settings, statusLine });
+}
+
 async function setup() {
   mkdirSync(join(home, 'data'), { recursive: true });
   const log = join(home, 'data/software-factory.setup.log');
   const start = Date.now();
+  const progress = phase => replaceJson(join(home, 'state/software-factory.setup-progress.json'), { phase, started: start });
+  progress('Checking prerequisites');
+  showProgress();
   const write = text => { appendFileSync(log, text, { mode: 0o600 }); process.stderr.write(text); };
   write(`\nSoftware Factory first-start setup/resume: ${new Date().toISOString()}\nBuilding dependencies and dedicated services; usually 5-15 minutes on first use.\n`);
   let tail = '';
@@ -35,6 +62,9 @@ async function setup() {
   });
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => {
     const text = chunk.toString(); tail = (tail + text).slice(-6000); write(text);
+    for (const line of text.split('\n')) {
+      if (/^(Building bundled |Downloading official |Pulling digest-pinned |Building Scotty |Resuming with |Starting\/resuming |Running automatic Claude acceptance|Screen acceptance passed)/.test(line)) progress(line.trim());
+    }
   });
   const timer = setInterval(() => write(`Software Factory setup still running (${Math.floor((Date.now() - start) / 1000)}s elapsed).\n`), 15000);
   try {
@@ -42,7 +72,7 @@ async function setup() {
       child.on('error', reject);
       child.on('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`${tail}\nSetup exited ${code ?? signal}. Full log: ${log}`)));
     });
-  } finally { clearInterval(timer); }
+  } finally { clearInterval(timer); restoreDisplay(); }
   return Math.round((Date.now() - start) / 1000);
 }
 
@@ -60,7 +90,11 @@ export async function main(payload) {
       if (lock.status !== 0) throw new Error(`Cannot set up this home while its session lock is unavailable:\n${lock.stdout ?? ''}${lock.stderr ?? ''}`);
       const seconds = await setup();
       summary = `Software Factory ready in ${seconds}s.\n${addresses(installed())}`;
-    } else summary = `Software Factory ready.\n${addresses(installed())}`;
+    } else {
+      // Also restores a line left by a killed hook after setup saved its marker.
+      restoreDisplay();
+      summary = `Software Factory ready.\n${addresses(installed())}`;
+    }
     // settings.local.json is read before hooks run. Persist PATH explicitly for
     // this very first session as well as supplying it to the startup digest.
     if (process.env.CLAUDE_ENV_FILE) appendFileSync(process.env.CLAUDE_ENV_FILE, `export PATH=${quote(join(home, '.tools/bin'))}:"$PATH"\n`);

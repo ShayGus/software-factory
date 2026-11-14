@@ -27,7 +27,8 @@ claude
 The first Claude startup automatically builds the bundled sources, fetches pinned public dependencies, and starts dedicated Dolt, view-only Scotty and factory screens before the normal FirstMate session begins.
 The same startup works in an existing clean standalone checkout; cloning again is unnecessary.
 First setup usually takes 5-15 minutes, depending on downloads and image builds.
-Claude shows a setup status while it runs; press Ctrl+O for build progress and elapsed-time messages.
+Claude shows the current setup phase and elapsed time in a temporary status bar, then restores your previous status bar when setup ends.
+Detailed build output is retained in the setup log.
 Completion shows the elapsed setup time and service addresses in the session, before your first prompt.
 If a prerequisite is missing, the session names it and the command to run; after fixing it, start Claude again to resume the folder-owned setup checkpoints.
 The full setup log is `data/software-factory.setup.log`; setup never deletes another home’s resources or overwrites existing FirstMate preferences.

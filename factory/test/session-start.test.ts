@@ -9,8 +9,8 @@ import test from 'node:test';
 const source = fileURLToPath(new URL('../../../', import.meta.url));
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'sf-session-'));
-  for (const dir of ['services', 'factory/scripts', 'bin']) mkdirSync(join(home, dir), { recursive: true });
-  cpSync(join(source, 'services/session-start.mjs'), join(home, 'services/session-start.mjs'));
+  for (const dir of ['services', 'factory/scripts', 'bin', 'state']) mkdirSync(join(home, dir), { recursive: true });
+  for (const file of ['session-start.mjs', 'setup-status.mjs']) cpSync(join(source, 'services', file), join(home, 'services', file));
   for (const file of ['home-acceptance.mjs', 'claude-acceptance-evidence.mjs']) cpSync(join(source, 'factory/scripts', file), join(home, 'factory/scripts', file));
   writeFileSync(join(home, 'bin/fm-lock.sh'), '#!/bin/bash\nexit 0\n');
   writeFileSync(join(home, 'bin/fm-sessionstart-run.sh'), '#!/bin/bash\ncat >/dev/null\nprintf "digest:%s\\n" "$PATH"\n', { mode: 0o755 });
@@ -48,6 +48,7 @@ test('first startup installs before the digest and supplies this session PATH an
     assert.match(readFileSync(f.envFile, 'utf8'), /export EXISTING=preserved/);
     assert.ok(readFileSync(f.envFile, 'utf8').includes(`export PATH='${f.home}/.tools/bin':"$PATH"`));
     assert.match(readFileSync(join(f.home, 'data/software-factory.setup.log'), 'utf8'), /Building services/);
+    assert.equal(JSON.parse(readFileSync(join(f.home, '.claude/settings.local.json'), 'utf8')).statusLine, undefined);
   } finally { f.close(); }
 });
 
@@ -111,4 +112,19 @@ test('Claude wrapper preserves normal startup in worktrees, other homes and acce
       assert.equal(existsSync(join(f.home, 'calls')), false, mode);
     } finally { f.close(); }
   }
+});
+
+
+test('first setup restores an existing local status line and preserves other settings', () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.home, '.claude'));
+    const original = { type: 'command', command: 'printf original', padding: 3 };
+    const settings = join(f.home, '.claude/settings.local.json');
+    writeFileSync(settings, JSON.stringify({ statusLine: original, env: { CUSTOM: 'preserved' } }));
+    assert.equal(f.invoke().status, 0);
+    assert.deepEqual(JSON.parse(readFileSync(settings, 'utf8')), { statusLine: original, env: { CUSTOM: 'preserved' } });
+    const line = spawnSync(process.execPath, [join(f.home, 'services/setup-status.mjs')], { encoding: 'utf8' });
+    assert.match(line.stdout, /Software Factory: Checking prerequisites \| \d+s elapsed/);
+  } finally { f.close(); }
 });
