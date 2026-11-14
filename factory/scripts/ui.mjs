@@ -20,6 +20,8 @@ const staleAfterMs = Number(process.env.SF_UI_STALE_AFTER_MS ?? 60000);
 if (!Number.isFinite(staleAfterMs) || staleAfterMs <= 0) throw new Error('SF_UI_STALE_AFTER_MS must be a positive number');
 const scottyUrl = process.env.SF_SCOTTY_URL;
 if (scottyUrl && !/^http:\/\/127\.0\.0\.1:\d+\/?$/u.test(scottyUrl)) throw new Error('SF_SCOTTY_URL must be a loopback HTTP origin');
+const tailnet = process.env.SF_TAILNET ? JSON.parse(process.env.SF_TAILNET) : undefined;
+if (tailnet && [tailnet.uiOrigin, tailnet.scottyOrigin].some(value => !/^https:\/\/[a-z0-9.-]+\.ts\.net(?::\d+)?$/i.test(value))) throw new Error('Invalid tailnet HTTPS origins');
 const adapter = process.env.SF_UI_ADAPTER_CONFIG ? TaskAdapterOptionsSchema.parse(JSON.parse(readFileSync(process.env.SF_UI_ADAPTER_CONFIG, 'utf8'))) : undefined;
 const store = registry ? undefined : new ProjectStore(database);
 const host = process.env.SF_UI_HOST ?? '127.0.0.1';
@@ -27,7 +29,10 @@ if (!['127.0.0.1', '0.0.0.0'].includes(host)) throw new Error('SF_UI_HOST must b
 try {
   if (store && store.get(projectId, projectId)?.kind !== 'project') throw new Error('SF_UI_PROJECT does not identify an existing project');
   const api = registry ? new FolderToolkitApi(registry, home, scottyUrl) : new ToolkitApi(store, adapter, { projectId, staleAfterMs, ...(scottyUrl ? { scottyUrl } : {}) });
-  const server = createServer(createToolkitRequestHandler(api, { port }));
+  const local = createToolkitRequestHandler(api, { port });
+  const remote = tailnet && registry ? createToolkitRequestHandler(new FolderToolkitApi(registry, home, tailnet.scottyOrigin),
+    { port, trustedOrigins: [tailnet.uiOrigin] }) : undefined;
+  const server = createServer((req, res) => (remote && req.headers.host === new URL(tailnet.uiOrigin).host ? remote : local)(req, res));
   server.once('error', (error) => { store?.close(); console.error(error.message); process.exitCode = 1; });
   server.listen(port, host, () => console.log(`Software Factory UI: http://127.0.0.1:${port}\n${registry ? 'Factory folder: ' + home : 'Project: ' + projectId}; runtime freshness reflects the last imported observation.`));
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close(() => { store?.close(); process.exit(0); }));

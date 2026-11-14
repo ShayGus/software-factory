@@ -42,7 +42,7 @@ async function rebuild(docker) {
     console.log(docker(['stop', '--time', '30', name]));
     console.log(docker(['rm', name]));
   }
-  const services = await installFolderServices(installed.args, docker, images.runtime, installed.services);
+  const services = await installFolderServices({ ...installed.args, tailnet: true }, docker, images.runtime, installed.services);
   const next = { ...installed, images, services, pins, commit: transaction.target, updatedAt: new Date().toISOString() };
   await accept(next, { isolatedState: true });
   await verify(next, docker);

@@ -72,10 +72,12 @@ test('published Scotty guard refuses hostile headers without forwarding and forc
   const guard = createServer((req, res) => handler(req, res));
   const port = await listen(guard);
   const authority = `127.0.0.1:${port}`;
-  handler = createScottyReadHandler({ canonicalUrl: 'http://127.0.0.1:3999', projectId: 'factory', folder: true, authority, upstreamPort });
-  const send = (headers: Record<string, string>) => new Promise<number>((resolve, reject) => {
-    const req = request({ hostname: '127.0.0.1', port, path: '/api/p/factory/beads', headers }, res => {
-      res.resume(); res.on('end', () => resolve(res.statusCode!));
+  handler = createScottyReadHandler({ canonicalUrl: 'http://127.0.0.1:3999', projectId: 'factory', folder: true, authority, upstreamPort,
+    tailnet: { scottyOrigin: 'https://factory.example.ts.net:3998', uiOrigin: 'https://factory.example.ts.net:3999' } });
+  let lastBody = '';
+  const send = (headers: Record<string, string>, method = 'GET') => new Promise<number>((resolve, reject) => {
+    const req = request({ hostname: '127.0.0.1', port, path: '/api/p/factory/beads', method, headers }, res => {
+      lastBody = ''; res.on('data', chunk => { lastBody += chunk; }); res.on('end', () => resolve(res.statusCode!));
     });
     req.on('error', reject); req.end();
   });
@@ -84,6 +86,18 @@ test('published Scotty guard refuses hostile headers without forwarding and forc
   for (const headers of [{ Host: 'foreign.invalid' }, { Origin: 'https://foreign.invalid' }, { 'Sec-Fetch-Site': 'cross-site' }]) {
     assert.equal(await send({ Host: authority, ...headers }), 403);
     assert.equal(received.length, 1, 'Hostile request must not reach Scotty');
+  }
+  const remote = { Host: 'factory.example.ts.net:3998', Origin: 'https://factory.example.ts.net:3998' };
+  assert.equal(await send(remote), 200);
+  assert.deepEqual(received[1], { method: 'GET', path: '/api/p/factory/beads', cookie: 'scotty-viewer-mode=read-only' });
+  for (const origin of ['http://127.0.0.1:' + port, 'http://factory.example.ts.net:3998', 'https://foreign.invalid']) {
+    assert.equal(await send({ ...remote, Origin: origin }), 403);
+    assert.equal(received.length, 2);
+  }
+  for (const method of ['POST', 'PATCH', 'DELETE']) {
+    assert.equal(await send(remote, method), 405);
+    assert.equal(JSON.parse(lastBody).operation, 'https://factory.example.ts.net:3999');
+    assert.equal(received.length, 2);
   }
 });
 

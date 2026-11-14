@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { run, executable, dockerRunner, containerExists, cleanEnv, present, json, save, quote,
   installFactory, taskWrapper, acceptWithClaude, startCommand } from '../factory/scripts/home-acceptance.mjs';
+import { configureTailnet, verifyTailnet } from '../factory/scripts/tailnet.mjs';
 import { installFolderServices, serviceNames, waitForScreens, acceptScreens } from '../factory/scripts/folder-services.mjs';
 
 export const home = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..'));
@@ -33,7 +34,9 @@ Setup downloads verified public dependencies, builds bundled sources and starts
 three dedicated persistent containers. It ends with real claude -p acceptance.
 Re-running a completed install verifies it; partial installs are refused for inspection.
 Private data stays inside this folder. Full acceptance logs are in data/.
-No existing resource is deleted, and no Git commit or machine-wide config is made.
+When Tailscale HTTPS is available, setup adds persistent tailnet-only Serve entries
+for these ports, preserving other services. Otherwise it reports why it skipped them.
+No existing resource is deleted, and no Git commit is made.
 `;
 
 export function parse(argv) {
@@ -149,6 +152,7 @@ export async function verify(installed, docker) {
       !bindings || bindings.length !== 1 || bindings[0].HostIp !== '127.0.0.1' || bindings[0].HostPort !== String(port) ||
       !service.Mounts.some(m => m.Source === home && m.Destination === home && m.RW === (kind === 'ui'))) throw new Error(`Dedicated ${kind} service is stopped or changed`);
   }
+  verifyTailnet(installed.services);
   await waitForScreens(installed.services);
 }
 
@@ -159,7 +163,8 @@ export async function accept(installed, options) {
 }
 
 export function report(installed) {
-  console.log(`Software Factory complete: ${home}\nFactory screens: ${installed.services.uiOrigin}\nScotty (view-only): ${installed.services.scottyOrigin}/p/factory\n${startCommand(home, installed.executables.claude)}`);
+  const tailnet = installed.services.tailnet;
+  console.log(`Software Factory complete: ${home}\nFactory screens: ${installed.services.uiOrigin}\nScotty (view-only): ${installed.services.scottyOrigin}/p/factory\n${tailnet?.enabled ? `Factory screens (tailnet): ${tailnet.uiOrigin}\nScotty (tailnet, view-only): ${tailnet.scottyOrigin}/p/factory` : `Tailnet not configured: ${tailnet?.reason ?? 'run the one-step factory update to enable it'}`}\n${startCommand(home, installed.executables.claude)}`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -172,6 +177,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (installed.version !== 2 || installed.state !== 'complete' || installed.home !== home) throw new Error('Invalid/incomplete installation record; refusing changes');
     for (const key of ['claude', 'codex']) if (options[key] && executable(options[key], key) !== installed.executables[key]) throw new Error(`Existing installation has a different --${key}`);
     for (const key of ['ui-port', 'scotty-port']) if (options[key] !== 'auto' && String(options[key]) !== String(installed.services[key === 'ui-port' ? 'uiPort' : 'scottyPort'])) throw new Error(`Existing installation has a different --${key}`);
+    if (installed.services.tailnet?.enabled) configureTailnet(installed.services);
     await verify(installed, docker);
     if (installed.commit !== run('git', ['-C', home, 'rev-parse', 'HEAD'])) throw new Error('Source changed since the last build; run node services/update.mjs --local to rebuild and accept the approved commit');
     if (options.check) await accept(installed, { isolatedState: true });
@@ -186,7 +192,7 @@ export async function main(argv = process.argv.slice(2)) {
   const claude = executable(options.claude, 'claude');
   for (const tool of ['npm', 'bash', 'jq', 'curl', 'tar', 'tmux']) executable(undefined, tool);
   const id = createHash('sha256').update(home).digest('hex').slice(0, 12);
-  const args = { ...options, home, name: 'factory', database: 'factory_backlog', container: `sf-${id}-dolt`, factoryRoot: join(home, 'factory') };
+  const args = { ...options, tailnet: true, home, name: 'factory', database: 'factory_backlog', container: `sf-${id}-dolt`, factoryRoot: join(home, 'factory') };
   for (const name of [args.container, ...Object.values(serviceNames(args.container))]) if (containerExists(docker, name)) throw new Error(`Refusing existing container: ${name}`);
   for (const dir of ['config', 'data', 'state', 'projects', '.tools/bin', 'beads/sql', 'beads/server']) mkdirSync(join(home, dir), { recursive: true });
   const images = await build(docker);

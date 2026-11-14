@@ -12,6 +12,8 @@ Install and authenticate Claude Code and Codex before setup; model usage is bill
 Install FirstMate's `treehouse`, `no-mistakes`, `gh-axi`, `chrome-devtools-axi` and `quota-axi` tools as described in [FirstMate setup](docs/firstmate.md#quick-start).
 Setup checks required local tools and reports missing dependencies; it never changes machine-wide Docker or account settings.
 The persistent services use Linux Unix sockets and bind their browser ports to loopback.
+For access from your own devices, optionally install Tailscale, sign in to your tailnet, enable HTTPS certificates, and grant your setup user permission to run Tailscale Serve.
+Tailscale and Docker must start at boot for unattended tailnet access.
 Keep the installed folder at its original absolute path.
 
 ## Clone, setup and start
@@ -24,10 +26,14 @@ claude
 ```
 
 Setup builds the bundled sources, fetches pinned public dependencies, starts dedicated Dolt, view-only Scotty and factory screens, and prints their addresses.
+When Tailscale is running with HTTPS available, setup also configures persistent, tailnet-only HTTPS addresses and prints them beside the local addresses.
+Those addresses use your device’s Tailscale DNS name and the same port numbers; tailnet access follows your Tailscale access policy.
+Setup preserves other Serve ports and refuses conflicting routes or public Funnel on its ports.
+Without Tailscale or HTTPS, local setup still completes and reports why tailnet access was skipped; use the one-step update after enabling Tailscale to add it.
 It finishes with a real non-interactive Claude acceptance session using the normal startup hooks, factory skill and backlog.
 The check spends model tokens and setup fails if it cannot prove the installed system works.
 Re-running setup on a completed folder verifies it without replacing its data or settings.
-Run `node services/setup.mjs --help` for executable, Docker and port overrides, and `--check` to repeat live acceptance.
+Run `node services/setup.mjs --help` for executable, Docker and port overrides, and `--check` to repeat live acceptance at both local and configured tailnet addresses.
 All three containers restart with Docker after reboot; no chat session has to keep them alive.
 Installation records and full acceptance output remain private inside the folder.
 

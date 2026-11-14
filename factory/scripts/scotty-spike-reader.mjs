@@ -34,15 +34,16 @@ export function scottyReadRequestAllowed(method, rawPath, projectId = 'sf-build0
 
 /** The published HTTP boundary. Tests exercise this same handler against a
  * local upstream; the launcher embeds it so no other server route is exposed. */
-export function createScottyReadHandler({ canonicalUrl, projectId = 'sf-build05', folder = false, authority, upstreamPort = 3001 }) {
+export function createScottyReadHandler({ canonicalUrl, projectId = 'sf-build05', folder = false, authority, tailnet, upstreamPort = 3001 }) {
   return (req, res) => {
-    if (authority && (req.headers.host !== authority ||
-      (req.headers.origin && req.headers.origin !== 'http://' + authority) || req.headers['sec-fetch-site'] === 'cross-site')) {
+    const origin = ['http://' + authority, ...(tailnet ? [tailnet.scottyOrigin] : [])].find(value => new URL(value).host === req.headers.host);
+    if (authority && (!origin ||
+      (req.headers.origin && req.headers.origin !== origin) || req.headers['sec-fetch-site'] === 'cross-site')) {
       res.writeHead(403).end(); return;
     }
     if (!scottyReadRequestAllowed(req.method, req.url, projectId, folder)) {
       res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'GET, HEAD' });
-      res.end(JSON.stringify({ code: 'canonical_operation_required', error: 'Use the canonical operation', operation: canonicalUrl }));
+      res.end(JSON.stringify({ code: 'canonical_operation_required', error: 'Use the canonical operation', operation: tailnet && origin === tailnet.scottyOrigin ? tailnet.uiOrigin : canonicalUrl }));
       return;
     }
     const upstream = request({ hostname: '127.0.0.1', port: upstreamPort, path: req.url, method: req.method,
@@ -56,7 +57,7 @@ export function createScottyReadHandler({ canonicalUrl, projectId = 'sf-build05'
 }
 
 /** Next listens on container loopback at 3001; only the guard is published. */
-export function writeScottyLauncher(path, canonicalUrl, { projectId = 'sf-build05', folder = false, authority } = {}) {
+export function writeScottyLauncher(path, canonicalUrl, { projectId = 'sf-build05', folder = false, authority, tailnet } = {}) {
   writeFileSync(path, `import { spawn } from 'node:child_process';
 import { createServer, request } from 'node:http';
 const scottyReadRequestAllowed = ${scottyReadRequestAllowed.toString()};
@@ -65,7 +66,7 @@ const child = spawn(process.execPath, ['/app/server.js'], {cwd:'/app', stdio:'in
   env:{...process.env, PORT:'3001', HOSTNAME:'127.0.0.1'}});
 child.once('exit', code => process.exit(code ?? 1));
 for (const signal of ['SIGINT','SIGTERM']) process.once(signal, () => {child.kill(signal); process.exit(0);});
-createServer(createScottyReadHandler(${JSON.stringify({ canonicalUrl, projectId, folder, authority })})).listen(3000, '0.0.0.0');
+createServer(createScottyReadHandler(${JSON.stringify({ canonicalUrl, projectId, folder, authority, tailnet })})).listen(3000, '0.0.0.0');
 `);
 }
 

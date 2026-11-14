@@ -20,7 +20,7 @@ import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 import { fakeJudge } from './judge-helper.js';
 
 const fixture = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
-function setup(t: test.TestContext, history: FactoryRecord[] = fixture, options: Partial<UiOptions> = {}) {
+function setup(t: test.TestContext, history: FactoryRecord[] = fixture, options: Partial<UiOptions> = {}, trustedOrigins: string[] = []) {
   const directory = mkdtempSync(join(tmpdir(), 'sf-ui-'));
   const database = join(directory, 'project.sqlite');
   const store = new ProjectStore(database);
@@ -33,7 +33,7 @@ function setup(t: test.TestContext, history: FactoryRecord[] = fixture, options:
   });
   const adapter = { fmHome: directory, tasksExecutable: backend.executable, guardTaskId: 'permanent-guard' };
   const api = new ToolkitApi(store, adapter, { projectId: 'project-1', fixture: true, ...options });
-  const handler = createToolkitRequestHandler(api, { port: 4712 });
+  const handler = createToolkitRequestHandler(api, { port: 4712, trustedOrigins });
   async function http(method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
     const raw = body === undefined ? '' : JSON.stringify(body);
     const request = Object.assign(Readable.from([Buffer.from(raw)]), { method, url: path,
@@ -1407,4 +1407,30 @@ test('named bundle continuation retains selected stage transitions, rationale an
     assert.ok(stages.includes(`/inspect/${stage.artifact.id}?revision=${stage.artifact.revision}`));
     assert.ok(stages.includes(stage.changeReason));
   }
+});
+
+
+test('tailnet HTTP permits canonical edits only for an exact configured Host/Origin pair', async t => {
+  const origin = 'https://factory.example.ts.net:4712';
+  const flow = setup(t, fixture, {}, [origin]);
+  const feature = flow.store.records('project-1').find(record => record.kind === 'feature_revision')!;
+  assert.equal(feature.kind, 'feature_revision');
+  if (feature.kind !== 'feature_revision') throw new Error('missing feature');
+  const command = buildEditCommand({ kind: 'feature', feature },
+    { outcome: 'Edited from tailnet', priority: '1', disposition: 'active', reason: 'remote edit' }, 'tailnet-edit', new Date().toISOString());
+  const headers = { host: new URL(origin).host, origin, 'sec-fetch-site': 'same-origin' };
+  const before = flow.store.exportProject('project-1');
+  for (const bad of [
+    { ...headers, host: 'foreign.example.ts.net:4712' },
+    { ...headers, origin: 'https://foreign.invalid' },
+    { ...headers, origin: 'http://127.0.0.1:4712' },
+    { ...headers, origin: origin.replace('https:', 'http:') },
+    { ...headers, 'sec-fetch-site': 'cross-site' },
+    { host: 'foreign.invalid', origin, 'x-forwarded-host': headers.host },
+  ]) assert.equal((await flow.http('POST', '/canonical', command, bad)).status, 403);
+  assert.deepEqual(flow.store.exportProject('project-1'), before);
+  const result = await flow.http('POST', '/canonical', command, headers);
+  assert.equal(result.status, 200, result.body);
+  assert.match((await flow.http('GET', '/', undefined, headers)).body, /Edited from tailnet/);
+  assert.match((await flow.http('GET', '/')).body, /Edited from tailnet/);
 });

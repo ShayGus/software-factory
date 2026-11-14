@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { configureTailnet } from './tailnet.mjs';
 import { writeScottyLauncher, writeScottyReader } from './scotty-spike-reader.mjs';
 
 export const serviceNames = container => ({ scotty: `${container}-scotty`, ui: `${container}-ui` });
@@ -22,15 +23,16 @@ export async function installFolderServices(args, docker, baseImage, previous) {
   const uiPort = await freePort(previous?.uiPort ?? args['ui-port']);
   const scottyPort = await freePort(previous?.scottyPort ?? args['scotty-port']);
   if (uiPort === scottyPort) throw new Error('Factory and Scotty ports must differ');
-  const uiOrigin = `http://127.0.0.1:${uiPort}`;
-  const scottyOrigin = `http://127.0.0.1:${scottyPort}`;
+  const uiOrigin = new URL(`http://127.0.0.1:${uiPort}`).origin;
+  const scottyOrigin = new URL(`http://127.0.0.1:${scottyPort}`).origin;
+  const tailnet = args.tailnet ? configureTailnet({ uiPort, scottyPort, uiOrigin, scottyOrigin }) : undefined;
   const names = serviceNames(args.container);
   const reader = join(directory, 'scotty-bd.cjs');
   const launcher = join(directory, 'scotty-launch.mjs');
   const workspace = join(home, 'beads/workspace');
   writeScottyReader(reader, { workspace: join(workspace, '.beads'), socket: join(home, 'beads/sql/server.sock'),
     database: args.database, canonicalUrl: uiOrigin, folder: true });
-  writeScottyLauncher(launcher, uiOrigin, { projectId: 'factory', folder: true, authority: `127.0.0.1:${scottyPort}` });
+  writeScottyLauncher(launcher, uiOrigin, { projectId: 'factory', folder: true, authority: new URL(scottyOrigin).host, tailnet: tailnet?.enabled ? tailnet : undefined });
   const now = new Date().toISOString();
   if (!previous) writeFileSync(join(directory, 'bead-me-up-scotty/config.json'), JSON.stringify({
     humanActor: args.name, humanAllowlist: [], pollIntervalMs: 5000, orders: {}, gamification: false,
@@ -45,15 +47,17 @@ export async function installFolderServices(args, docker, baseImage, previous) {
   docker(['run', '--pull', 'never', '-d', '--name', names.ui, ...common, '-p', `127.0.0.1:${uiPort}:${uiPort}`,
     '-v', `${home}:${home}`, '-w', home, '-e', `SF_UI_PORT=${uiPort}`, '-e', 'SF_UI_HOST=0.0.0.0',
     '-e', `SF_UI_HOME=${home}`, '-e', `SF_UI_REGISTRY=${join(home, 'config/software-factory.projects.json')}`,
+    '-e', `SF_TAILNET=${tailnet?.enabled ? JSON.stringify(tailnet) : ''}`,
     '-e', `SF_SCOTTY_URL=${scottyOrigin}`, '-e', `FM_HOME=${home}`, '-e', 'BEADS_DOLT_AUTO_START=0',
     '-e', 'SF_NODE_BINARY=/usr/local/bin/node', '-e', `PATH=${join(home, '.tools/bin')}:/usr/local/bin:/usr/bin:/bin`,
     '--entrypoint', 'node', runtimeImage, join(root, 'scripts/ui.mjs')]);
-  return { names, uiPort, scottyPort, uiOrigin, scottyOrigin, runtimeImage };
+  return { names, uiPort, scottyPort, uiOrigin, scottyOrigin, runtimeImage, ...(tailnet ? { tailnet } : {}) };
 }
 
 export async function waitForScreens(services) {
   const deadline = Date.now() + 60000;
-  for (const url of [services.uiOrigin, `${services.scottyOrigin}/api/p/factory/beads`]) {
+  const pairs = [services, ...(services.tailnet?.enabled ? [services.tailnet] : [])];
+  for (const url of pairs.flatMap(pair => [pair.uiOrigin, `${pair.scottyOrigin}/api/p/factory/beads`])) {
     while (true) {
       try { const response = await fetch(url, { signal: AbortSignal.timeout(5000) }); if (response.ok) break; } catch { /* Startup/reboot may still be in progress. */ }
       if (Date.now() > deadline) throw new Error(`Screen did not answer: ${url}; inspect dedicated container logs`);
@@ -69,6 +73,11 @@ export function screenProbeObserved(payload, probe, successor) {
 }
 
 export async function acceptScreens(home, services, wrapper) {
+  await acceptScreenPair(home, services, wrapper);
+  if (services.tailnet?.enabled) await acceptScreenPair(home, services.tailnet, wrapper);
+}
+
+async function acceptScreenPair(home, services, wrapper) {
   await waitForScreens(services);
   const probe = `sf-screen-check-${Date.now()}`;
   const successor = `${probe}-dep`;
@@ -97,7 +106,7 @@ export async function acceptScreens(home, services, wrapper) {
       ['DELETE', `/api/p/factory/beads/fm-${probe}`, {}],
       ['POST', '/api/viewer-mode', { mode: 'editing' }],
     ]) {
-      const result = await check(path, { method, headers: { 'Content-Type': 'application/json', cookie: 'scotty-viewer-mode=editing' }, body: JSON.stringify(body) });
+      const result = await check(path, { method, headers: { Origin: services.scottyOrigin, 'Content-Type': 'application/json', cookie: 'scotty-viewer-mode=editing' }, body: JSON.stringify(body) });
       if (result.response.status !== 405 || !result.text.includes('canonical_operation_required')) throw new Error(`Scotty allowed ${method} ${path}`);
     }
     const after = wrapper(['list']);
@@ -106,7 +115,8 @@ export async function acceptScreens(home, services, wrapper) {
     const html = await ui.text();
     evidence.factory = { status: ui.status, body: html };
     if (!ui.ok || !html.includes('Projects')) throw new Error('Factory folder screen did not answer');
-    console.log('Screen acceptance passed: folder UI, tasks-axi probe/dependency in Scotty, native writes refused');
+    if (!html.includes(`${services.scottyOrigin}/p/factory`)) throw new Error('Factory navigation points to the wrong Scotty origin');
+    console.log(`Screen acceptance passed (${services.uiOrigin}): folder UI, tasks-axi probe/dependency in Scotty, native writes refused`);
   } finally {
     try { if (dependentAdded) wrapper(['rm', successor]); }
     finally {

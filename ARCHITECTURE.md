@@ -37,7 +37,10 @@ The factory does not replace the worker scheduler, add a second project registry
 Product project databases are SQLite; execution tasks are Beads in Dolt.
 The hook registry points the start hook and screens at initialized project records.
 Scotty's editing preference is not a write authority: both its exposed HTTP routes and its bd wrapper enforce read-only operations.
-Only loopback browser ports are published.
+Docker publishes only loopback browser ports.
+`factory/scripts/tailnet.mjs` optionally maps those ports through persistent Tailscale Serve HTTPS, preserving unrelated Serve configuration and refusing conflicting or Funnel-enabled ports.
+The installation record owns the two exact tailnet origins; HTTP guards accept matching Host and Origin pairs and still reject cross-site requests.
+Remote factory navigation uses the tailnet Scotty address; Scotty’s HTTP and command allowlists remain read-only.
 
 ## Startup and persistence
 
@@ -46,6 +49,7 @@ Normal FirstMate startup reads the home's durable records; the factory skill is 
 Docker owns the three always-on services with `unless-stopped` restart policies.
 Dolt removes its stale Unix socket on restart; database files remain under the home.
 The Docker daemon must start at boot independently of Claude.
+Tailscaled owns background Serve configuration across reboots and must also start at boot when tailnet access is enabled.
 See [FirstMate architecture](docs/architecture.md) for supported harness/runtime mechanisms and [lifecycle hooks](docs/lifecycle-hooks.md) for the extension contract.
 
 ## Setup, update and acceptance
@@ -64,7 +68,7 @@ Initial setup proves ordinary startup with the default state directory.
 An update failure leaves durable evidence rather than resetting source or deleting data.
 
 Acceptance exercises a real non-interactive Claude with normal startup and local settings, factory skill loading and backlog add/list/remove.
-It also requires the factory screen, a probe and blocking dependency visible in Scotty, and refusal of Scotty create/edit/delete requests.
+It also requires the factory screen, a probe and blocking dependency visible in Scotty, and refusal of Scotty create/edit/delete requests at both local and configured tailnet addresses.
 Model prose is not the acceptance verdict: tool results, hook events, exact executable-path evidence and HTTP responses are checked.
 
 ## Data layout

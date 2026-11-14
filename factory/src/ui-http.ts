@@ -4,8 +4,9 @@ import type { SpikeResponse } from './ui-spike.js';
 import { uiCss } from './ui-style.js';
 
 export interface HttpApi { handle(method: string, path: string, body?: unknown): SpikeResponse }
-export function createToolkitRequestHandler(api: HttpApi, options: { port?: number } = {}) {
+export function createToolkitRequestHandler(api: HttpApi, options: { port?: number; trustedOrigins?: string[] } = {}) {
   const authority = `127.0.0.1:${options.port ?? 3185}`;
+  const origins = [new URL(`http://${authority}`).origin, ...(options.trustedOrigins ?? [])];
   const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
     'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     'Referrer-Policy': 'no-referrer' };
@@ -16,8 +17,9 @@ export function createToolkitRequestHandler(api: HttpApi, options: { port?: numb
     };
     const error = (status: number, message: string) => send(status, { error: { code: 'validation', message, paths: [], externalReferences: [] } });
     try {
-      if ((request.headers.host && request.headers.host !== authority) ||
-        (request.headers.origin && request.headers.origin !== `http://${authority}`) ||
+      const origin = origins.find(value => new URL(value).host === request.headers.host);
+      if (!origin ||
+        (request.headers.origin && request.headers.origin !== origin) ||
         request.headers['sec-fetch-site'] === 'cross-site') { error(403, 'local_origin_required'); return; }
       const asset = request.url?.split('?')[0];
       if (request.method === 'GET' && asset?.startsWith('/assets/')) {
