@@ -180,6 +180,28 @@ test('pending update refuses a foreign home or divergent target before Docker', 
   } finally { f.close(); }
 });
 
+test('setup and update refuse a concurrent installer before Docker or pending-state changes', linux, async () => {
+  const f = fixture();
+  let holder: ReturnType<typeof spawn> | undefined;
+  try {
+    f.installed();
+    const pending = join(f.home, 'state/software-factory.update.pending.json');
+    writeFileSync(pending, '{}');
+    holder = spawn('flock', ['--no-fork', join(f.home, 'state/software-factory.setup.lock'), 'bash', '-c', 'printf ready; exec sleep 60']);
+    await once(holder.stdout!, 'data');
+    for (const command of ['setup', 'update']) {
+      const result = f.invoke([], command);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Another setup(?:\/update)? is running/);
+      assert.equal(existsSync(f.log), false);
+      assert.equal(readFileSync(pending, 'utf8'), '{}');
+    }
+  } finally {
+    if (holder && holder.exitCode === null) { const exited = once(holder, 'exit'); holder.kill(); await exited; }
+    f.close();
+  }
+});
+
 test('executable install replaces a busy binary atomically and skips identical bytes', linux, async () => {
   const root = mkdtempSync(join(tmpdir(), 'sf-busy-'));
   const source = join(root, 'download');

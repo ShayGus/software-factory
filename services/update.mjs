@@ -5,11 +5,12 @@
 // Private config, projects, databases and settings remain authoritative.
 // A rebuild failure before service replacement resumes through this command,
 // including a clean fast-forward fix. Foreign/divergent checkpoints refuse.
-import { readdirSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { home, marker, pins, assertClone, build, verify, inspectOwned, accept, report, writeJson } from './setup.mjs';
-import { cleanEnv, dockerRunner, json, run } from '../factory/scripts/home-acceptance.mjs';
+import { cleanEnv, dockerRunner, executable, json, run } from '../factory/scripts/home-acceptance.mjs';
 import { installFolderServices } from '../factory/scripts/folder-services.mjs';
 
 function refuseUnfinished() {
@@ -102,5 +103,19 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  main().catch(error => { console.error(`Factory update refused/failed: ${error.message}\nSource and private data were retained; inspect the pending transaction and dedicated services.`); process.exitCode = 1; });
+  const entry = async () => {
+    const argv = process.argv.slice(2);
+    if ((argv.length === 1 && argv[0] === '--help') || process.env.SF_FACTORY_SETUP_LOCK === home) return main(argv);
+    assertClone();
+    executable(undefined, 'flock');
+    mkdirSync(join(home, 'state'), { recursive: true });
+    // Share setup's kernel-owned lock across the source update and fresh-process
+    // rebuild. A crash releases it, allowing the same transaction to resume.
+    const result = spawnSync('flock', ['--nonblock', '--conflict-exit-code', '75', join(home, 'state/software-factory.setup.lock'),
+      process.execPath, fileURLToPath(import.meta.url), ...argv], { stdio: 'inherit', env: { ...process.env, SF_FACTORY_SETUP_LOCK: home } });
+    if (result.status === 75) throw new Error('Another setup/update is running for this folder; wait for it to finish, then retry');
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? 1;
+  };
+  entry().catch(error => { console.error(`Factory update refused/failed: ${error.message}\nSource and private data were retained; inspect the pending transaction and dedicated services.`); process.exitCode = 1; });
 }
