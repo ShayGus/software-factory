@@ -3,6 +3,8 @@
 // the UPDATED installer in a fresh Node process. No force/reset/stash or DB migration.
 // Usage: node services/update.mjs [--docker auto|docker|sg-docker] [--local] [--help]
 // Private config, projects, databases and settings remain authoritative.
+// A rebuild failure before service replacement resumes through this command,
+// including a clean fast-forward fix. Foreign/divergent checkpoints refuse.
 import { readdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -20,8 +22,20 @@ function refuseUnfinished() {
 export function preflight() {
   assertClone();
   if (!existsSync(marker)) throw new Error('Run setup before updating');
-  if (existsSync(join(home, 'state/software-factory.update.pending.json'))) throw new Error('An incomplete factory update needs inspection; source and private data were retained');
   refuseUnfinished();
+  const pending = join(home, 'state/software-factory.update.pending.json');
+  if (!existsSync(pending)) return;
+  const transaction = json(pending);
+  if (!transaction || transaction.home !== home || !/^[a-f0-9]{40}$/.test(transaction.before) || !/^[a-f0-9]{40}$/.test(transaction.target) ||
+    typeof transaction.local !== 'boolean' || !Number.isSafeInteger(transaction.started) || transaction.started <= 0) {
+    throw new Error('Invalid factory update transaction; inspect state/software-factory.update.pending.json');
+  }
+  // Also covers a crash after the guarded fast-forward but before its checkpoint.
+  try {
+    run('git', ['-C', home, 'merge-base', '--is-ancestor', transaction.before, transaction.target]);
+    run('git', ['-C', home, 'merge-base', '--is-ancestor', transaction.target, 'HEAD']);
+  } catch { throw new Error('Update transaction/source mismatch; pending target must be an ancestor of the clean current source'); }
+  return transaction;
 }
 
 async function rebuild(docker) {
@@ -67,21 +81,22 @@ export async function main(argv = process.argv.slice(2)) {
     mode = args[1];
   }
   if (internal) { assertClone(); await rebuild(dockerRunner(mode)); return; }
-  preflight();
+  const previous = preflight();
   const docker = dockerRunner(mode);
   const installed = json(marker);
   await verify(installed, docker);
   const before = run('git', ['-C', home, 'rev-parse', 'HEAD']);
   const pending = join(home, 'state/software-factory.update.pending.json');
-  const transaction = { home, before, target: before, local, started: Date.now() };
-  writeJson(pending, transaction);
-  if (!local) {
+  const transaction = previous ?? { home, before, target: before, local, started: Date.now() };
+  if (previous) console.log('Resuming incomplete factory update');
+  else writeJson(pending, transaction);
+  if (!local && !transaction.local) {
     const output = run('bash', [join(home, 'bin/fm-update.sh')], { cwd: home, env: { ...cleanEnv(), FM_HOME: home } });
     console.log(output);
     if (!/^firstmate: (updated |already current)/m.test(output) || /^secondmate .*: skipped:/m.test(output)) throw new Error('FirstMate updater refused part of the source update; inspect its output');
-    transaction.target = run('git', ['-C', home, 'rev-parse', 'HEAD']);
-    writeJson(pending, transaction);
   }
+  transaction.target = run('git', ['-C', home, 'rev-parse', 'HEAD']);
+  writeJson(pending, transaction);
   // exec via a fresh process so code and dependency pins come from the new commit.
   console.log(run(process.execPath, [join(home, 'services/update.mjs'), '--rebuild', '--docker', mode], { cwd: home, timeout: 1800000, maxBuffer: 64 * 1024 * 1024 }));
 }

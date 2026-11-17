@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -121,7 +122,7 @@ test('update refuses unfinished workers before Docker or source change', linux, 
   } finally { f.close(); }
 });
 
-test('update refuses unlanded branches and pending transactions without discarding either', linux, () => {
+test('update refuses unlanded branches and invalid pending transactions without discarding either', linux, () => {
   const f = fixture();
   try {
     f.installed(); f.git('checkout', '-b', 'feature');
@@ -129,10 +130,103 @@ test('update refuses unlanded branches and pending transactions without discardi
     const branch = f.git('rev-parse', 'HEAD'); f.git('checkout', 'main');
     assert.match(f.invoke([], 'update').stderr, /Refusing unlanded local branches: feature/);
     assert.equal(f.git('rev-parse', 'feature'), branch);
+    f.git('branch', '-D', 'feature');
     writeFileSync(join(f.home, 'state/software-factory.update.pending.json'), '{}');
-    assert.match(f.invoke([], 'update').stderr, /incomplete factory update needs inspection/);
+    assert.match(f.invoke([], 'update').stderr, /Invalid factory update transaction/);
     assert.equal(existsSync(f.log), false);
   } finally { f.close(); }
+});
+
+test('update resumes a valid pending transaction after a committed fast-forward fix', linux, () => {
+  const f = fixture();
+  try {
+    f.installed();
+    const before = f.git('rev-parse', 'HEAD');
+    f.git('commit', '--allow-empty', '-m', 'Failed update target');
+    const target = f.git('rev-parse', 'HEAD');
+    const pending = join(f.home, 'state/software-factory.update.pending.json');
+    const transaction = { home: f.home, before, target, local: false, started: Date.now() };
+    writeFileSync(pending, JSON.stringify(transaction));
+    f.git('commit', '--allow-empty', '-m', 'Approved fix');
+    const result = f.invoke([], 'update');
+    // The deliberately invalid completion record stops verify, after all resume
+    // guards passed but before builds or mutations can run in this fixture.
+    assert.match(result.stderr, /Invalid\/incomplete installation record/);
+    assert.deepEqual(JSON.parse(readFileSync(pending, 'utf8')), transaction);
+    assert.equal(f.git('status', '--porcelain'), '');
+  } finally { f.close(); }
+});
+
+test('pending update refuses a foreign home or divergent target before Docker', linux, () => {
+  const f = fixture();
+  try {
+    f.installed();
+    const before = f.git('rev-parse', 'HEAD');
+    f.git('checkout', '-b', 'other');
+    f.git('commit', '--allow-empty', '-m', 'Other lineage');
+    const target = f.git('rev-parse', 'HEAD');
+    f.git('checkout', 'main');
+    f.git('branch', '-D', 'other');
+    const pending = join(f.home, 'state/software-factory.update.pending.json');
+    for (const home of ['/foreign/home', f.home]) {
+      const transaction = { home, before, target, local: false, started: Date.now() };
+      writeFileSync(pending, JSON.stringify(transaction));
+      const result = f.invoke([], 'update');
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, home === f.home ? /transaction\/source mismatch/ : /Invalid factory update transaction/);
+      assert.equal(existsSync(f.log), false);
+      assert.deepEqual(JSON.parse(readFileSync(pending, 'utf8')), transaction);
+    }
+  } finally { f.close(); }
+});
+
+test('executable install replaces a busy binary atomically and skips identical bytes', linux, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sf-busy-'));
+  const source = join(root, 'download');
+  const destination = join(root, 'bd');
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    const { installExecutable } = await import(new URL('../../../services/install-executable.mjs', import.meta.url).href);
+    copyFileSync('/bin/sleep', source);
+    installExecutable(source, destination);
+    assert.equal(statSync(destination).mode & 0o777, 0o755);
+    child = spawn(destination, ['60']);
+    await once(child, 'spawn');
+    // Reproduce the old installer failure on a real kernel-executed ELF file.
+    assert.throws(() => copyFileSync(source, destination), { code: 'ETXTBSY' });
+    const inode = statSync(destination).ino;
+    chmodSync(destination, 0o700);
+    installExecutable(source, destination);
+    assert.equal(statSync(destination).ino, inode);
+    assert.equal(statSync(destination).mode & 0o777, 0o755);
+    // ELF executables tolerate trailing data, so this remains executable while
+    // ensuring replacement is tested as well as the identical-byte fast path.
+    writeFileSync(source, Buffer.concat([readFileSync(source), Buffer.from('new version')]));
+    installExecutable(source, destination);
+    assert.notEqual(statSync(destination).ino, inode);
+    assert.deepEqual(readFileSync(destination), readFileSync(source));
+    assert.equal(spawnSync(destination, ['0']).status, 0);
+    assert.equal(child.exitCode, null);
+    assert.equal(statSync(destination).mode & 0o777, 0o755);
+    assert.deepEqual(readdirSync(root).sort(), ['bd', 'download']);
+  } finally {
+    if (child && child.exitCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('executable install refuses an unreadable destination without leaving temporary files', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'sf-install-failure-'));
+  try {
+    const { installExecutable } = await import(new URL('../../../services/install-executable.mjs', import.meta.url).href);
+    const source = join(root, 'download');
+    const destination = join(root, 'bd');
+    writeFileSync(source, 'new version');
+    mkdirSync(destination);
+    assert.throws(() => installExecutable(source, destination), { code: 'EISDIR' });
+    assert.equal(statSync(destination).isDirectory(), true);
+    assert.deepEqual(readdirSync(root).sort(), ['bd', 'download']);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 

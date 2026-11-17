@@ -6,7 +6,7 @@
 // Linux amd64/arm64; Node >=22.13. All persistent resources are home-owned.
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -14,6 +14,7 @@ import { run, executable, dockerRunner, containerExists, cleanEnv, present, json
   installFactory, taskWrapper, acceptWithClaude, startCommand, saveMissing, replaceJson } from '../factory/scripts/home-acceptance.mjs';
 import { configureTailnet, verifyTailnet } from '../factory/scripts/tailnet.mjs';
 import { installFolderServices, planFolderServices, serviceNames, waitForScreens, acceptScreens } from '../factory/scripts/folder-services.mjs';
+import { installExecutable } from './install-executable.mjs';
 
 export const home = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..'));
 export const marker = join(home, 'config/software-factory.install.json');
@@ -106,9 +107,8 @@ export async function build(docker) {
   const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
   if (digest !== pins.beads[`linux_${arch}`]) throw new Error('Beads archive checksum mismatch; refusing extraction');
   run('tar', ['-xzf', archive, '-C', download, 'bd']);
-  chmodSync(join(download, 'bd'), 0o755);
   mkdirSync(join(home, 'beads/bin'), { recursive: true });
-  copyFileSync(join(download, 'bd'), join(home, 'beads/bin/bd'));
+  installExecutable(join(download, 'bd'), join(home, 'beads/bin/bd'));
   const version = run(join(home, 'beads/bin/bd'), ['version']);
   if (!version.includes(pins.beads.version) || !version.includes(pins.beads.build)) throw new Error(`Unexpected bd version: ${version}`);
   console.log(version);
@@ -121,7 +121,7 @@ export async function build(docker) {
     throw new Error('Scotty source differs from its public pin; refusing build');
   }
   mkdirSync(join(source, '.sf'), { recursive: true });
-  copyFileSync(join(download, 'bd'), join(source, '.sf/bd'));
+  installExecutable(join(download, 'bd'), join(source, '.sf/bd'));
   console.log('Pulling digest-pinned public Dolt and Node images');
   console.log(docker(['pull', pins.dolt]));
   console.log(docker(['pull', pins.node]));

@@ -69,6 +69,7 @@ Say **"update the factory"** to the FirstMate running in this folder.
 The bundled update skill runs the guarded FirstMate updater, rebuilds bundled tools and services, preserves backlog, projects, settings and service data, and repeats acceptance.
 An unsafe checkout or unfinished worker prevents the update before source or containers change.
 The command is `node services/update.mjs`; failures retain evidence and never reset, stash or discard work.
+If a rebuild fails before service replacement, rerun the same command after resolving the cause; it resumes the retained transaction, including after a clean fast-forward fix lands.
 `/updatefirstmate` remains the source-update mechanism; the factory update includes rebuilding and acceptance as well.
 
 ## Develop the factory itself

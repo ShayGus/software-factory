@@ -57,6 +57,7 @@ See [FirstMate architecture](docs/architecture.md) for supported harness/runtime
 `services/setup.mjs` installs into the current clean standalone clone and builds the bundled factory and tasks tool.
 `services/dependencies.json` owns public source identities, checksums and image digests.
 Setup never depends on an image or checkout assembled by another session.
+Executable installation preserves running processes by atomically replacing changed binaries and retaining identical ones.
 A completion record records source, binary and image identities only after service and real Claude checks succeed.
 Re-running setup verifies the existing installation; a partial installation is retained for inspection.
 
