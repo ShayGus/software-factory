@@ -381,6 +381,8 @@ else {
     containers[name]=${JSON.stringify(containers)}[name];
     containers[name].Image=${JSON.stringify(newImage)};
     containers[name].Id=(kind==='ui'?'7':'8').repeat(64);
+    containers[name].Mounts=a.flatMap((v,i)=>v==='-v'?[a[i+1]]:[]).map(v=>{const [source,destination,mode]=v.split(':');return {Type:'bind',Source:source,Destination:destination,RW:mode!=='ro'}});
+    containers[name].Config.Env=a.flatMap((v,i)=>v==='-e'?[a[i+1]]:[]);
   } else throw Error('Unexpected Docker command '+a);
   fs.writeFileSync(path,JSON.stringify(containers));
   if((a[0]==='rm' && process.env.SF_TEST_FAIL==='partial') ||
@@ -489,5 +491,25 @@ test('replacement recovery rejects changed images, ports, mounts, ownership, hom
     f.git('commit', '--allow-empty', '-m', 'Later source');
     assert.match(f.invoke().stderr, /exact recorded target/);
     assert.equal(mutations(), count);
+  } finally { await f.close(); }
+});
+
+
+test('update accepts a recreated legacy Scotty with its viewer flag removed and regenerates its launch files', linux, async () => {
+  const f = await updateFixture();
+  try {
+    const containers = JSON.parse(readFileSync(f.state, 'utf8'));
+    containers['test-scotty'].Id = '9'.repeat(64);
+    containers['test-scotty'].Config.Env = ['POSTHOG_KEY='];
+    writeFileSync(f.state, JSON.stringify(containers));
+    const directory = join(f.home, 'config/software-factory-services');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, 'scotty-launch.mjs'), 'throw new Error("Hand-unlocked launcher must be replaced")');
+    writeFileSync(join(directory, 'scotty-bd.cjs'), 'throw new Error("Hand-unlocked bd bridge must be replaced")');
+    const result = f.invoke();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(readFileSync(f.state, 'utf8'))['test-scotty'].Id, '8'.repeat(64));
+    assert.equal(spawnSync(process.execPath, ['--check', join(directory, 'scotty-launch.mjs')]).status, 0);
+    assert.equal(JSON.parse(readFileSync(f.marker, 'utf8')).services.editable, true);
   } finally { await f.close(); }
 });

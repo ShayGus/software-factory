@@ -35,20 +35,27 @@ test('screen acceptance survives server idle expiry across synchronous backlog c
   // event loop is blocked by the actual synchronous backlog command pattern.
   const server = spawn(process.execPath, ['--input-type=module', '-e', `
     import { createServer } from 'node:http';
-    import { appendFileSync, readFileSync } from 'node:fs';
+    import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
     const server = createServer((req, res) => {
       appendFileSync(${JSON.stringify(requests)}, JSON.stringify({ method: req.method, path: req.url }) + '\\n');
       res.setHeader('Keep-Alive', 'timeout=600');
-      if (req.method !== 'GET') { res.statusCode = 405; res.end('canonical_operation_required'); return; }
-      if (req.url === '/api/p/factory/beads') {
-        const ids = JSON.parse(readFileSync(${JSON.stringify(tasks)}, 'utf8'));
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ meta: { readOnly: true }, beads: ids.map((id, i) => ({ id: 'fm-' + id,
-          dependencies: i ? [{ depends_on_id: 'fm-' + ids[0], type: 'blocks' }] : [] })) }));
-      } else {
-        res.setHeader('Content-Type', 'text/html');
-        res.end('Projects <a href="http://127.0.0.1:' + server.address().port + '/p/factory">Scotty</a>');
-      }
+      let body=''; req.on('data', chunk=>{body+=chunk}); req.on('end',()=>{
+        const beads=JSON.parse(readFileSync(${JSON.stringify(tasks)},'utf8'));
+        const id=req.url.split('/')[5], bead=beads.find(b=>b.id===id);
+        const input=body?JSON.parse(body):{};
+        let result;
+        if(req.url==='/api/p/factory/beads' && req.method==='POST') {
+          result={...input,id:'fm-native',dependencies:[],comments:[],labels:[],status:'open'};beads.push(result);res.statusCode=201;
+        } else if(req.method==='PATCH') {Object.assign(bead,input);result=bead;}
+        else if(req.url.endsWith('/deps')) {bead.dependencies.push({depends_on_id:input.depends_on_id,type:input.type});result=bead;}
+        else if(req.url.endsWith('/comments')) {bead.comments.push({text:input.text});result=bead;}
+        else if(req.url.endsWith('/status')) {bead.status=input.status;result=bead;}
+        else if(req.url==='/api/p/factory/beads') result={meta:{readOnly:false,humanActor:'Shay'},beads};
+        else if(bead) result=bead;
+        if(result) {res.setHeader('Content-Type','application/json');res.end(JSON.stringify(result));}
+        else {res.setHeader('Content-Type','text/html');res.end('Projects <a href="http://127.0.0.1:'+server.address().port+'/p/factory">Scotty</a>');}
+        writeFileSync(${JSON.stringify(tasks)},JSON.stringify(beads));
+      });
     });
     // Deliberately advertise a longer lifetime than the server actually gives
     // sockets, making the production timing window fast and repeatable.
@@ -62,19 +69,21 @@ test('screen acceptance survives server idle expiry across synchronous backlog c
     const calls: string[][] = [];
     const wrapper = (args: string[]) => {
       calls.push(args);
-      const ids: string[] = JSON.parse(readFileSync(tasks, 'utf8'));
-      if (args[0] === 'add') ids.push(args[1]!);
-      if (args[0] === 'rm') ids.splice(ids.indexOf(args[1]!), 1);
-      writeFileSync(tasks, JSON.stringify(ids));
+      const beads: any[] = JSON.parse(readFileSync(tasks, 'utf8'));
+      const found=beads.find(b=>b.id==='fm-'+args[1]);
+      if(args[0]==='add') beads.push({id:'fm-'+args[1],dependencies:args.includes('--blocked-by')?[{depends_on_id:'fm-'+args.at(-1),type:'blocks'}]:[]});
+      if(args[0]==='update') found.title=args.at(-1);
+      if(args[0]==='rm') beads.splice(beads.indexOf(found),1);
+      writeFileSync(tasks,JSON.stringify(beads));
       const result = spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 120)']);
       assert.equal(result.status, 0);
-      return ids.join('\n');
+      return JSON.stringify(found ?? beads);
     };
     await acceptScreens(home, { uiOrigin: origin, scottyOrigin: origin }, wrapper);
-    assert.deepEqual(calls.map(args => args[0]), ['add', 'add', 'list', 'rm', 'rm']);
+    assert.deepEqual(calls.map(args => args[0]), ['add', 'add', 'show', 'show', 'update', 'rm', 'rm', 'rm']);
     assert.deepEqual(JSON.parse(readFileSync(tasks, 'utf8')), []);
     const seen: { method: string; path: string }[] = readFileSync(requests, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    assert.deepEqual(seen.filter(req => req.method !== 'GET').map(req => req.method), ['POST', 'PATCH', 'DELETE', 'POST']);
+    assert.deepEqual(seen.filter(req => req.method !== 'GET').map(req => req.method), ['POST', 'PATCH', 'POST', 'POST', 'POST']);
     assert.equal(seen.filter(req => req.path === '/p/factory').length, 1);
   } finally {
     const exited = once(server, 'exit'); server.kill(); await exited;
