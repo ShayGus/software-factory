@@ -790,7 +790,7 @@ test('observed zero time differs from unknown time and unmapped ready work remai
   assert.match(page.body, /Age since ready: Unknown · Ready since: Unknown · Next action: Unknown/u);
 });
 
-test('legacy execution mappings stay visible with unknown feature context and plain read-only Scotty navigation', async (t) => {
+test('legacy execution mappings stay visible with unknown feature context and Scotty ticket-editor navigation', async (t) => {
   const history = structuredClone(fixture);
   const mapping = history.find((record) => record.id === 'mapping-2'); assert.ok(mapping?.kind === 'task_mapping');
   mapping.feature = null; mapping.criteria = []; mapping.detailedPlanTask = null; mapping.legacy = true;
@@ -798,7 +798,7 @@ test('legacy execution mappings stay visible with unknown feature context and pl
   const page = await flow.http('GET', '/projects/project-1/dependencies');
   assert.match(page.body, /Feature: Unknown — feature not linked/u);
   assert.match(page.body, /Unknown — detailed plan task unavailable/u);
-  assert.match(page.body, /href="http:\/\/127\.0\.0\.1:3186" rel="noreferrer">Scotty execution list \(read-only\)/u);
+  assert.match(page.body, /href="http:\/\/127\.0\.0\.1:3186" rel="noreferrer">Scotty tickets and dependencies/u);
   assert.equal(flow.backend.read().calls.length, 0);
 });
 

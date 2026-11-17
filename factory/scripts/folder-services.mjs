@@ -135,7 +135,7 @@ async function acceptScreenPair(home, services, wrapper) {
       return JSON.parse(result.text);
     };
     const owner = payload.meta.humanActor;
-    if (services.owner && owner !== services.owner) throw new Error('Scotty person changed from installation settings');
+    if (typeof owner !== 'string' || !owner.trim()) throw new Error('Scotty person is not configured');
     const native = await edit('POST', '/api/p/factory/beads', { title: probe + ' native', description: 'Created in Scotty', assignee: owner });
     nativeId = native.id;
     if (!/^fm-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(nativeId)) throw new Error('Scotty did not create a real Beads ticket');

@@ -185,7 +185,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (installed.version !== 2 || installed.state !== 'complete' || installed.home !== home) throw new Error('Invalid/incomplete installation record; refusing changes');
     for (const key of ['claude', 'codex']) if (options[key] && executable(options[key], key) !== installed.executables[key]) throw new Error(`Existing installation has a different --${key}`);
     for (const key of ['ui-port', 'scotty-port']) if (options[key] !== 'auto' && String(options[key]) !== String(installed.services[key === 'ui-port' ? 'uiPort' : 'scottyPort'])) throw new Error(`Existing installation has a different --${key}`);
-    if (options.owner && options.owner !== installed.services.owner) throw new Error('Existing installation has a different --owner; change the person in Scotty settings');
+    if (options.owner && options.owner !== json(join(home, 'config/software-factory-services/bead-me-up-scotty/config.json')).humanActor) throw new Error('Existing installation has a different --owner; change the person in Scotty settings');
     if (installed.services.tailnet?.enabled) configureTailnet(installed.services);
     await verify(installed, docker);
     if (installed.commit !== run('git', ['-C', home, 'rev-parse', 'HEAD'])) throw new Error('Source changed since the last build; run node services/update.mjs --local to rebuild and accept the approved commit');

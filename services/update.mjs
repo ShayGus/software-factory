@@ -114,7 +114,7 @@ export async function rebuild(docker, { buildImages = build, acceptance = accept
     if (container.State.Running) console.log(docker(['stop', '--time', '30', name]));
     console.log(docker(['rm', name]));
   }
-  const services = await installFolderServices({ ...installed.args, tailnet: true }, docker, images.runtime, installed.services);
+  const services = await installFolderServices({ ...installed.args, owner: undefined, tailnet: true }, docker, images.runtime, installed.services);
   const next = { ...installed, images, services, pins, commit: transaction.target, updatedAt: new Date().toISOString() };
   transaction.replacement.next = next;
   writeJson(pending, transaction);
