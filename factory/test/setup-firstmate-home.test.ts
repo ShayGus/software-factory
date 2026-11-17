@@ -21,7 +21,7 @@ function fixture() {
   // This preflight only checks executability and never invokes the placeholder.
   for (const name of ['tmux', 'gh', 'treehouse', 'no-mistakes', 'gh-axi', 'chrome-devtools-axi', 'quota-axi']) symlinkSync(process.execPath, join(bin, name));
   cpSync(source, join(home, 'services'), { recursive: true });
-  for (const name of ['home-acceptance.mjs', 'claude-acceptance-evidence.mjs', 'folder-services.mjs', 'scotty-spike-reader.mjs', 'tailnet.mjs']) {
+  for (const name of ['home-acceptance.mjs', 'claude-acceptance-evidence.mjs', 'folder-services.mjs', 'scotty-spike-reader.mjs', 'scotty-service.mjs', 'tailnet.mjs']) {
     cpSync(join(dirname(legacy), name), join(home, 'factory/scripts', name));
   }
   writeFileSync(join(home, '.gitignore'), 'config/\nstate/\ndata/\nbeads/\n.tools/\n.claude/settings.local.json\n');

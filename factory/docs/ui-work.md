@@ -9,8 +9,9 @@ The existing BUILD-12 local server now serves these routes, using the same
 | `/projects/:project/dependencies` | Prerequisites, product requirements and consumers with task actions |
 | `/projects/:project/work/:mapping` | Focused task with feature revision, detailed-plan-task, assignment and original-request links |
 
-Global navigation includes Work and Dependencies. Scotty remains a plain,
-read-only navigation link. Beads through FirstMate/tasks-axi remains the task
+Global navigation includes Work and Dependencies.
+Scotty remains a navigation link to its native ticket editor.
+Beads through FirstMate/tasks-axi remains the task
 store. This companion project does not copy or replace a FirstMate workspace.
 
 ## Exact actions and context

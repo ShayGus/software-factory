@@ -14,12 +14,16 @@ Logical IDs remain caller-supplied slug join keys. Physical IDs are exactly
 The logical ID is always the public input/output identity: an already-prefixed
 logical ID is preserved literally, so `fm-example` maps to `fm-fm-example`.
 Physical IDs are never accepted as aliases. This makes the mapping injective.
-Collisions and foreign/unversioned rows fail closed rather than adopting them.
+Rows in the configured prefix without tasks-axi metadata are native Beads tickets.
+Reads hydrate their native fields without writing metadata; the first tasks-axi mutation adopts them in its transaction.
+Malformed or unsupported existing tasks-axi metadata and foreign-prefix rows still fail closed.
 
 ## Persistence model
 
 Native status maps `queued → open`, `in_flight → in_progress`, `done → closed`.
-Native title and description represent title and body. Native type is `task`;
+Native title and description represent title and body.
+New tasks-axi rows use native type `task`; native-created rows retain their type and expose it as their initial kind.
+
 FirstMate kind (including `captain`), repo, optional priority presence, logical
 ID, typed links, dependency reasons, structured hold, original dates, stable
 ordering and arbitrary task `meta` live under versioned `tasks_axi` metadata.
@@ -115,8 +119,10 @@ endpoint/database must match the existing workspace's `metadata.json` exactly.
 Both the pinned bd build and Dolt 2.7.2 server version are checked before use.
 Use a database-scoped SQL account and appropriate socket/network permissions.
 The adapter installs its versioned tables and routine on first mutation; it
-requires table/routine creation rights. An existing routine with different
-source is refused. Schema upgrades require deliberate provisioning and tests.
+requires table/routine creation rights.
+The native-ticket integration uses `tasks_axi_apply_v2`, leaving an installed v1 routine intact.
+An existing v2 routine with different source is refused.
+Schema upgrades require deliberate provisioning and tests.
 
 Example configuration (illustrative paths only):
 
@@ -183,8 +189,13 @@ It preserves foreign metadata and unrelated relation types. Beads permits only
 one relation per target pair, so conflicting edge types are refused. Cycles
 retain Markdown's semantics: every active member remains blocked.
 
-The supported native statuses are `open`, `in_progress` and `closed`; unfamiliar
-native statuses or foreign/unversioned rows fail closed. Native edits to title,
+The native statuses `open`, `in_progress` and `closed` map to the three task states.
+Native `blocked`, `deferred`, `pinned` and `hooked` project as queued work with a live external hold; a nonclosed `human`-labelled ticket projects a person-decision hold.
+These native holds prevent dispatch and are recomputed on read rather than copied into tasks-axi metadata.
+Clear the native status or human flag in Scotty before unholding through tasks-axi.
+Unrelated edits preserve native statuses, labels, assignment, comments and type.
+Unknown statuses and malformed existing tasks-axi metadata fail closed.
+Native edits to title,
 description, priority, status and supported dependencies are reflected on read.
 Managed hold/evidence/date fields remain in the versioned namespace. Native
 priority 2 retains the distinction between an absent priority and explicit 2.

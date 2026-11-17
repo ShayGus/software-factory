@@ -16,7 +16,8 @@ export const TOKEN = `SHA2(CAST(JSON_OBJECT('title',i.title,'description',i.desc
   'status',i.status,'priority',i.priority,'metadata',i.metadata,
   'updated_at',i.updated_at,'edges',${EDGE_TOKEN}) AS CHAR),256)`;
 
-export const READ = `SELECT i.id,i.title,i.description,i.status,i.priority,i.metadata,
+export const READ = `SELECT i.id,i.title,i.description,i.status,i.priority,i.issue_type,i.metadata,
+  (SELECT COALESCE(JSON_ARRAYAGG(label),JSON_ARRAY()) FROM labels WHERE issue_id=i.id) AS labels,
   ${EDGES} AS edges, ${TOKEN} AS token FROM issues i`;
 
 export const HISTORY_TABLE = `CREATE TABLE IF NOT EXISTS tasks_axi_history_v1 (
@@ -31,7 +32,7 @@ export const PAYLOAD_IGNORE = `INSERT INTO dolt_ignore(pattern,ignored) VALUES (
   ON DUPLICATE KEY UPDATE ignored=true`;
 
 /** One CALL is one transaction, including multi-record logical prune. */
-export const APPLY_ROUTINE = `CREATE PROCEDURE tasks_axi_apply_v1(IN payload JSON)
+export const APPLY_ROUTINE = `CREATE PROCEDURE tasks_axi_apply_v2(IN payload JSON)
 BEGIN
   DECLARE entry_index INT DEFAULT 0;
   DECLARE entry_count INT;
@@ -64,7 +65,9 @@ BEGIN
     SET @tasks_axi_before=NULL;
     SET @tasks_axi_previous_status=NULL;
     IF JSON_EXTRACT(@tasks_axi_entry,'$.dispatch')=true THEN
-      IF EXISTS(SELECT 1 FROM dependencies d JOIN issues blocker ON blocker.id=d.depends_on_issue_id
+      IF EXISTS(SELECT 1 FROM issues WHERE id=@tasks_axi_id AND status IN ('blocked','deferred','pinned','hooked'))
+        OR EXISTS(SELECT 1 FROM labels WHERE issue_id=@tasks_axi_id AND label='human')
+        OR EXISTS(SELECT 1 FROM dependencies d JOIN issues blocker ON blocker.id=d.depends_on_issue_id
         WHERE d.issue_id=@tasks_axi_id AND d.type='blocks' AND blocker.status<>'closed')
         OR (JSON_EXTRACT(@tasks_axi_ns,'$.task.hold') IS NOT NULL AND
           (JSON_EXTRACT(@tasks_axi_ns,'$.task.hold.until') IS NULL OR
@@ -92,7 +95,7 @@ BEGIN
         IF @tasks_axi_previous_status<>'closed' THEN
           SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='cannot archive active work';
         END IF;
-        SET @tasks_axi_ns=(SELECT JSON_SET(JSON_EXTRACT(metadata,'$.tasks_axi'),'$.archived',true,
+        SET @tasks_axi_ns=(SELECT JSON_SET(COALESCE(JSON_EXTRACT(metadata,'$.tasks_axi'),JSON_EXTRACT(@tasks_axi_entry,'$.namespace')),'$.archived',true,
           '$.revision',JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_entry,'$.namespace.revision')))
           FROM issues WHERE id=@tasks_axi_id);
       END IF;
@@ -122,8 +125,7 @@ BEGIN
         IF EXISTS(SELECT 1 FROM JSON_TABLE(JSON_EXTRACT(@tasks_axi_entry,'$.edges'),
         '$[*]' COLUMNS(target VARCHAR(255) PATH '$.id', edge_type VARCHAR(32) PATH '$.type')) e
         LEFT JOIN issues target_issue ON target_issue.id=e.target
-        WHERE target_issue.id IS NULL OR e.target=@tasks_axi_id
-          OR NOT(JSON_EXTRACT(target_issue.metadata,'$.tasks_axi.version') <=> 1)) THEN
+        WHERE target_issue.id IS NULL OR e.target=@tasks_axi_id) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='missing or foreign dependency';
         END IF;
         DELETE FROM dependencies WHERE issue_id=@tasks_axi_id AND type IN ('blocks','parent-child','discovered-from');

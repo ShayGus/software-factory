@@ -1,5 +1,5 @@
 # Build only the pinned public Scotty source; the installer supplies verified bd.
-# Read-only routes need no showcase publisher or agent tooling.
+# Ticket edits use bd; showcase publishing and agent tooling are not installed.
 ARG NODE_IMAGE
 FROM ${NODE_IMAGE} AS builder
 WORKDIR /app

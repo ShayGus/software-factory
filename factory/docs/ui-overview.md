@@ -1,9 +1,9 @@
 # BUILD-12: local overview and feature editors
 
 This is the focused toolkit UI selected by BUILD-05. Beads remains the execution
-store, through FirstMate/tasks-axi; Scotty remains a read-only execution list and
-graph. The folder service edits canonical project records through the same application functions as the CLI.
-Execution-task edits go through the installed FirstMate/tasks-axi wrapper.
+store shared by FirstMate/tasks-axi and the Scotty ticket editor.
+The folder service edits canonical project records through the same application functions as the CLI.
+The factory screens use the installed FirstMate/tasks-axi wrapper for execution-task edits; native Scotty edits reach the same Beads rows.
 
 ## Start and configuration
 
@@ -42,7 +42,7 @@ the single TypeScript request handler; it contains no independent stub server.
 | `GET /projects/:project/records/:id?revision=N` | Existing read-only canonical record JSON |
 | `GET /canonical` | Command contract and field ownership |
 | `POST /canonical` | Existing revision-checked command envelope, including model-free learning capture |
-| `POST /scotty-edit` | Refuses projected edits with owner and canonical operation link |
+| `POST /scotty-edit` | Refuses edits to toolkit product-record projections; native Scotty tickets use Beads directly |
 | `GET /assets/ui.css`, `ui-client.js`, `ui-edit.js` | Fixed local assets; no arbitrary file serving |
 
 The HTTP adapter rejects foreign origins, cross-site requests and unexpected Host

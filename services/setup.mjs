@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Install into this standalone clone, never into another home. No cleanup on failure.
 // Usage: node services/setup.mjs [--docker auto|docker|sg-docker]
-//   [--claude PATH] [--codex PATH] [--ui-port PORT] [--scotty-port PORT]
+//   [--claude PATH] [--codex PATH] [--ui-port PORT] [--scotty-port PORT] [--owner NAME]
 //   [--check] [--help]
 // Linux amd64/arm64; Node >=22.13. All persistent resources are home-owned.
 import { createHash } from 'node:crypto';
@@ -29,7 +29,8 @@ Options:
   --claude PATH                  Claude executable (default PATH)
   --codex PATH                   Codex executable (default PATH)
   --ui-port PORT                 Factory screens (default free loopback port)
-  --scotty-port PORT             View-only Scotty (default free loopback port)
+  --scotty-port PORT             Scotty tickets (default free loopback port)
+  --owner NAME                  Scotty person (default Shay; preserved on update)
   --check                       Repeat live acceptance on a completed installation
   --help                        Show help without dependencies or side effects
 Setup downloads verified public dependencies, builds bundled sources and starts
@@ -46,7 +47,7 @@ export function parse(argv) {
   const seen = new Set();
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i].slice(2);
-    if (!argv[i].startsWith('--') || !['docker', 'claude', 'codex', 'ui-port', 'scotty-port', 'check'].includes(key) || seen.has(key)) {
+    if (!argv[i].startsWith('--') || !['docker', 'claude', 'codex', 'ui-port', 'scotty-port', 'owner', 'check'].includes(key) || seen.has(key)) {
       throw new Error(`Unknown or duplicate option: ${argv[i]}. Run --help.`);
     }
     seen.add(key);
@@ -55,6 +56,7 @@ export function parse(argv) {
     if (!value || value.startsWith('--')) throw new Error(`Missing --${key} value`);
     args[key] = value;
   }
+  if (args.owner !== undefined && !args.owner.trim()) throw new Error('Invalid --owner');
   if (!['auto', 'docker', 'sg-docker'].includes(args.docker)) throw new Error('Invalid --docker');
   for (const key of ['ui-port', 'scotty-port']) {
     const value = args[key];
@@ -154,7 +156,8 @@ export async function verify(installed, docker, { replacementImages } = {}) {
     if (replacementImages && !containerExists(docker, name)) continue;
     const service = inspectOwned(docker, name);
     verifyFolderService(service, home, kind, port, internal,
-      replacementImages ? [installed.images.runtime, replacementImages.runtime] : [installed.images.runtime]);
+      replacementImages ? [installed.images.runtime, replacementImages.runtime] : [installed.images.runtime],
+      { editable: installed.services.editable || !!replacementImages, allowLegacy: !!replacementImages });
     if (!replacementImages && !service.State.Running) throw new Error(`Dedicated ${kind} service is stopped`);
   }
   verifyTailnet(installed.services);
@@ -169,7 +172,7 @@ export async function accept(installed, options) {
 
 export function report(installed) {
   const tailnet = installed.services.tailnet;
-  console.log(`Software Factory complete: ${home}\nFactory screens: ${installed.services.uiOrigin}\nScotty (view-only): ${installed.services.scottyOrigin}/p/factory\n${tailnet?.enabled ? `Factory screens (tailnet): ${tailnet.uiOrigin}\nScotty (tailnet, view-only): ${tailnet.scottyOrigin}/p/factory` : `Tailnet not configured: ${tailnet?.reason ?? 'run the one-step factory update to enable it'}`}\n${startCommand(home, installed.executables.claude)}`);
+  console.log(`Software Factory complete: ${home}\nFactory screens: ${installed.services.uiOrigin}\nScotty: ${installed.services.scottyOrigin}/p/factory\n${tailnet?.enabled ? `Factory screens (tailnet): ${tailnet.uiOrigin}\nScotty (tailnet): ${tailnet.scottyOrigin}/p/factory` : `Tailnet not configured: ${tailnet?.reason ?? 'run the one-step factory update to enable it'}`}\n${startCommand(home, installed.executables.claude)}`);
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -182,6 +185,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (installed.version !== 2 || installed.state !== 'complete' || installed.home !== home) throw new Error('Invalid/incomplete installation record; refusing changes');
     for (const key of ['claude', 'codex']) if (options[key] && executable(options[key], key) !== installed.executables[key]) throw new Error(`Existing installation has a different --${key}`);
     for (const key of ['ui-port', 'scotty-port']) if (options[key] !== 'auto' && String(options[key]) !== String(installed.services[key === 'ui-port' ? 'uiPort' : 'scottyPort'])) throw new Error(`Existing installation has a different --${key}`);
+    if (options.owner && options.owner !== installed.services.owner) throw new Error('Existing installation has a different --owner; change the person in Scotty settings');
     if (installed.services.tailnet?.enabled) configureTailnet(installed.services);
     await verify(installed, docker);
     if (installed.commit !== run('git', ['-C', home, 'rev-parse', 'HEAD'])) throw new Error('Source changed since the last build; run node services/update.mjs --local to rebuild and accept the approved commit');
@@ -255,7 +259,7 @@ export async function main(argv = process.argv.slice(2)) {
   // Persist selected ports before Serve or container mutations. A restart can
   // reuse the exact owned ports, including after a partially completed phase.
   if (!transaction.ports) { transaction.ports = await planFolderServices(args); checkpoint(); }
-  console.log('Starting/resuming factory screens and view-only Scotty');
+  console.log('Starting/resuming factory screens and Scotty');
   const services = await installFolderServices(args, docker, images.runtime, transaction.ports);
   await installFactory(join(home, 'factory'), home, codex, claude, services);
   const installed = { version: 2, state: 'complete', home, args, images, services, executables: { codex, claude }, pins,

@@ -19,8 +19,8 @@ function installed() {
 }
 function addresses(record) {
   const services = record.services;
-  return `Factory screens: ${services.uiOrigin}\nScotty (view-only): ${services.scottyOrigin}/p/factory\n` +
-    (services.tailnet?.enabled ? `Factory screens (tailnet): ${services.tailnet.uiOrigin}\nScotty (tailnet, view-only): ${services.tailnet.scottyOrigin}/p/factory` : `Tailnet unavailable: ${services.tailnet?.reason ?? 'not configured'}`);
+  return `Factory screens: ${services.uiOrigin}\nScotty: ${services.scottyOrigin}/p/factory\n` +
+    (services.tailnet?.enabled ? `Factory screens (tailnet): ${services.tailnet.uiOrigin}\nScotty (tailnet): ${services.tailnet.scottyOrigin}/p/factory` : `Tailnet unavailable: ${services.tailnet?.reason ?? 'not configured'}`);
 }
 
 const displayBackup = join(home, 'state/software-factory.setup-display.json');

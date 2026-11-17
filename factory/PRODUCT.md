@@ -24,9 +24,11 @@ behavior and trace a brief to its plan without relying on chat history.
 
 ## Operating Context
 
-Software Factory is a companion project. FirstMate owns worker lifecycle;
-Beads through tasks-axi owns execution tasks. Scotty is a read-only task list
-and graph. Focused toolkit editors perform canonical management operations.
+Software Factory is a companion project.
+FirstMate owns worker lifecycle;
+Beads stores execution tasks shared by tasks-axi and the Scotty ticket editor.
+Scotty supports native ticket edits and a dependency graph.
+Focused toolkit editors perform canonical product-record operations.
 
 ## Capabilities and Constraints
 

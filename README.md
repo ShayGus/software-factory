@@ -24,7 +24,7 @@ cd my-factory
 claude
 ```
 
-The first Claude startup automatically builds the bundled sources, fetches pinned public dependencies, and starts dedicated Dolt, view-only Scotty and factory screens before the normal FirstMate session begins.
+The first Claude startup automatically builds the bundled sources, fetches pinned public dependencies, and starts dedicated Dolt, Scotty and factory screens before the normal FirstMate session begins.
 The same startup works in an existing clean standalone checkout; cloning again is unnecessary.
 First setup usually takes 5-15 minutes, depending on downloads and image builds.
 Claude shows the current setup phase and elapsed time in a temporary status bar, then restores your previous status bar when setup ends.
@@ -59,7 +59,8 @@ Then give a concrete request, for example:
 The factory preserves your original words, grounds its design in the repository, checks the plan and each worker's instructions, and reviews the delivered product against the request.
 Workers use Codex with GPT-6.1 Sol; product review uses Claude.
 The factory screens edit product records through canonical operations.
-Scotty shows the execution backlog and dependency graph; writes through Scotty are refused.
+Scotty creates and edits execution tickets and their dependencies in the same Beads database used by tasks-axi and the factory agent.
+Its person defaults to Shay and is preserved by updates; setup accepts `--owner NAME` for another person.
 You approve landing according to the project's registered delivery posture.
 See [the workflow](factory/skills/software-factory/SKILL.md) and [product design](factory/Software_Factory_Design.md).
 

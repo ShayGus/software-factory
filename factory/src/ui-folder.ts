@@ -35,7 +35,7 @@ export class FolderToolkitApi {
         return { status: 200, contentType: 'text/html; charset=utf-8', body: `<!doctype html><html lang="en"><head>
           <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Projects · Software Factory</title>
           <link rel="stylesheet" href="/assets/ui.css"></head><body><a class="skip" href="#main">Skip to content</a>
-          <header><a class="brand" href="/">Software Factory</a><nav aria-label="Main">${this.scottyUrl ? `<a href="${h(this.scottyUrl)}/p/factory">Scotty tickets and dependencies (read-only)</a>` : ''}</nav></header>
+          <header><a class="brand" href="/">Software Factory</a><nav aria-label="Main">${this.scottyUrl ? `<a href="${h(this.scottyUrl)}/p/factory">Scotty tickets and dependencies</a>` : ''}</nav></header>
           <main id="main"><h1>Projects</h1><p class="prose">Requests, features, plans, decisions and work for this factory folder.</p>
           ${projects.length ? rows : '<section><h2>No projects yet</h2><p class="prose">Open Claude in this factory folder and ask FirstMate to work on a registered project. Its factory records will appear here after the first request.</p></section>'}
           </main></body></html>` };

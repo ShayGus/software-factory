@@ -14,7 +14,7 @@ flowchart TD
     Tasks --> Beads[bd / Beads]
     Beads --> Dolt[Dolt persistent database]
     UI[Factory screens] --> Toolkit
-    Scotty[View-only Scotty] --> Guard[HTTP and bd read allowlists]
+    Scotty[Scotty ticket editor] --> Guard[Origin and fixed-project HTTP guard]
     Guard --> Beads
 ```
 
@@ -29,18 +29,19 @@ flowchart TD
 | tasks-axi | `tools/tasks-axi/` | Canonical execution-backlog operations, holds, dependencies and Beads transport |
 | Beads | Official pinned bd release | Execution records in Dolt through a dedicated Unix socket |
 | Dolt | Public image pinned by digest | Persistent Beads database with no published network port |
-| Scotty | Public pinned source commit | Read-only task list and dependency graph behind HTTP and command allowlists |
+| Scotty | Public pinned source commit | Native task editor and dependency graph over the same Beads database |
 | Factory screens | `factory/scripts/ui.mjs` | Product views and canonical mutations over the same toolkit records |
 | Installation | `services/` | Public dependency pins, build, persistent dedicated services, guarded update and acceptance |
 
 The factory does not replace the worker scheduler, add a second project registry or synchronize a parallel execution backlog.
 Product project databases are SQLite; execution tasks are Beads in Dolt.
 The hook registry points the start hook and screens at initialized project records.
-Scotty's editing preference is not a write authority: both its exposed HTTP routes and its bd wrapper enforce read-only operations.
+Scotty exposes native ticket operations for the fixed factory workspace; its bd bridge pins the external server database.
+Its configuration directory is writable for person settings and ordering while the rest of the home remains mounted read-only.
 Docker publishes only loopback browser ports.
 `factory/scripts/tailnet.mjs` optionally maps those ports through persistent Tailscale Serve HTTPS, preserving unrelated Serve configuration and refusing conflicting or Funnel-enabled ports.
 The installation record owns the two exact tailnet origins; HTTP guards accept matching Host and Origin pairs and still reject cross-site requests.
-Remote factory navigation uses the tailnet Scotty address; Scotty’s HTTP and command allowlists remain read-only.
+Remote factory navigation uses the tailnet Scotty address; the same origin checks protect native ticket edits.
 
 ## Startup and persistence
 
@@ -72,7 +73,7 @@ Changed ownership, mounts, ports or unknown images refuse recovery.
 An update failure leaves durable evidence rather than resetting source or deleting data.
 
 Acceptance exercises a real non-interactive Claude with normal startup and local settings, factory skill loading and backlog add/list/remove.
-It also requires the factory screen, a probe and blocking dependency visible in Scotty, and refusal of Scotty create/edit/delete requests at both local and configured tailnet addresses.
+It also requires the factory screen, a probe and blocking dependency visible in Scotty, and bidirectional native Scotty/tasks-axi ticket edits at both local and configured tailnet addresses.
 Model prose is not the acceptance verdict: tool results, hook events, exact executable-path evidence and HTTP responses are checked.
 
 ## Data layout

@@ -41,7 +41,7 @@ function shell(view: ProjectView, title: string, body: string) {
     <body><a class="skip" href="#main">Skip to content</a><header><a class="brand" href="/">Software Factory</a><nav aria-label="Main"><a href="/projects/${enc(view.options.projectId)}">Features</a>
     <a href="/projects/${enc(view.options.projectId)}/decisions">Needs input (${view.questions.length})</a><a href="/projects/${enc(view.options.projectId)}/learning">Learning</a>
     <a href="/projects/${enc(view.options.projectId)}/work">Work</a><a href="/projects/${enc(view.options.projectId)}/dependencies">Dependencies</a>
-    ${view.options.scottyUrl && /^https?:\/\//u.test(view.options.scottyUrl) ? `<a href="${h(view.options.scottyUrl)}" rel="noreferrer">Scotty execution list (read-only)</a>` : '<span>Scotty link not configured</span>'}</nav></header>
+    ${view.options.scottyUrl && /^https?:\/\//u.test(view.options.scottyUrl) ? `<a href="${h(view.options.scottyUrl)}" rel="noreferrer">Scotty tickets and dependencies</a>` : '<span>Scotty link not configured</span>'}</nav></header>
     <main id="main" data-stale-after-ms="${uiStaleAfterMs(view.options.staleAfterMs)}"><div class="notice">${view.options.fixture ? 'Fixture mode — all requests, task observations and evidence are synthetic.' : 'Local project records'}
     <span>Read at ${h(view.readAt)}</span></div><div id="page-state" role="status" aria-live="polite">Loaded — local records. Execution observations carry their own freshness labels.</div>
     <noscript><p>Read-only — enable JavaScript to save edits through canonical operations.</p></noscript>${body}</main>

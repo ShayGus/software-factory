@@ -143,7 +143,7 @@ After a partial or ambiguous external effect, inspect saved output, `outbox`, na
 
 Use the configured `uiOrigin` for `/projects/<encoded-project-id>` and `/projects/<encoded-project-id>/decisions`.
 The installed folder service discovers projects from `hookRegistry`; after registering the project, verify its link answers.
-Use the installed `scottyOrigin` with `/p/factory` for the folder’s read-only execution list and dependency graph.
+Use the installed `scottyOrigin` with `/p/factory` for the folder’s editable execution tickets and dependency graph.
 If either service is unavailable, report the failed link and its dedicated container from the installed `services` settings for diagnosis.
 
 Report in chat: accomplished behavior or the failed gate; delivered commits; technical and product outcomes with saved evidence paths; open product questions with their decisions-screen link; and the factory-screen link.

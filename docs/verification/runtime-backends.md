@@ -14,7 +14,7 @@ Repeat with a standalone copy of an existing checkout, retaining its Git history
 The [root setup guide](../../README.md#clone-and-start) owns the operator flow.
 
 Observed output included `Software Factory ready in 64s.` for a fresh clone and `Software Factory ready in 65s.` for an existing checkout.
-During setup, the Claude status bar showed `Starting/resuming factory screens and view-only Scotty` and `Running automatic Claude acceptance with normal session startup`, with advancing elapsed seconds before any prompt.
+During setup, the Claude status bar showed the current service-start phase and `Running automatic Claude acceptance with normal session startup`, with advancing elapsed seconds before any prompt.
 Both installations passed local and tailnet screen acceptance and nested Claude startup, skill-load and backlog add/list/remove acceptance without recursion.
 The first interactive sessions also loaded the factory skill and resolved the folder-local `tasks-axi` without changing PATH.
 An existing local hook, environment setting, status bar, preference file and Git remote configuration were retained.

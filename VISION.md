@@ -30,6 +30,6 @@ The system adds no competing scheduler or permanent hierarchy of managers.
 
 Serve one operator and their projects with open-source components and understandable ownership boundaries.
 Reuse existing code and settled decisions before rebuilding them.
-The factory screens perform canonical product edits; Beads through tasks-axi owns execution tasks, and Scotty presents them read only.
+The factory screens perform canonical product edits; tasks-axi and Scotty edit execution tickets in one Beads database.
 The [product design](factory/Software_Factory_Design.md#1-decision-and-scope) and [product purpose](factory/PRODUCT.md) supply the detailed methodology and scope.
 The [FirstMate vision](docs/firstmate-vision.md) remains the execution layer's guiding contract.

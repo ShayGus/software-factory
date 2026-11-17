@@ -72,13 +72,21 @@ OpenProject is not the default for this use case. Multica is excluded from the e
 
 ### Beads + Scotty integration check
 
-Beads is the chosen task and dependency store; Scotty is its existing local browser page. Piyaz is out. This check resolves how the chosen tools expose toolkit records and canonical operations, not another tool selection. Execution tasks use the existing FirstMate/tasks-axi operations with the Beads backend. Scotty supplies presentation, not a competing planning or execution workflow; model-assisted actions remain disabled in the spike.
+Beads is the chosen task and dependency store; Scotty is its existing local browser page.
+Piyaz is out.
+This check resolves how the chosen tools expose toolkit records and canonical operations, not another tool selection.
+Execution tasks use the shared Beads backend through FirstMate/tasks-axi or native Scotty ticket edits.
+Scotty supplies presentation, not a competing planning or execution workflow; model-assisted actions remain disabled in the spike.
 
 Use one feature, two execution tasks, one dependency, a correction, and a result. The early spike may use a stub canonical API to test layout and mutation routing; that produces a provisional choice. Final adoption requires real adapter round trips during UI integration. Beads + Scotty must show original intent, remaining criteria, execution links, blockers, and decisions as canonical links or read-only text. Map every exposed MVP edit: features/criteria, task state, priority, dependencies, decisions and notes. Each must call its canonical operation or open the focused editor; no native editor may silently update only a projected copy.
 
 **Adopt it only if** the integration avoids duplicate manual bookkeeping, does not require replacing FirstMate lifecycle logic, and has a manageable extension surface for these mutations. A read-only demonstration alone does not satisfy the management-UI requirement. If adoption requires broad mutation interception, generic bidirectional backlog synchronization or substantial remodelling of Scotty, choose the focused custom UI. This check is a bounded engineering decision, not a new broad market survey.
 
-Reuse the existing tasks-axi Beads backend, not a second task synchronizer. Native Scotty edits must be read back by the canonical owner or refused/routed to a toolkit operation. Scotty read-only mode is a browser preference, so the spike must also enforce its mutation boundary. Independent clients must use the backend's supported server configuration; Scotty's per-process embedded queue is not a cross-client lock. The field/mutation mapping and actual round trips remain the integration checks.
+Reuse the existing tasks-axi Beads backend, not a second task synchronizer.
+Native Scotty edits must be read back by the canonical owner or refused/routed to a toolkit operation.
+The installed service permits native ticket mutations and keeps toolkit product records under their canonical operations.
+Independent clients must use the backend's supported server configuration; Scotty's per-process embedded queue is not a cross-client lock.
+The field/mutation mapping and actual round trips remain the integration checks.
 
 ## 3. Architecture and data ownership
 
@@ -257,7 +265,13 @@ The original wireframe source (`personal_wireframes/feature.svg`) is not include
 
 ### Work and dependencies
 
-Provide a task list or board and a dependency view. Cards show feature links and blocking reasons. Task actions go through FirstMate. Include ready-since/review age and next action for PRs, plus execution versus waiting time where observed. A returned worker appears as returned even if the associated product behavior is incomplete. Use the chosen Beads + Scotty list/graph where useful; focused toolkit editors handle product meaning and canonical mutations that Scotty cannot route. The board is a proposed presentation option.
+Provide a task list or board and a dependency view.
+Cards show feature links and blocking reasons.
+Task edits use the shared Beads database; worker dispatch and delivery go through FirstMate.
+Include ready-since/review age and next action for PRs, plus execution versus waiting time where observed.
+A returned worker appears as returned even if the associated product behavior is incomplete.
+Use the chosen Beads + Scotty list/graph where useful; focused toolkit editors handle product meaning and canonical mutations that Scotty cannot route.
+The board is a proposed presentation option.
 
 Proposed task board and dependency view.
 The original wireframe source (`personal_wireframes/work.svg`) is not included in this distribution.

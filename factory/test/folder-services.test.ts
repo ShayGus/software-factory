@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 test('screen acceptance requires both exact ticket IDs and the exact blocking edge', async () => {
   const { screenProbeObserved } = await import(new URL('../../scripts/folder-services.mjs', import.meta.url).href);
-  const payload = { meta: { readOnly: true }, beads: [
+  const payload = { meta: { readOnly: false }, beads: [
     { id: 'fm-probe', dependencies: [] },
     { id: 'fm-probe-dep', dependencies: [{ depends_on_id: 'fm-probe', type: 'blocks' }] },
   ] };
@@ -20,7 +20,7 @@ test('screen acceptance requires both exact ticket IDs and the exact blocking ed
     [payload.beads[0], { id: 'fm-probe-dep', dependencies: [{ depends_on_id: 'fm-probe-other', type: 'blocks' }] }],
     [payload.beads[0], { id: 'fm-probe-dep', dependencies: [{ depends_on_id: 'fm-probe', type: 'related' }] }],
   ]) assert.equal(screenProbeObserved({ ...payload, beads }, 'probe', 'probe-dep'), false);
-  assert.equal(screenProbeObserved({ ...payload, meta: { readOnly: false } }, 'probe', 'probe-dep'), false);
+  assert.equal(screenProbeObserved({ ...payload, meta: { readOnly: true } }, 'probe', 'probe-dep'), false);
 });
 
 

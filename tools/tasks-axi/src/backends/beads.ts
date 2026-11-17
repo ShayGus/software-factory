@@ -49,6 +49,8 @@ interface Row {
   status: string;
   priority: number;
   metadata: unknown;
+  issue_type: string;
+  labels: unknown;
   edges: unknown;
   token: string;
 }
@@ -66,6 +68,10 @@ const FROM_NATIVE: Record<string, State | undefined> = {
   open: "queued",
   in_progress: "in_flight",
   closed: "done",
+  blocked: "queued",
+  deferred: "queued",
+  pinned: "queued",
+  hooked: "queued",
 };
 const EDGE_NATIVE = {
   "blocked-by": "blocks",
@@ -126,6 +132,14 @@ function same(a: unknown, b: unknown): boolean {
         ),
     )
   );
+}
+function nativeHold(row: Row): Task["hold"] {
+  if (row.status === "closed") return undefined;
+  if ((jsonValue(row.labels) as string[]).includes("human"))
+    return { reason: "Needs a person in Scotty", kind: "captain" };
+  if (["blocked", "deferred", "pinned", "hooked"].includes(row.status))
+    return { reason: `Native Beads status: ${row.status}`, kind: "external" };
+  return undefined;
 }
 function normalize(task: Task): Task {
   validateId(task.id);
@@ -263,10 +277,27 @@ export class BeadsStore implements Store {
       !Number.isInteger(row.priority)
     )
       fail("Unsupported Beads row schema");
-    const namespace = object(
-      object(row.metadata).tasks_axi,
-    ) as unknown as Namespace;
     const id = this.logical(row.id);
+    const metadata = object(row.metadata);
+    // Native clients mint the same physical IDs but do not own tasks_axi metadata.
+    // Read without mutating the row; its first tasks-axi write adopts it atomically.
+    const namespace = (metadata.tasks_axi === undefined
+      ? {
+          version: 1,
+          logical_id: id,
+          revision: row.token,
+          order: 0,
+          archived: false,
+          task: {
+            id,
+            title: row.title,
+            state: FROM_NATIVE[row.status],
+            kind: row.issue_type,
+            links: [],
+            deps: [],
+          },
+        }
+      : object(metadata.tasks_axi)) as unknown as Namespace;
     if (
       namespace.version !== 1 ||
       namespace.logical_id !== id ||
@@ -284,6 +315,8 @@ export class BeadsStore implements Store {
     if (row.description !== "" || task.body !== undefined)
       task.body = row.description;
     task.state = state;
+    task.hold ??= nativeHold(row);
+    if (task.hold === undefined) delete task.hold;
     if (task.priority !== undefined || row.priority !== 2)
       task.priority = row.priority;
     const edges = jsonValue(row.edges);
@@ -350,7 +383,7 @@ export class BeadsStore implements Store {
     const inspect = () =>
       this.transport.json([
         "sql",
-        "SELECT create_stmt FROM dolt_procedures WHERE name='tasks_axi_apply_v1'",
+        "SELECT create_stmt FROM dolt_procedures WHERE name='tasks_axi_apply_v2'",
       ]);
     const rows = await inspect();
     if (!Array.isArray(rows)) fail("Unsupported Dolt procedure schema");
@@ -368,7 +401,7 @@ export class BeadsStore implements Store {
       installed[0]?.create_stmt !== APPLY_ROUTINE
     ) {
       throw unsupported(
-        "installed tasks_axi_apply_v1 routine revision; provision a matching scratch-verified schema",
+        "installed tasks_axi_apply_v2 routine revision; provision a matching scratch-verified schema",
         "beads",
       );
     }
@@ -379,10 +412,17 @@ export class BeadsStore implements Store {
     mode = record ? "update" : "create",
     archived = false,
   ) {
+    const storedTask = structuredClone(task);
+    if (
+      record &&
+      !record.namespace.task.hold &&
+      same(storedTask.hold, nativeHold(record.row))
+    )
+      delete storedTask.hold;
     const namespace: Namespace = {
       version: 1,
       logical_id: task.id,
-      task,
+      task: storedTask,
       revision: randomUUID(),
       order:
         record?.namespace.order ??
@@ -394,7 +434,11 @@ export class BeadsStore implements Store {
       mode,
       token: record?.row.token,
       namespace,
-      status: TO_NATIVE[task.state],
+      expectedTask: task,
+      status:
+        record && mode !== "transition"
+          ? record.row.status
+          : TO_NATIVE[task.state],
       edges: task.deps.map((dep) => ({
         id: this.physical(dep.id),
         type: EDGE_NATIVE[dep.type],
@@ -406,15 +450,11 @@ export class BeadsStore implements Store {
   ): Promise<void> {
     this.installed ??= this.install();
     await this.installed;
-    const wireEntries = entries.map((entry) =>
-      entry.mode === "archive"
-        ? {
-            ...entry,
-            namespace: { revision: entry.namespace.revision },
-            edges: undefined,
-          }
-        : entry,
-    );
+    const wireEntries = entries.map((entry) => ({
+      ...entry,
+      expectedTask: undefined,
+      ...(entry.mode === "archive" ? { edges: undefined } : {}),
+    }));
     const payload = Buffer.from(
       JSON.stringify({ entries: wireEntries }),
       "utf8",
@@ -431,7 +471,7 @@ export class BeadsStore implements Store {
         }
         await this.transport.json([
           "sql",
-          `CALL tasks_axi_apply_v1(${sqlString(JSON.stringify({ request_id: request }))})`,
+          `CALL tasks_axi_apply_v2(${sqlString(JSON.stringify({ request_id: request }))})`,
         ]);
       } catch (error) {
         try {
@@ -447,7 +487,7 @@ export class BeadsStore implements Store {
     } else
       await this.transport.json([
         "sql",
-        `CALL tasks_axi_apply_v1(${sqlString(payload.toString("utf8"))})`,
+        `CALL tasks_axi_apply_v2(${sqlString(payload.toString("utf8"))})`,
       ]);
     // A lost/conflicting response is never inferred successful from an exit code alone.
     for (const entry of entries) {
@@ -457,7 +497,7 @@ export class BeadsStore implements Store {
           ? found !== undefined
           : !found ||
             found.namespace.revision !== entry.namespace.revision ||
-            !same(found.task, entry.namespace.task)
+            !same(found.task, entry.expectedTask)
       ) {
         throw new AxiError(
           "Beads changed during mutation; inspect task state before retrying",
@@ -504,6 +544,10 @@ export class BeadsStore implements Store {
         changed.push(field);
       }
     }
+    if (patch.hold === null && nativeHold(record.row))
+      fail(
+        "Clear the native Beads status or human flag in Scotty before unholding this task",
+      );
     if (patch.hold !== undefined && !same(task.hold, patch.hold ?? undefined)) {
       if (patch.hold === null) delete task.hold;
       else task.hold = structuredClone(patch.hold);
@@ -591,9 +635,14 @@ export class BeadsStore implements Store {
   ): Promise<Task> {
     const record = await this.require(id),
       task = structuredClone(record.task);
+    if (!record.namespace.task.hold && same(task.hold, nativeHold(record.row)))
+      delete task.hold;
     if (!STATES.includes(to)) fail("Invalid transition state");
     if (to === "in_flight") {
-      if (isHoldActive({ ...task, state: to }, { today: this.now() }))
+      if (
+        nativeHold(record.row) ||
+        isHoldActive({ ...task, state: to }, { today: this.now() })
+      )
         fail("Cannot start an actively held Beads task");
       for (const dep of task.deps.filter((d) => d.type === "blocked-by")) {
         const blocker = await this.get(dep.id);

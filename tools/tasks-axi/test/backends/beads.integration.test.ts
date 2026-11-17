@@ -40,6 +40,146 @@ const sql = (query: string) => new BeadsTransport(config).json(["sql", query]);
 describe.skipIf(!enabled)(
   "pinned bd 1.1.0 with a shared scratch Dolt server",
   () => {
+    it("reads native Scotty tickets and adopts edits without losing identity, native data or holds", async () => {
+      const store = make(),
+        transport = new BeadsTransport(config);
+      const parent = id("native-parent"),
+        child = id("native-child");
+      await transport.json([
+        "create",
+        "Native feature",
+        "--id",
+        `fm-${parent}`,
+        "-t",
+        "feature",
+      ]);
+      await transport.json([
+        "create",
+        "Native task",
+        "--id",
+        `fm-${child}`,
+        "--description",
+        "Created in Scotty",
+        "--assignee",
+        "Shay",
+      ]);
+      await transport.json([
+        "update",
+        `fm-${child}`,
+        "--parent",
+        `fm-${parent}`,
+      ]);
+      await transport.json(["comment", `fm-${child}`, "Owner comment"]);
+      await sql(
+        `UPDATE issues SET metadata=JSON_OBJECT('foreign',JSON_OBJECT('keep',true)) WHERE id=${sqlString(`fm-${child}`)}`,
+      );
+      expect(await store.get(child)).toMatchObject({
+        id: child,
+        title: "Native task",
+        body: "Created in Scotty",
+        state: "queued",
+        deps: [{ id: parent, type: "parent" }],
+      });
+      expect((await store.get(parent))?.kind).toBe("feature");
+      expect(
+        (await store.list({})).items.some((task) => task.id === child),
+      ).toBe(true);
+      await store.update(child, {
+        title: "Agent edit",
+        body: "Agent instructions",
+      });
+      const native = (await transport.json([
+        "show",
+        `fm-${child}`,
+        "--include-comments",
+      ])) as {
+        title: string;
+        assignee: string;
+        comments: { text: string }[];
+        metadata: { foreign: unknown };
+      }[];
+      expect(native[0]).toMatchObject({
+        title: "Agent edit",
+        assignee: "Shay",
+        metadata: { foreign: { keep: true } },
+      });
+      expect(
+        native[0].comments.some((comment) => comment.text === "Owner comment"),
+      ).toBe(true);
+      // Native holds are a live projection, never frozen into tasks_axi metadata.
+      for (const status of ["blocked", "deferred", "pinned", "hooked"]) {
+        await transport.json(["update", `fm-${child}`, "-s", status]);
+        expect((await store.get(child))?.hold?.reason).toBe(
+          `Native Beads status: ${status}`,
+        );
+        await expect(store.transition(child, "in_flight")).rejects.toThrow(
+          /held/,
+        );
+        await store.update(child, { title: `Agent edit while ${status}` });
+        expect(
+          (
+            (await transport.json(["show", `fm-${child}`])) as {
+              status: string;
+            }[]
+          )[0].status,
+        ).toBe(status);
+        await transport.json(["update", `fm-${child}`, "-s", "open"]);
+        expect((await store.get(child))?.hold).toBeUndefined();
+      }
+      await transport.json(["update", `fm-${child}`, "--add-label", "human"]);
+      expect((await store.get(child))?.hold?.kind).toBe("captain");
+      expect(
+        readyTasks((await store.list({})).items).some(
+          (task) => task.id === child,
+        ),
+      ).toBe(false);
+      await store.update(child, { priority: 1 });
+      await expect(store.transition(child, "in_flight")).rejects.toThrow(
+        /held/,
+      );
+      await transport.json([
+        "update",
+        `fm-${child}`,
+        "--remove-label",
+        "human",
+      ]);
+      expect((await store.get(child))?.hold).toBeUndefined();
+      await store.transition(child, "in_flight");
+      await store.remove(child);
+      await store.remove(parent);
+    }, 30000);
+
+    it("archives a native closed ticket without requiring prior tasks-axi metadata", async () => {
+      const store = make(),
+        logical = id("native-closed"),
+        transport = new BeadsTransport(config);
+      await transport.json([
+        "create",
+        "Native closed",
+        "--id",
+        `fm-${logical}`,
+      ]);
+      await transport.json(["close", `fm-${logical}`]);
+      const before = await store.get(logical);
+      expect(before?.state).toBe("done");
+      const record = await Reflect.get(store, "require").call(store, logical);
+      const entry = Reflect.get(store, "entry").call(
+        store,
+        before,
+        record,
+        "archive",
+        true,
+      );
+      await Reflect.get(store, "apply").call(store, [entry]);
+      expect(
+        (await store.list({ state: "done" })).items.some(
+          (task) => task.id === logical,
+        ),
+      ).toBe(false);
+      expect((await store.get(logical))?.title).toBe("Native closed");
+      await store.remove(logical);
+    }, 20000);
+
     it("preserves IDs, full bodies, legacy dates, metadata and native edits through either client", async () => {
       const a = make(),
         b = new BeadsStore(second, () => "2026-11-10"),
