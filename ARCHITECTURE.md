@@ -66,6 +66,9 @@ It rebuilds against the resulting source, preserves private configuration and se
 Update acceptance uses FirstMate's existing `FM_STATE_OVERRIDE` to give its child session a private runtime-state directory under the same home, preserving the live caller's fleet lock.
 The child still uses the actual installed source, local settings, hooks, executable, Beads backlog and screens.
 Initial setup proves ordinary startup with the default state directory.
+Before service replacement, the pending update checkpoints its exact home, target commit, baseline installation, container IDs and built images.
+A rerun at that target accepts only the recorded old services or correctly configured replacements using the checkpointed image, then repeats acceptance before completing the installation record.
+Changed ownership, mounts, ports or unknown images refuse recovery.
 An update failure leaves durable evidence rather than resetting source or deleting data.
 
 Acceptance exercises a real non-interactive Claude with normal startup and local settings, factory skill loading and backlog add/list/remove.

@@ -50,13 +50,7 @@ export async function installFolderServices(args, docker, baseImage, previous) {
   const ensure = (kind, port, internal, argv) => {
     if (!containerExists(docker, names[kind])) { docker(argv); return; }
     const [container] = JSON.parse(docker(['inspect', names[kind]]));
-    const bindings = container.HostConfig.PortBindings[`${internal}/tcp`];
-    if (container.Config.Labels?.['com.software-factory.home'] !== home || container.Image !== baseImage ||
-      container.HostConfig.RestartPolicy.Name !== 'unless-stopped' || !bindings || bindings.length !== 1 ||
-      bindings[0].HostIp !== '127.0.0.1' || bindings[0].HostPort !== String(port) ||
-      !container.Mounts.some(m => m.Source === home && m.Destination === home && m.RW === (kind === 'ui'))) {
-      throw new Error(`Refusing foreign or changed ${kind} container: ${names[kind]}`);
-    }
+    verifyFolderService(container, home, kind, port, internal, [baseImage]);
     if (!container.State.Running) docker(['start', names[kind]]);
   };
   ensure('scotty', scottyPort, 3000, ['run', '--pull', 'never', '-d', '--name', names.scotty, ...common, '-p', `127.0.0.1:${scottyPort}:3000`,
@@ -73,12 +67,26 @@ export async function installFolderServices(args, docker, baseImage, previous) {
   return { names, uiPort, scottyPort, uiOrigin, scottyOrigin, runtimeImage, ...(tailnet ? { tailnet } : {}) };
 }
 
+// Used by installation, completed-install verification and guarded update recovery.
+export function verifyFolderService(container, home, kind, port, internal, images) {
+  const bindings = container.HostConfig.PortBindings?.[`${internal}/tcp`];
+  if (container.Config.Labels?.['com.software-factory.home'] !== home || !images.includes(container.Image) ||
+    container.HostConfig.RestartPolicy.Name !== 'unless-stopped' ||
+    Object.keys(container.HostConfig.PortBindings ?? {}).length !== 1 || !bindings || bindings.length !== 1 ||
+    bindings[0].HostIp !== '127.0.0.1' || bindings[0].HostPort !== String(port) ||
+    container.Mounts.length !== 1 || !container.Mounts.some(m => m.Type === 'bind' && m.Source === home && m.Destination === home && m.RW === (kind === 'ui'))) {
+    throw new Error(`Refusing foreign or changed ${kind} container`);
+  }
+}
+
 export async function waitForScreens(services) {
   const deadline = Date.now() + 60000;
   const pairs = [services, ...(services.tailnet?.enabled ? [services.tailnet] : [])];
   for (const url of pairs.flatMap(pair => [pair.uiOrigin, `${pair.scottyOrigin}/api/p/factory/beads`])) {
     while (true) {
-      try { const response = await fetch(url, { signal: AbortSignal.timeout(5000) }); if (response.ok) break; } catch { /* Startup/reboot may still be in progress. */ }
+      // Synchronous backlog commands can outlive a server's idle timeout while
+      // preventing Node from observing socket closure. Never pool these probes.
+      try { const response = await fetch(url, { headers: { Connection: 'close' }, signal: AbortSignal.timeout(5000) }); await response.arrayBuffer(); if (response.ok) break; } catch { /* Startup/reboot may still be in progress. */ }
       if (Date.now() > deadline) throw new Error(`Screen did not answer: ${url}; inspect dedicated container logs`);
       await delay(500);
     }
@@ -102,7 +110,7 @@ async function acceptScreenPair(home, services, wrapper) {
   const successor = `${probe}-dep`;
   const evidence = { ui: services.uiOrigin, scotty: services.scottyOrigin, probe, checks: [] };
   const check = async (path, init) => {
-    const response = await fetch(services.scottyOrigin + path, { ...init, signal: AbortSignal.timeout(20000) });
+    const response = await fetch(services.scottyOrigin + path, { ...init, headers: { ...init?.headers, Connection: 'close' }, signal: AbortSignal.timeout(20000) });
     const text = await response.text();
     evidence.checks.push({ path, method: init?.method ?? 'GET', status: response.status, body: text });
     return { response, text };
@@ -130,7 +138,7 @@ async function acceptScreenPair(home, services, wrapper) {
     }
     const after = wrapper(['list']);
     if (!after.includes(probe) || !after.includes(successor) || after.includes('Must be refused')) throw new Error('Scotty write boundary changed the backlog');
-    const ui = await fetch(services.uiOrigin, { signal: AbortSignal.timeout(5000) });
+    const ui = await fetch(services.uiOrigin, { headers: { Connection: 'close' }, signal: AbortSignal.timeout(5000) });
     const html = await ui.text();
     evidence.factory = { status: ui.status, body: html };
     if (!ui.ok || !html.includes('Projects')) throw new Error('Factory folder screen did not answer');

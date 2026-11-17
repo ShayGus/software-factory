@@ -44,7 +44,7 @@ else {console.error('Unexpected Docker mutation');process.exitCode=99;}
   });
   const marker = join(home, 'config/software-factory.install.json');
   const installed = () => { mkdirSync(join(home, 'config')); mkdirSync(join(home, 'state')); writeFileSync(marker, '{}\n'); };
-  return { root, home, log, invoke, git, marker, installed, close: () => rmSync(root, { recursive: true, force: true }) };
+  return { root, home, bin, log, invoke, git, marker, installed, close: () => rmSync(root, { recursive: true, force: true }) };
 }
 
 test('monorepo and compatibility help need no Docker or authenticated clients', () => {
@@ -316,4 +316,178 @@ test('checkpoint replacement tolerates a temporary file left by an interrupted s
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { resumed: true });
     assert.equal(readFileSync(path + '.tmp', 'utf8'), 'interrupted write');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+// Exercise the actual rebuild and Docker command boundary. Only expensive image
+// compilation and Claude acceptance are substituted; full scratch proof uses both.
+async function updateFixture(sameImage = false) {
+  const f = fixture();
+  const server = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { createServer } from 'node:http';
+    const server = createServer((req, res) => res.end('{}'));
+    server.listen(0, '127.0.0.1', () => console.log(server.address().port));
+  `], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const [out] = await once(server.stdout!, 'data');
+  const port = Number(String(out).trim());
+  const oldImage = 'sha256:' + '1'.repeat(64);
+  const newImage = sameImage ? oldImage : 'sha256:' + '2'.repeat(64);
+  const doltImage = 'sha256:' + '3'.repeat(64);
+  const pins = JSON.parse(readFileSync(join(f.home, 'services/dependencies.json'), 'utf8'));
+  const services = { names: { scotty: 'test-scotty', ui: 'test-ui' }, uiPort: port, scottyPort: port,
+    uiOrigin: `http://127.0.0.1:${port}`, scottyOrigin: `http://127.0.0.1:${port}`, runtimeImage: oldImage };
+  const installed = { version: 2, state: 'complete', home: f.home, commit: f.git('rev-parse', 'HEAD'),
+    args: { home: f.home, container: 'test', factoryRoot: join(f.home, 'factory'), database: 'test' },
+    services, images: { runtime: oldImage, dolt: doltImage }, pins, executables: { claude: process.execPath } };
+  for (const path of ['beads/bin/bd', 'beads/workspace/.beads/metadata.json', '.tools/bin/tasks-axi', 'factory/dist/src/index.js',
+    'tools/tasks-axi/dist/bin/tasks-axi.js', 'config/software-factory.agents.json', 'config/software-factory.projects.json',
+    'data/software-factory.acceptance.jsonl', '.claude/settings.local.json']) {
+    mkdirSync(dirname(join(f.home, path)), { recursive: true }); writeFileSync(join(f.home, path), '{}');
+  }
+  mkdirSync(join(f.home, 'state'));
+  mkdirSync(join(f.home, 'factory/skills/software-factory'), { recursive: true });
+  mkdirSync(join(f.home, '.claude/skills'), { recursive: true });
+  symlinkSync(join(f.home, 'factory/skills/software-factory'), join(f.home, '.claude/skills/software-factory'));
+  writeFileSync(join(f.home, 'config/software-factory.json'), JSON.stringify({ home: f.home, factoryRoot: join(f.home, 'factory'),
+    uiOrigin: services.uiOrigin, scottyOrigin: services.scottyOrigin }));
+  writeFileSync(join(f.home, 'config/hooks.json'), JSON.stringify({ version: 1, hooks: [{ id: 'software-factory-instruction-check',
+    event: 'worker.start.before', timeout_seconds: 300, argv: [join(f.home, 'factory/scripts/worker-start-before.mjs'), join(f.home, 'config/software-factory.projects.json')] }] }));
+  writeFileSync(f.marker, JSON.stringify(installed));
+  const containers = Object.fromEntries(['dolt', 'ui', 'scotty'].map(kind => [kind === 'dolt' ? 'test' : `test-${kind}`, {
+    Id: (kind === 'ui' ? '4' : kind === 'scotty' ? '5' : '6').repeat(64),
+    Config: { Labels: { 'com.software-factory.home': f.home } }, Image: kind === 'dolt' ? doltImage : oldImage,
+    State: { Running: true }, HostConfig: { RestartPolicy: { Name: 'unless-stopped' }, NetworkMode: 'none',
+      PortBindings: kind === 'dolt' ? {} : { [`${kind === 'ui' ? port : 3000}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(port) }] } },
+    Mounts: [{ Type: 'bind', Source: kind === 'dolt' ? join(f.home, 'beads') : f.home,
+      Destination: kind === 'dolt' ? join(f.home, 'beads') : f.home, RW: kind !== 'scotty' }],
+  }]));
+  const state = join(f.root, 'containers.json');
+  writeFileSync(state, JSON.stringify(containers));
+  writeFileSync(join(f.bin, 'tailscale'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  writeFileSync(join(f.bin, 'docker'), `#!${process.execPath}
+const fs=require('node:fs'), a=process.argv.slice(2), path=${JSON.stringify(state)};
+const containers=JSON.parse(fs.readFileSync(path,'utf8'));
+fs.appendFileSync(${JSON.stringify(f.log)},JSON.stringify(a)+'\\n');
+if(a[0]==='info') console.log('27.0');
+else if(a[0]==='container') console.log(Object.keys(containers).join('\\n'));
+else if(a[0]==='inspect') console.log(JSON.stringify([containers[a[1]]]));
+else if(a[0]==='image') console.log(a[2]);
+else {
+  if(a[0]==='stop') containers[a.at(-1)].State.Running=false;
+  else if(a[0]==='rm') delete containers[a[1]];
+  else if(a[0]==='start') containers[a[1]].State.Running=true;
+  else if(a[0]==='run') {
+    const name=a[a.indexOf('--name')+1], kind=name.endsWith('-ui')?'ui':'scotty';
+    containers[name]=${JSON.stringify(containers)}[name];
+    containers[name].Image=${JSON.stringify(newImage)};
+    containers[name].Id=(kind==='ui'?'7':'8').repeat(64);
+  } else throw Error('Unexpected Docker command '+a);
+  fs.writeFileSync(path,JSON.stringify(containers));
+  if((a[0]==='rm' && process.env.SF_TEST_FAIL==='partial') ||
+     (a[0]==='stop' && process.env.SF_TEST_FAIL==='stopped') ||
+     (a[0]==='run' && process.env.SF_TEST_FAIL==='created')) throw Error('Injected partial replacement failure');
+}
+`, { mode: 0o755 });
+  writeFileSync(join(f.home, 'services/test-rebuild.mjs'), `
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+import { rebuild, verifyUpdate, preflight } from './update.mjs';
+import { dockerRunner, json } from '../factory/scripts/home-acceptance.mjs';
+const docker = dockerRunner('docker');
+try {
+  // The public entrypoint and the fresh rebuild both use this validation.
+  await verifyUpdate(json(${JSON.stringify(f.marker)}), docker, preflight());
+  await rebuild(docker, {
+    buildImages: async () => { appendFileSync(${JSON.stringify(join(f.root, 'builds'))}, 'build\\n'); return { runtime: ${JSON.stringify(newImage)}, dolt: ${JSON.stringify(doltImage)} }; },
+    acceptance: async () => {
+      if (process.env.SF_TEST_FAIL === 'accept') throw Error('Injected failure after replacement');
+      writeFileSync(${JSON.stringify(join(f.root, 'accepted'))}, 'accepted');
+    },
+  });
+} catch (error) { console.error(error.message); process.exitCode = 1; }
+`);
+  f.git('add', '.'); f.git('commit', '-m', 'Update fixture');
+  const pending = join(f.home, 'state/software-factory.update.pending.json');
+  writeFileSync(pending, JSON.stringify({ home: f.home, before: installed.commit, target: f.git('rev-parse', 'HEAD'), local: true, started: Date.now() }));
+  const invoke = (failure = '') => spawnSync(process.execPath, [join(f.home, 'services/test-rebuild.mjs')], {
+    encoding: 'utf8', env: { ...process.env, PATH: `${f.bin}:${process.env.PATH}`, SF_TEST_FAIL: failure },
+  });
+  return { ...f, state, pending, invoke, newImage, close: async () => {
+    const exited = once(server, 'exit'); server.kill(); await exited; f.close();
+  } };
+}
+
+test('update checkpoints replacement identities and reruns after partial or completed replacement', linux, async () => {
+  for (const [failure, sameImage] of [['accept', false], ['partial', false], ['stopped', false], ['created', false], ['accept', true]] as const) {
+    const f = await updateFixture(sameImage);
+    try {
+      const before = readFileSync(f.marker, 'utf8');
+      const first = f.invoke(failure);
+      assert.equal(first.status, 1, first.stderr);
+      assert.match(first.stderr, /Injected.*replacement/);
+      assert.equal(readFileSync(f.marker, 'utf8'), before);
+      assert.equal(existsSync(f.pending), true);
+      const retry = f.invoke();
+      assert.equal(retry.status, 0, retry.stderr);
+      assert.equal(existsSync(f.pending), false);
+      assert.equal(readFileSync(join(f.root, 'accepted'), 'utf8'), 'accepted');
+      assert.equal(readFileSync(join(f.root, 'builds'), 'utf8'), 'build\n', 'Reuse the exact checkpointed images');
+      const installed = JSON.parse(readFileSync(f.marker, 'utf8'));
+      assert.equal(installed.commit, f.git('rev-parse', 'HEAD'));
+      assert.equal(installed.images.runtime, f.newImage);
+      assert.equal(installed.home, f.home);
+      const containers = JSON.parse(readFileSync(f.state, 'utf8'));
+      assert.equal(containers['test-ui'].Id, '7'.repeat(64), 'Restart old services even when image IDs match');
+      assert.equal(containers['test-scotty'].Id, '8'.repeat(64));
+      assert.equal(f.git('status', '--porcelain'), '');
+    } finally { await f.close(); }
+  }
+});
+
+test('replacement recovery rejects changed images, ports, mounts, ownership, home and target before mutations', linux, async () => {
+  const f = await updateFixture();
+  try {
+    assert.match(f.invoke('accept').stderr, /Injected failure after replacement/);
+    const state = JSON.parse(readFileSync(f.state, 'utf8'));
+    const pending = JSON.parse(readFileSync(f.pending, 'utf8'));
+    const marker = readFileSync(f.marker, 'utf8');
+    const mutations = () => readFileSync(f.log, 'utf8').trim().split('\n').map(line => JSON.parse(line)).filter(a => ['stop', 'rm', 'run', 'start'].includes(a[0])).length;
+    const count = mutations();
+    const changed = [
+      (s: any, _t: any) => { s['test-ui'].Image = 'sha256:' + '9'.repeat(64); },
+      (s: any, _t: any) => { Object.values(s['test-ui'].HostConfig.PortBindings as any).forEach((b: any) => { b[0].HostPort = '9'; }); },
+      (s: any, _t: any) => { s['test-ui'].HostConfig.PortBindings['9/tcp'] = [{ HostIp: '127.0.0.1', HostPort: '9' }]; },
+      (s: any, _t: any) => { s['test-ui'].Mounts[0].RW = false; },
+      (s: any, _t: any) => { s['test-ui'].Mounts.push({ Type: 'bind', Source: '/foreign', Destination: '/foreign', RW: true }); },
+      (s: any, _t: any) => { s['test-ui'].Config.Labels['com.software-factory.home'] = '/foreign'; },
+      (_s: any, t: any) => { t.replacement.home = '/foreign'; },
+      (_s: any, t: any) => { t.replacement.target = 'a'.repeat(40); },
+      (_s: any, t: any) => { t.replacement.next.commit = 'b'.repeat(40); },
+      (_s: any, t: any) => { t.replacement.next.services.uiPort = 9; },
+      (s: any, _t: any) => { s.test.HostConfig.PortBindings = { '9/tcp': [{ HostIp: '127.0.0.1', HostPort: '9' }] }; },
+      (s: any, _t: any) => { s.test.Mounts.push({ Type: 'bind', Source: '/foreign', Destination: '/foreign', RW: true }); },
+    ];
+    for (const change of changed) {
+      const s = structuredClone(state), t = structuredClone(pending);
+      change(s, t);
+      writeFileSync(f.state, JSON.stringify(s)); writeFileSync(f.pending, JSON.stringify(t));
+      const result = f.invoke();
+      assert.equal(result.status, 1, result.stdout);
+      assert.match(result.stderr, /foreign|changed|checkpoint|candidate/);
+      assert.equal(mutations(), count);
+      assert.equal(readFileSync(f.marker, 'utf8'), marker);
+    }
+    writeFileSync(f.state, JSON.stringify(state)); writeFileSync(f.pending, JSON.stringify(pending));
+    writeFileSync(f.marker, JSON.stringify({ ...JSON.parse(marker), commit: 'b'.repeat(40) }));
+    assert.match(f.invoke().stderr, /installation mismatch/);
+    assert.equal(mutations(), count);
+    writeFileSync(f.marker, marker);
+    // Also recover a crash after the completion marker write but before the
+    // pending transaction rename, without accepting an arbitrary changed marker.
+    writeFileSync(f.marker, JSON.stringify(pending.replacement.next));
+    assert.equal(f.invoke().status, 0);
+    writeFileSync(f.pending, JSON.stringify(pending));
+    f.git('commit', '--allow-empty', '-m', 'Later source');
+    assert.match(f.invoke().stderr, /exact recorded target/);
+    assert.equal(mutations(), count);
+  } finally { await f.close(); }
 });

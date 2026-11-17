@@ -13,7 +13,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { run, executable, dockerRunner, containerExists, cleanEnv, present, json, save, quote,
   installFactory, taskWrapper, acceptWithClaude, startCommand, saveMissing, replaceJson } from '../factory/scripts/home-acceptance.mjs';
 import { configureTailnet, verifyTailnet } from '../factory/scripts/tailnet.mjs';
-import { installFolderServices, planFolderServices, serviceNames, waitForScreens, acceptScreens } from '../factory/scripts/folder-services.mjs';
+import { installFolderServices, planFolderServices, serviceNames, waitForScreens, acceptScreens, verifyFolderService } from '../factory/scripts/folder-services.mjs';
 import { installExecutable } from './install-executable.mjs';
 
 export const home = realpathSync(join(dirname(fileURLToPath(import.meta.url)), '..'));
@@ -131,7 +131,7 @@ export async function build(docker) {
   return { runtime: docker(['image', 'inspect', tag, '--format', '{{.Id}}']), dolt: docker(['image', 'inspect', pins.dolt, '--format', '{{.Id}}']), bdVersion: version };
 }
 
-export async function verify(installed, docker) {
+export async function verify(installed, docker, { replacementImages } = {}) {
   if (installed.version !== 2 || installed.state !== 'complete' || installed.home !== home) throw new Error('Invalid/incomplete installation record; refusing changes');
   for (const file of ['beads/bin/bd', 'beads/workspace/.beads/metadata.json', '.tools/bin/tasks-axi', 'factory/dist/src/index.js', 'tools/tasks-axi/dist/bin/tasks-axi.js',
     'config/software-factory.json', 'config/software-factory.agents.json', 'config/software-factory.projects.json', 'data/software-factory.acceptance.jsonl', '.claude/settings.local.json']) {
@@ -145,16 +145,20 @@ export async function verify(installed, docker) {
   if (realpathSync(join(home, '.claude/skills/software-factory')) !== join(home, 'factory/skills/software-factory')) throw new Error('Factory skill discovery link changed');
   const dolt = inspectOwned(docker, installed.args.container);
   if (!dolt.State.Running || dolt.Image !== installed.images.dolt || dolt.HostConfig.RestartPolicy.Name !== 'unless-stopped' || dolt.HostConfig.NetworkMode !== 'none' ||
-    !dolt.Mounts.some(m => m.Source === join(home, 'beads') && m.Destination === join(home, 'beads') && m.RW)) throw new Error('Dedicated Dolt service is stopped or changed');
+    Object.keys(dolt.HostConfig.PortBindings ?? {}).length !== 0 || dolt.Mounts.length !== 1 ||
+    !dolt.Mounts.some(m => m.Type === 'bind' && m.Source === join(home, 'beads') && m.Destination === join(home, 'beads') && m.RW)) throw new Error('Dedicated Dolt service is stopped or changed');
   for (const [kind, port, internal] of [['ui', installed.services.uiPort, installed.services.uiPort], ['scotty', installed.services.scottyPort, 3000]]) {
-    const service = inspectOwned(docker, installed.services.names[kind]);
-    const bindings = service.HostConfig.PortBindings[`${internal}/tcp`];
-    if (!service.State.Running || service.Image !== installed.images.runtime || service.HostConfig.RestartPolicy.Name !== 'unless-stopped' ||
-      !bindings || bindings.length !== 1 || bindings[0].HostIp !== '127.0.0.1' || bindings[0].HostPort !== String(port) ||
-      !service.Mounts.some(m => m.Source === home && m.Destination === home && m.RW === (kind === 'ui'))) throw new Error(`Dedicated ${kind} service is stopped or changed`);
+    const name = installed.services.names[kind];
+    // Only a validated update checkpoint may allow an absent/stopped service or
+    // either recorded image during the non-atomic two-container replacement.
+    if (replacementImages && !containerExists(docker, name)) continue;
+    const service = inspectOwned(docker, name);
+    verifyFolderService(service, home, kind, port, internal,
+      replacementImages ? [installed.images.runtime, replacementImages.runtime] : [installed.images.runtime]);
+    if (!replacementImages && !service.State.Running) throw new Error(`Dedicated ${kind} service is stopped`);
   }
   verifyTailnet(installed.services);
-  await waitForScreens(installed.services);
+  if (!replacementImages) await waitForScreens(installed.services);
 }
 
 export async function accept(installed, options) {
