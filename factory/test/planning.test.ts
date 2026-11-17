@@ -1072,3 +1072,68 @@ test('1496-3: legacy ready slice ownership cannot change the checked criterion i
     assert.ok(!validation.ok && validation.issues.some(issue => issue.code === 'plan_not_ready'));
   } finally { flow.store.close(); }
 });
+
+
+test('existing-code understanding must not claim an unrecorded factory artifact', () => {
+  const flow = setup();
+  try {
+    flow.understandStage.reuse = { check: comparison([request, flow.understanding]), criterionMap: [] };
+    assert.throws(() => flow.write(flow.understandStage, [flow.understanding]),
+      /reuse_requires_existing_design_or_plan_revision/);
+  } finally { flow.store.close(); }
+});
+
+
+for (const stage of ['understand', 'design', 'plan', 'detail'] as const) {
+  test(`project-code reuse authors a checked current-feature ${stage} artifact`, () => {
+    const flow = setup();
+    try {
+      const selected = { understand: flow.understandStage, design: flow.designStage,
+        plan: flow.planStage, detail: flow.detailStage }[stage];
+      const code = flow.understanding.existingWork[0]!.source;
+      selected.reuse = { kind: 'project_code', sources: [code], criterionMap: [],
+        check: { ...comparison([request]), sourceRefs: [source(request), code] } };
+      flow.start(); flow.finish();
+      assert.ok(flow.check().readyPlan);
+      assert.equal(validateRecords(flow.store.history(base.projectId)).ok, true);
+    } finally { flow.store.close(); }
+  });
+}
+
+for (const invalid of ['request', 'code', 'failed', 'factory-source'] as const) {
+  test(`project-code reuse refuses ${invalid} comparison gaps`, () => {
+    const flow = setup();
+    try {
+      const code = invalid === 'factory-source' ? source(flow.design) : flow.understanding.existingWork[0]!.source;
+      flow.understandStage.reuse = { kind: 'project_code', sources: [code], criterionMap: [], check: {
+        ...comparison([request]), result: invalid === 'failed' ? 'failed' : 'passed',
+        sourceRefs: [...(invalid === 'request' ? [] : [source(request)]), ...(invalid === 'code' ? [] : [code])],
+      } };
+      assert.throws(() => flow.write(flow.understandStage, [flow.understanding]), /omitted_source|reuse_not_checked|invalid_code_reuse/);
+      assert.equal(flow.store.get(base.projectId, flow.understandStage.id), undefined);
+    } finally { flow.store.close(); }
+  });
+}
+
+for (const kind of [undefined, 'factory_artifact'] as const) {
+  test(`factory-artifact reuse (${kind ?? 'legacy'}) cannot select a newly supplied design`, () => {
+    const flow = setup();
+    try {
+      flow.write(flow.understandStage, [flow.understanding]);
+      flow.designStage.reuse = { ...(kind ? { kind } : {}), check: comparison([request, flow.design]),
+        criterionMap: flow.criteria.map(criterion => ({ current: criterion, existing: criterion })) };
+      assert.throws(() => flow.write(flow.designStage, [flow.design, flow.decision]), /reuse_requires_existing_design_or_plan_revision/);
+    } finally { flow.store.close(); }
+  });
+}
+
+test('project-code reuse cannot relabel an existing factory design to skip its recorded check', () => {
+  const flow = setup();
+  try {
+    flow.start();
+    const code = flow.understanding.existingWork[0]!.source;
+    const selected = { ...flow.designStage, revision: 2, reuse: { kind: 'project_code' as const,
+      sources: [code], criterionMap: [], check: { ...comparison([request]), sourceRefs: [source(request), code] } } };
+    assert.throws(() => flow.write(selected, []), /existing_artifact_requires_recorded_reuse_check/);
+  } finally { flow.store.close(); }
+});

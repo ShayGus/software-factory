@@ -15,7 +15,7 @@ const badCode = 'export function feature(system) { if (system.name !== "ERPNext"
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 const script = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
 
-export function scenario(options: { bootstrap: boolean; originalRequest?: string; twoTasks?: boolean; factoryLayout?: boolean; independentBranch?: boolean } = { bootstrap: true }) {
+export function scenario(options: { bootstrap: boolean; originalRequest?: string; twoTasks?: boolean; factoryLayout?: boolean; independentBranch?: boolean; existingCode?: boolean } = { bootstrap: true }) {
   const original = options.originalRequest ?? defaultOriginal;
   const root = mkdtempSync(join(tmpdir(), 'sf-milestone-'));
   const save = (path: string, value: unknown) => writeFileSync(path, JSON.stringify(value, null, 2));
@@ -26,7 +26,9 @@ export function scenario(options: { bootstrap: boolean; originalRequest?: string
   mkdirSync(join(home, 'config'), { recursive: true }); mkdirSync(data); mkdirSync(repository);
   const git = (...args: string[]) => execFileSync('git', ['-C', repository, ...args], { encoding: 'utf8' }).trim();
   git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Test');
-  writeFileSync(join(repository, 'baseline.txt'), 'Feature X absent.'); git('add', '.'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Baseline');
+  writeFileSync(join(repository, 'baseline.txt'), 'Feature X absent.');
+  if (options.existingCode) writeFileSync(join(repository, 'connection.mjs'), 'export function connect(system) { return system.connection; }\n');
+  git('add', '.'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Baseline');
   const before = git('rev-parse', 'HEAD');
   const database = options.factoryLayout ? join(data, 'software-factory/projects/project-1/project.sqlite') : join(root, 'project.sqlite'); const runDirectory = join(root, 'run');
   const requestFile = join(root, 'request.txt'); writeFileSync(requestFile, original);

@@ -1,3 +1,4 @@
+import { artifactReuse } from './records.js';
 import type { Ref } from './primitives.js';
 import { isDeepStrictEqual } from 'node:util';
 import type {
@@ -19,7 +20,7 @@ export function stageCriteria(records: FactoryRecord[], detail: StageRevision, r
   // Detail may revise a reused ready plan. Follow the selected entity
   // back to that plan before composing its checked criterion mappings.
   const planStage = detail.previousStage && planningRecord(records, detail.previousStage);
-  const selected = planStage?.kind === 'stage_revision' && planStage.stage === 'plan' && planStage.reuse &&
+  const selected = planStage?.kind === 'stage_revision' && planStage.stage === 'plan' && artifactReuse(planStage) &&
     planningRecord(records, planStage.artifact);
   let checkedPlan = plan;
   if (selected && selected.kind === 'implementation_plan_revision' && selected.feature && selected.readiness.ready &&
@@ -54,9 +55,9 @@ function mapStageCriteria(records: FactoryRecord[], detail: StageRevision, refs:
   let stage: StageRevision | undefined = detail;
   for (let depth = 0; stage && depth < 3; depth++) {
     const artifact = planningRecord(records, stage.artifact);
-    if (stage.reuse?.check.result === 'passed' && artifact &&
+    if (artifactReuse(stage)?.check.result === 'passed' && artifact &&
       (artifact.kind === 'design_revision' || artifact.kind === 'implementation_plan_revision') &&
-      artifact.feature && samePlanningRef(artifact.feature, origin)) maps.push(stage.reuse.criterionMap);
+      artifact.feature && samePlanningRef(artifact.feature, origin)) maps.push(artifactReuse(stage)!.criterionMap);
     const previous: FactoryRecord | undefined = stage.previousStage && planningRecord(records, stage.previousStage);
     stage = previous?.kind === 'stage_revision' ? previous : undefined;
   }
@@ -182,10 +183,10 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   if (plan.id !== initialPlan.id || plan.revision < initialPlan.revision || !samePlanningRef(plan.design, design)) {
     add('stage_gap', detail, 'artifact', 'Detail must refine the selected plan and preserve its selected design');
   }
-  if ((!design.workflow && !designStage.reuse) || !plan.workflow) {
+  if ((!design.workflow && !artifactReuse(designStage)) || !plan.workflow) {
     add('stage_gap', plan, 'workflow', 'Design and plan need staged workflow content'); return findings;
   }
-  if (design.sourceComparison.result !== 'passed' && !designStage.reuse) {
+  if (design.sourceComparison.result !== 'passed' && !artifactReuse(designStage)) {
     add('source_gap', design, 'sourceComparison', 'Design source comparison has material findings');
   }
   for (const item of chain) {
@@ -197,7 +198,7 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
     }
     if (item.reuse) {
       const comparison = item.reuse.check;
-      if (comparison.result !== 'passed' || [...feature.sourceRequests, item.artifact].some((ref) =>
+      if (comparison.result !== 'passed' || [...feature.sourceRequests, ...(artifactReuse(item) ? [item.artifact] : [])].some((ref) =>
         !comparison.sourceRefs.some((source) => source.record && samePlanningRef(source.record, ref)))) {
         add('source_gap', item, 'reuse.check', 'Reuse must pass a comparison against the current request and artifact');
       }
@@ -212,7 +213,7 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   if (understanding.openUnknowns.length) add('stage_gap', understanding, 'openUnknowns', 'Material understanding unknowns remain open');
   const decisions = design.decisions.map((ref) => planningRecord(records, ref));
   const isSettled = (decision: FactoryRecord | undefined) => decision?.kind === 'decision_change' &&
-    (decision.choice?.state === 'resolved' || (designStage.reuse && !decision.choice &&
+    (decision.choice?.state === 'resolved' || (artifactReuse(designStage) && !decision.choice &&
       ['selected', 'rejected'].includes(decision.disposition)));
   for (const question of design.unresolvedQuestions) {
     const matches = decisions.filter((decision) => decision?.kind === 'decision_change' && decision.questionOrChange === question);
@@ -299,7 +300,7 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
         entry.term.toLocaleLowerCase('en') === scope.term.toLocaleLowerCase('en'));
       // A passed comparison binds unchanged historical scope to the current
       // requests. A directly applicable scope entry still has to agree.
-      const checkedReuse = selectedStage.reuse?.check.result === 'passed' && samePlanningRef(selectedStage.artifact, owner);
+      const checkedReuse = artifactReuse(selectedStage)?.check.result === 'passed' && samePlanningRef(selectedStage.artifact, owner);
       if (!actual && checkedReuse) continue;
       const expected = scope.role === 'example' ? 'general' : scope.role;
       if (!actual || actual.coverage !== expected) add(scope.role === 'example' ? 'example_driven_narrowing' :

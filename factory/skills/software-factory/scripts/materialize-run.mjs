@@ -77,7 +77,7 @@ const capturedRequestPath = join(directory, 'request.txt');
 const sourceFiles = files.map((file, index) => ({ source: file.source, path: join(directory, 'sources', `${index}.txt`) }));
 const config = FeatureRunConfigSchema.parse({ version: 1, project, database, runDirectory: directory,
   agentConfig, hookRegistry: settings.hookRegistry, requestFile: capturedRequestPath, clientRequestId: runId,
-  taskId: runId, repository, requestChannel: 'chat', sourceFiles,
+  taskId: runId, ...(selection.featureTaskId ? { featureTaskId: selection.featureTaskId } : {}), repository, requestChannel: 'chat', sourceFiles,
   firstMate: { home, dataDirectory: join(home, 'data'), mode: selection.mode ?? settings.mode, yolo: settings.yolo,
     ...Object.fromEntries(['brief', 'spawn', 'inbox', 'tasks'].map((name) => [`${name}Executable`, join(settings.fork, 'bin', `fm-${name === 'tasks' ? 'tasks-axi' : name}.sh`)])),
     snapshotExecutable: join(settings.fork, 'bin/fm-fleet-snapshot.sh'),

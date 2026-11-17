@@ -43,14 +43,16 @@ export const RecordDecisionSuggestionCommandSchema = z.strictObject({
     intakeRecords: z.array(z.union([FeatureRevisionSchema, CriterionSchema])).optional(),
   }),
 });
+const NativeTaskDescriptionSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('existing'), firstMateTaskId: IdSchema }),
+  z.strictObject({ kind: z.literal('new'), firstMateTaskId: IdSchema, title: TextSchema, repo: TextSchema }),
+]);
 export const MapManageExecutionTaskCommandSchema = z.strictObject({
   ...mutation, command: z.literal('map_manage_execution_task'),
   payload: z.strictObject({
     feature: RefSchema.nullable(), criteria: z.array(RefSchema), detailedPlanTask: RefSchema.nullable(),
-    task: z.discriminatedUnion('kind', [
-      z.strictObject({ kind: z.literal('existing'), firstMateTaskId: IdSchema }),
-      z.strictObject({ kind: z.literal('new'), firstMateTaskId: IdSchema, title: TextSchema, repo: TextSchema }),
-    ]),
+    task: NativeTaskDescriptionSchema,
+    featureTask: NativeTaskDescriptionSchema.optional(),
     // Toolkit intent, not a claim that tasks-axi has matching verbs/states.
     action: z.enum(['map', 'create', 'update', 'set_priority', 'pause', 'resume', 'cancel', 'edit_dependencies']),
     priority: z.number().int().optional(), dependencies: z.array(IdSchema), reason: TextSchema,
@@ -64,6 +66,7 @@ export const MapManageExecutionTaskCommandSchema = z.strictObject({
       'Create requires a new task description')
     .refine((value) => value.action !== 'update' || (value.update && Object.values(value.update).some((field) => field !== undefined)),
       'Update requires at least one field')
+    .refine((value) => !value.featureTask || value.feature !== null, 'Feature parent requires a feature')
     .refine((value) => value.feature !== null || value.criteria.length === 0,
       'Mapping product criteria requires a feature'),
 });

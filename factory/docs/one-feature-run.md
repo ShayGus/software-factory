@@ -202,6 +202,11 @@ The existing runner also exposes task-specific phases so FirstMate can use the i
 ```
 
 `plan` performs capture, understand, design, plan, detail, independent plan review and `check-plan`, then queues every task and reconciles each native task through the existing adapter.
+Projects with existing code do not need earlier factory designs or plans.
+Planning can record inspected code reuse while authoring current-feature artifacts; selection of an older factory artifact still requires its recorded revision and a current-request comparison.
+The [stage schema](../src/records.ts) defines these separate reuse variants.
+The optional run configuration `featureTaskId` selects an existing native feature ticket; otherwise the adapter creates a held feature ticket.
+Each planned task is created with a native parent relation to that ticket, separately from its blocking prerequisites.
 All tasks remain held for brief preparation.
 The existing task mappings derive product requirements and native dependency edges from the checked plan.
 `planned.json` binds the request, checked plan, detailed tasks and operation IDs to the unchanged run configuration; it is not a scheduler or a second source of task state.

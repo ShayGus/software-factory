@@ -123,6 +123,7 @@ export function requiredAssignmentContext(records: FactoryRecord[], assignment: 
     selectedRecords.push(record);
     if (record.kind === 'request') { sources.push(record.source); artifacts.push(...record.attachments); }
     if (record.kind === 'criterion' || record.kind === 'decision_change' || record.kind === 'design_revision') sources.push(...record.sourceRefs);
+    if (record.kind === 'stage_revision' && record.reuse?.kind === 'project_code') sources.push(...record.reuse.sources);
     if (record.kind === 'detailed_plan_task') sources.push(...record.designRefs ?? [], ...record.reuseTargets ?? []);
   }
   sources.push(...artifacts.map((artifact) => ({ uri: artifact.uri })));

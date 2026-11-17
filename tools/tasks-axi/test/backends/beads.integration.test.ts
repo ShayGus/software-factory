@@ -87,6 +87,54 @@ describe.skipIf(!enabled)(
       expect(await a.get(logical)).toBeNull();
     }, 20000);
 
+    it("creates native parent-child edges through the task CLI", async () => {
+      const store = make(),
+        parent = id("feature"),
+        child = id("slice");
+      const context = {
+        store,
+        config: {
+          backend: "beads" as const,
+          path: config.path,
+          beads: config,
+          doneKeep: 10,
+        },
+      };
+      await addCommand(
+        [parent, "Existing feature", "--kind", "feature"],
+        context,
+      );
+      const receipt = JSON.parse(
+        await addCommand(
+          [
+            child,
+            "Planned slice",
+            "--parent",
+            parent,
+            "--hold-reason",
+            "Instruction check pending",
+            "--json",
+          ],
+          context,
+        ),
+      );
+      expect(receipt.task.deps).toEqual([{ type: "parent", id: parent }]);
+      expect(receipt.task.blocked).toBe(false);
+      const edges = await sql(
+        `SELECT issue_id,depends_on_issue_id,type FROM dependencies WHERE issue_id=${sqlString(`fm-${child}`)}`,
+      );
+      expect(edges).toEqual([
+        {
+          issue_id: `fm-${child}`,
+          depends_on_issue_id: `fm-${parent}`,
+          type: "parent-child",
+        },
+      ]);
+      expect((await store.get(child))?.deps).toEqual([
+        { type: "parent", id: parent },
+      ]);
+    }, 20000);
+
     it("keeps dependency direction/reasons, protects blockers and preserves unrelated relations", async () => {
       const s = make(),
         blocker = id("blocker"),

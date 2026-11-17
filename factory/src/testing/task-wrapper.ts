@@ -68,7 +68,7 @@ let changed = [];
 if (action === 'add') {
   if (task) already = true;
   else {
-    const deps = args.flatMap((a,i) => a === '--blocked-by' ? [{ type: 'blocked-by', id: args[i+1] }] : []);
+    const deps = args.flatMap((a,i) => ['--blocked-by', '--parent'].includes(a) ? [{ type: a === '--parent' ? 'parent' : 'blocked-by', id: args[i+1] }] : []);
     if (deps.some(d => !s.tasks[d.id])) fail('VALIDATION_ERROR', 'Missing blocker');
     task = { id, title: args[2].trim(), state: 'queued', kind: flag('--kind'), repo: flag('--repo'), priority: args.includes('--priority') ? Number(flag('--priority')) : null,
       created: '2026-11-11', closed: null, deps, hold: args.includes('--hold-reason') ? { reason: flag('--hold-reason'), kind: null, until: null } : null,
@@ -92,7 +92,7 @@ if (action === 'add') {
 for (const value of Object.values(s.tasks)) projection(value);
 const db = new DatabaseSync(database);
 const rows = db.prepare("SELECT body FROM record_history WHERE kind = 'task_mapping'").all();
-const mappingSaved = rows.some(row => JSON.parse(row.body).firstMateTaskId === task.id);
+const mappingSaved = rows.some(row => (JSON.parse(row.body).firstMateTaskId === task.id || JSON.parse(row.body).featureTaskId === task.id));
 db.close();
 s.trace.push({ action, task: structuredClone(task), ready: Object.values(s.tasks).filter(t => t.state === 'queued' && !t.blocked && !t.held).map(t => t.id), mappingSaved });
 save();

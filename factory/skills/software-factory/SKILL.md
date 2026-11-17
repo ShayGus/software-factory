@@ -63,6 +63,8 @@ Do not report completion until the command and acceptance succeed.
    ```
 
    Derive project facts from registration and project documentation; keep unresolved product choices explicit.
+   When the request comes from an existing feature ticket, set selection `featureTaskId` to its exact tasks-axi ID so planned tasks become its native sub-tasks.
+   Otherwise the task adapter creates a held feature ticket for the plan.
    `project` initializes a new project only; an existing database reuses its original initialized project.
    Run `node <factoryRoot>/skills/software-factory/scripts/materialize-run.mjs <settings-file> <selection-file> <exact-request-file>`.
    This formatting helper saves the exact request, immutable source copies, `source-choice.json`, project agent settings and `run.json` under this home's data.

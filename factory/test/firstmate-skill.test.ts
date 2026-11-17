@@ -6,15 +6,16 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { FeatureRunConfigSchema, ProjectStore, runFeature, taskReadinessReasons, type ImplementationPlanRevision } from '../src/index.js';
 import { scenario } from './milestone-helper.js';
+import { fakeTask } from './task-wrapper-helper.js';
 
 const factory = fileURLToPath(new URL('../../', import.meta.url));
 const materializer = join(factory, 'skills/software-factory/scripts/materialize-run.mjs');
 
 // The fake FirstMate interprets its home registry and selects sources, as the
 // skill instructs. The owner supplies only plain request text, never run.json.
-function intake(twoTasks = false, independentBranch = false) {
+function intake(twoTasks = false, independentBranch = false, existingCode = false, featureTaskId?: string) {
   const request = 'Build feature X for every connected system, ERPNext is only an example.\nPreserve "quotes", $values and Unicode: שלום.\n';
-  const flow = scenario({ bootstrap: false, factoryLayout: true, twoTasks, independentBranch, originalRequest: request });
+  const flow = scenario({ bootstrap: false, factoryLayout: true, twoTasks, independentBranch, existingCode, originalRequest: request });
   const registration = `| project-1 | ${flow.config.repository} | local-only |`;
   writeFileSync(join(flow.data, 'projects.md'), registration + '\n');
   const fork = join(flow.root, 'fork'); mkdirSync(join(fork, 'bin'), { recursive: true });
@@ -28,8 +29,9 @@ function intake(twoTasks = false, independentBranch = false) {
     hookRegistry: flow.config.hookRegistry, mode: 'local-only', yolo: 'off', uiOrigin: 'http://127.0.0.1:3185' });
   const selectionPath = join(flow.root, 'selection.json');
   flow.save(selectionPath, { projectName: 'project-1', repository: flow.config.repository, registration,
+    ...(featureTaskId ? { featureTaskId } : {}),
     project: { goal: 'Exercise common interfaces', intendedUser: 'Operator', priorities: [], exclusions: [], vocabulary: {}, timezone: 'UTC' },
-    sources: [{ path: join(flow.config.repository, 'baseline.txt'), reason: 'Establish behavior before the feature' }],
+    sources: [{ path: join(flow.config.repository, existingCode ? 'connection.mjs' : 'baseline.txt'), reason: 'Establish behavior before the feature' }],
     baselineDescription: 'Feature X is absent at this commit' });
   const materialized = JSON.parse(execFileSync(process.execPath, [materializer, settingsPath, selectionPath, flow.config.requestFile], { encoding: 'utf8' }));
   const config = FeatureRunConfigSchema.parse(JSON.parse(readFileSync(materialized.configPath, 'utf8')));
@@ -245,5 +247,74 @@ test('a sibling return arriving during A review cannot affect A delivery', () =>
     assert.equal(reviewed.taskOutcome, 'passed');
     assert.equal(reviewed.review.assignments.length, 1);
     assert.equal(reviewed.review.conformance.technicalReviews.length, 1);
+  } finally { flow.close(); }
+});
+
+
+for (const existingParent of [false, true]) test(`existing project code without factory artifacts completes the method (${existingParent ? 'existing feature ticket' : 'new feature ticket'})`, t => {
+  const { flow, config, request } = intake(false, false, true, existingParent ? 'fixture-f03' : undefined);
+  try {
+    if (existingParent) {
+      assert.equal(config.featureTaskId, 'fixture-f03');
+      flow.wrapper.edit(state => { state.tasks['fixture-f03'] = fakeTask('fixture-f03', { kind: 'feature', title: 'Existing feature ticket' }); });
+    }
+    const originalParent = existingParent ? structuredClone(flow.wrapper.read().tasks['fixture-f03']) : undefined;
+    const stage = flow.outputs.understand.input.stage as any;
+    const understanding = flow.outputs.understand.input.records[0] as any;
+    const source = config.sourceFiles[0]!.source;
+    assert.match(execFileSync('git', ['-C', config.repository, 'show', 'HEAD:connection.mjs'], { encoding: 'utf8' }), /export function connect/);
+    // The selected repository already has a committed baseline, but bootstrap
+    // created no factory design or plan. Reuse is code, not a factory revision.
+    const store = new ProjectStore(config.database, { readOnly: true });
+    try {
+      assert.equal(store.history('project-1').some(r => ['design_revision', 'implementation_plan_revision'].includes(r.kind)), false);
+    } finally { store.close(); }
+    understanding.existingWork = [{ source, finding: 'Preserve the existing baseline while adding feature X' }];
+    Object.assign(stage, { reuse: { kind: 'project_code', sources: [source], criterionMap: [], check: {
+      result: 'passed', sourceRefs: [{ uri: config.requestFile, record: stage.sourceRequests[0] }, source],
+      findings: [], reviewerSession: 'fixture-code-research', comparedAt: stage.createdAt,
+    } } });
+    flow.save(join(flow.root, 'outputs.json'), flow.outputs);
+    const planned = runFeature(config, 'plan') as any;
+    assert.equal(planned.tasks.length, 1);
+    assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
+    const recorded = new ProjectStore(config.database, { readOnly: true });
+    try {
+      const records = recorded.history('project-1');
+      assert.deepEqual(records.filter(r => r.kind === 'stage_revision').map(r => r.stage).sort(), ['design', 'detail', 'plan', 'understand']);
+      const plan = recorded.get('project-1', planned.plan.id);
+      assert.ok(plan?.kind === 'implementation_plan_revision' && plan.readiness.ready);
+      const captured = records.find(r => r.kind === 'request');
+      assert.ok(captured?.kind === 'request'); assert.equal(captured.originalText, request);
+    } finally { recorded.close(); }
+    const added = flow.wrapper.read().calls.filter(c => c.args[0] === 'add' && c.args[1] !== '--help');
+    assert.equal(added.length, existingParent ? 1 : 2);
+    const child = flow.wrapper.read().tasks[planned.tasks[0].taskId]!;
+    const parents = child.deps.filter(d => d.type === 'parent');
+    assert.equal(parents.length, 1);
+    assert.ok(flow.wrapper.read().tasks[parents[0]!.id]);
+    if (existingParent) {
+      assert.equal(parents[0]!.id, 'fixture-f03');
+      assert.deepEqual(flow.wrapper.read().tasks['fixture-f03'], originalParent);
+    }
+    runFeature(config, 'prepare-task', child.id);
+    runFeature(config, 'start', child.id);
+    assert.equal((runFeature(config, 'review', child.id) as any).review.outcome, 'passed');
+    assert.equal((runFeature(config, 'review-all') as any).review.outcome, 'passed');
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const assignmentStore = new ProjectStore(config.database, { readOnly: true });
+    try {
+      const assignment = assignmentStore.records('project-1').find(record => record.kind === 'assignment');
+      assert.ok(assignment?.kind === 'assignment');
+      assert.ok(assignment.selectedContext.some(context => context.extract?.includes('export function connect')));
+    } finally { assignmentStore.close(); }
+    const checked = calls.find(call => call.step === 'instruction_check');
+    const judged = calls.filter(call => call.step === 'product_review');
+    assert.ok(checked);
+    assert.equal(JSON.parse(checked.prompt.trimEnd().split('\n').at(-1)).originalRequests[0].text, request);
+    assert.equal(judged.length, 2);
+    for (const call of judged) assert.equal(JSON.parse(call.prompt.trimEnd().split('\n').at(-1)).originalRequests[0].text, request);
+    t.diagnostic(JSON.stringify({ taskCreate: added.find(call => call.args[1] === child.id)!.args,
+      observedDependencies: flow.wrapper.read().tasks[planned.tasks[0].taskId]!.deps }));
   } finally { flow.close(); }
 });

@@ -7,7 +7,7 @@ import { planReadinessFindings, planningRecord, samePlanningRef, stageDependenci
   stageSliceCriteria, withSliceCriterionProvenance } from './planning-checks.js';
 import { IdSchema, RefSchema, TimestampSchema } from './primitives.js';
 import {
-  DesignRevisionSchema, DetailedPlanTaskSchema, ImplementationPlanRevisionSchema, DecisionChangeSchema,
+  artifactReuse, DesignRevisionSchema, DetailedPlanTaskSchema, ImplementationPlanRevisionSchema, DecisionChangeSchema,
   PlanReadinessRevisionSchema, StageRevisionSchema, UnderstandingRevisionSchema,
   type FactoryRecord, type StageRevision, type PlanReadinessRevision,
 } from './records.js';
@@ -44,7 +44,7 @@ export function recordStage(store: ProjectStore, input: unknown) {
     }
     const artifact = planningRecord([...history, ...data.records], stage.artifact);
     if (!artifact) throw new StoreError('not_found', 'stage_artifact_not_found');
-    if (stage.reuse) {
+    if (artifactReuse(stage)) {
       if (!['design', 'plan'].includes(stage.stage) || !planningRecord(history, stage.artifact) ||
         data.records.some((record) => samePlanningRef(record, stage.artifact))) {
         throw new StoreError('validation', 'reuse_requires_existing_design_or_plan_revision');

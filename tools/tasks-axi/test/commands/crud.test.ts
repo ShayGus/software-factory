@@ -12,6 +12,60 @@ import { makeBacklog } from "../helpers.js";
 
 describe("crud commands", () => {
   describe("add", () => {
+    it("creates a nonblocking parent relation while retaining real blockers", async () => {
+      const b = makeBacklog();
+      try {
+        await addCommand(
+          ["feature-f03", "Feature three", "--kind", "feature"],
+          b.ctx,
+        );
+        await addCommand(["blocker-q1", "Prerequisite"], b.ctx);
+        const out = JSON.parse(
+          await addCommand(
+            [
+              "child-q1",
+              "Implement feature",
+              "--parent",
+              "feature-f03",
+              "--blocked-by",
+              "blocker-q1",
+              "--json",
+            ],
+            b.ctx,
+          ),
+        );
+        expect(out.task.deps).toEqual([
+          { type: "blocked-by", id: "blocker-q1" },
+          { type: "parent", id: "feature-f03" },
+        ]);
+        const parentOnly = JSON.parse(
+          await addCommand(
+            [
+              "child-q2",
+              "Independent slice",
+              "--parent",
+              "feature-f03",
+              "--json",
+            ],
+            b.ctx,
+          ),
+        );
+        expect(parentOnly.task.blocked).toBe(false);
+        await expect(
+          addCommand(
+            ["child-q3", "Missing parent", "--parent", "absent"],
+            b.ctx,
+          ),
+        ).rejects.toThrow(/parent.*not found/);
+        await expect(
+          addCommand(["self-q1", "Self parent", "--parent", "self-q1"], b.ctx),
+        ).rejects.toThrow(/itself/);
+        expect(await b.store.get("child-q3")).toBeNull();
+      } finally {
+        b.cleanup();
+      }
+    });
+
     it("adds a queued task and suggests next steps", async () => {
       const b = makeBacklog();
       try {

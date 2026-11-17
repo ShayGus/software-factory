@@ -50,7 +50,7 @@ aliases: create
 flags:
   --kind <ship|scout|docs|...>, --repo <name>, --body <text> or --body-file <path>
   --start (place in In flight) | --queue (place in Queued, default)
-  --blocked-by <id> (repeatable, must exist), --pr <url>, --report <path>, --priority <0-4>
+  --parent <id> (must exist), --blocked-by <id> (repeatable, must exist), --pr <url>, --report <path>, --priority <0-4>
   --hold-reason <text> [--hold-kind captain|external|load|parked|future] [--hold-until YYYY-MM-DD]
   --mint [--prefix <p>]   mint a slug-xx id from the title instead of passing one
   --json   print the resulting task as a JSON object
@@ -97,10 +97,16 @@ examples:
   tasks-axi rm stale-task-q1`;
 
 function parseDeps(args: string[]): Dep[] {
-  return takeAllFlags(args, "--blocked-by").map((id) => ({
-    type: "blocked-by" as const,
-    id: validateDependencyId(id),
-  }));
+  const parent = takeFlag(args, "--parent");
+  return [
+    ...takeAllFlags(args, "--blocked-by").map((id) => ({
+      type: "blocked-by" as const,
+      id: validateDependencyId(id),
+    })),
+    ...(parent === undefined
+      ? []
+      : [{ type: "parent" as const, id: validateDependencyId(parent) }]),
+  ];
 }
 
 async function requireExistingBlockers(
@@ -108,11 +114,12 @@ async function requireExistingBlockers(
   deps: Dep[],
 ): Promise<void> {
   for (const dep of deps) {
-    if (dep.type !== "blocked-by") continue;
     if (await store.get(dep.id)) continue;
-    throw new AxiError(`blocker "${dep.id}" not found`, "VALIDATION_ERROR", [
-      "Create the blocker task first, or choose an existing task id",
-    ]);
+    throw new AxiError(
+      `${dep.type === "parent" ? "parent" : "blocker"} "${dep.id}" not found`,
+      "VALIDATION_ERROR",
+      ["Create the blocker task first, or choose an existing task id"],
+    );
   }
 }
 
@@ -323,7 +330,7 @@ export async function addCommand(
   }
 
   if (deps.some((dep) => dep.id === id)) {
-    throw new AxiError("A task cannot block itself", "VALIDATION_ERROR");
+    throw new AxiError("A task cannot depend on itself", "VALIDATION_ERROR");
   }
   await requireExistingBlockers(store, deps);
   const links = parseLinks(pr, report);

@@ -4,12 +4,12 @@ import { reusableAnswer } from './decision-context.js';
 import { planReadinessFindings, sliceCriterionProvenance, stageCriteria, stageDependencies, stageSliceCriteria } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { expectedReviewCriteria } from './review-contracts.js';
-import { missingAssignmentContext } from './instruction-context.js';
+import { missingAssignmentContext, sameSource } from './instruction-context.js';
 import { assertTaskDependencyAcyclic, taskReadinessReasons } from './task-readiness.js';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
 import {
-  RecordSchema, RecordsSchema, type Assignment, type FactoryRecord, type FeatureRevision, type StageRevision,
+  artifactReuse, RecordSchema, RecordsSchema, type Assignment, type FactoryRecord, type FeatureRevision, type StageRevision,
   type ProductReview, type Operation, type DetailedPlanTask, type ImplementationPlanRevision,
   DetailedPlanTaskSchema,
 } from './records.js';
@@ -417,7 +417,7 @@ function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' |
 
 export function hasCheckedDesignReuse(records: FactoryRecord[], design: Ref, feature: Ref | null): boolean {
   return feature !== null && records.some((record) => record.kind === 'stage_revision' && record.stage === 'design' &&
-    record.reuse && record.reuse.check.result === 'passed' && sameRef(record.artifact, design) && sameRef(record.feature, feature));
+    artifactReuse(record)?.check.result === 'passed' && sameRef(record.artifact, design) && sameRef(record.feature, feature));
 }
 
 function checkRecord(ctx: Context, record: FactoryRecord) {
@@ -444,8 +444,8 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
         record.stage === 'design' ? 'design_revision' : 'implementation_plan_revision';
       const artifact = ctx.get(record, record.artifact, artifactKind, 'artifact');
       const reusedPlan = record.stage === 'detail' && ctx.records.some((stage) => stage.kind === 'stage_revision' &&
-        stage.stage === 'plan' && stage.reuse && sameRef(stage.feature, record.feature) && sameRef(stage.artifact, record.artifact));
-      if (artifact && (artifact.feature === null || (!record.reuse && !reusedPlan))) {
+        stage.stage === 'plan' && artifactReuse(stage) && sameRef(stage.feature, record.feature) && sameRef(stage.artifact, record.artifact));
+      if (artifact && (artifact.feature === null || (!artifactReuse(record) && !reusedPlan))) {
         ctx.equal(record, artifact.feature, record.feature, 'artifact.feature');
       }
       const predecessor = { design: 'understand', plan: 'design', detail: 'plan' };
@@ -457,10 +457,10 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
           'stage_order', 'previousStage', 'Stage must name its immediate method predecessor');
         if (previous) {
           ctx.equal(record, previous.feature, record.feature, 'previousStage.feature');
-          if (record.stage === 'design' && artifact?.kind === 'design_revision' && !record.reuse && artifact.workflow) {
+          if (record.stage === 'design' && artifact?.kind === 'design_revision' && !artifactReuse(record) && artifact.workflow) {
             ctx.equal(record, artifact.workflow.understanding, previous.artifact, 'workflow.understanding');
           }
-          if (record.stage === 'plan' && artifact?.kind === 'implementation_plan_revision' && !record.reuse) {
+          if (record.stage === 'plan' && artifact?.kind === 'implementation_plan_revision' && !artifactReuse(record)) {
             ctx.equal(record, artifact.design, previous.artifact, 'artifact.design');
           }
           if (record.stage === 'detail' && artifact?.kind === 'implementation_plan_revision' &&
@@ -471,14 +471,23 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       }
       if (record.reuse) {
         ctx.comparison(record, record.reuse.check, feature);
-        ctx.sources(record, record.reuse.check, [...(feature?.sourceRequests ?? []), record.artifact]);
+        ctx.sources(record, record.reuse.check, [...(feature?.sourceRequests ?? []),
+          ...(artifactReuse(record) ? [record.artifact] : [])]);
+        if (record.reuse.kind === 'project_code') {
+          for (const source of record.reuse.sources) {
+            if (!record.reuse.check.sourceRefs.some(candidate => sameSource(candidate, source))) {
+              ctx.add(record, 'reuse_not_checked', 'reuse.sources', 'Code reuse must compare every selected source');
+            }
+            if (source.record) ctx.add(record, 'invalid_code_reuse', 'reuse.sources', 'Project code must name source files, not factory records');
+          }
+        }
         if (record.reuse.check.result !== 'passed') ctx.add(record, 'reuse_not_checked', 'reuse.check', 'Reuse check must pass');
         for (const mapping of record.reuse.criterionMap) {
           ctx.criteria(record, [mapping.current], feature);
           const existingFeature = artifact?.feature && ctx.get(record, artifact.feature, 'feature_revision', 'reuse.artifact.feature');
           ctx.criteria(record, [mapping.existing], existingFeature ?? undefined);
         }
-        for (const ref of feature?.criteria ?? []) if (!record.reuse.criterionMap.some((entry) => sameRef(entry.current, ref))) {
+        for (const ref of artifactReuse(record) ? feature?.criteria ?? [] : []) if (!record.reuse.criterionMap.some((entry) => sameRef(entry.current, ref))) {
           ctx.add(record, 'reuse_not_checked', 'reuse.criterionMap', `Reuse did not check current criterion ${ref.id}`);
         }
       }

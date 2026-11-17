@@ -33,13 +33,14 @@ const taskIds = (task: FirstMateTask) => task.deps.filter((edge) => edge.type ==
 const validId = (id: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(id);
 function validateCommand(command: TaskCommand) {
   const payload = command.payload;
-  if (![payload.task.firstMateTaskId, ...payload.dependencies].every(validId)) {
+  if (![payload.task.firstMateTaskId, ...payload.dependencies, ...(payload.featureTask ? [payload.featureTask.firstMateTaskId] : [])].every(validId)) {
     throw new StoreError('validation', 'invalid_tasks_axi_id');
   }
+  if (payload.featureTask?.firstMateTaskId === payload.task.firstMateTaskId) throw new StoreError('validation', 'feature_cannot_parent_itself');
   if (payload.priority !== undefined && (payload.priority < 0 || payload.priority > 4)) {
     throw new StoreError('validation', 'tasks_axi_priority_must_be_0_to_4');
   }
-  for (const text of [payload.task.kind === 'new' ? payload.task.title : undefined, payload.update?.title]) {
+  for (const text of [payload.task.kind === 'new' ? payload.task.title : undefined, payload.update?.title, payload.featureTask?.kind === 'new' ? payload.featureTask.title : undefined]) {
     if (text !== undefined && /[\r\n]/u.test(text)) throw new StoreError('validation', 'task_title_must_be_single_line');
   }
 }
@@ -71,6 +72,13 @@ function queueTaskIntent(store: ProjectStore, command: TaskCommand, inheritedAtt
       }
     }
     const payload = command.payload;
+    if (payload.featureTask && previous?.featureTaskId && previous.featureTaskId !== payload.featureTask.firstMateTaskId) {
+      throw new StoreError('validation', 'feature_parent_is_immutable');
+    }
+    if (payload.featureTask && records.some(record => record.kind === 'task_mapping' &&
+      record.feature?.id === payload.feature?.id && record.featureTaskId && record.featureTaskId !== payload.featureTask!.firstMateTaskId)) {
+      throw new StoreError('validation', 'feature_parent_must_match_existing_mappings');
+    }
     if (previous?.kind === 'task_mapping' && previous.disposition.state === 'cancelled' && payload.action !== 'cancel') {
       throw new StoreError('validation', 'cancelled_task_requires_explicit_replanning');
     }
@@ -117,6 +125,7 @@ function queueTaskIntent(store: ProjectStore, command: TaskCommand, inheritedAtt
     const mapping = TaskMappingSchema.parse({ kind: 'task_mapping', id: command.targetId, projectId: command.projectId,
       schemaVersion: 1, revision: command.expectedRevision + 1, createdAt: previous?.createdAt ?? command.issuedAt,
       updatedAt: command.issuedAt, firstMateTaskId: payload.task.firstMateTaskId, feature: payload.feature,
+      ...(payload.featureTask || previous?.featureTaskId ? { featureTaskId: payload.featureTask?.firstMateTaskId ?? previous?.featureTaskId } : {}),
       criteria: payload.criteria, detailedPlanTask: payload.detailedPlanTask, dependencies: [...new Set(payload.dependencies)],
       legacy: payload.detailedPlanTask === null,
       ...(previous?.importedExecution ? { importedExecution: previous.importedExecution } : {}),
@@ -428,12 +437,30 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
     const reasons = [...taskReadinessReasons(records, mapping), ...desiredIds.filter((id) => !dependencies.get(id))
       .map((id) => `Missing prerequisite ${id}`)];
 
+    if (mapping.featureTaskId && mapping.disposition.state !== 'cancelled') {
+      let parent = wrapper.read(mapping.featureTaskId);
+      const specification = payload.featureTask;
+      const marker = `Software Factory feature: ${stableId('feature', projectId, mapping.feature!.id)}`;
+      if (!parent && specification?.kind === 'new') {
+        parent = wrapper.write(['add', mapping.featureTaskId, specification.title, '--kind', 'feature',
+          '--repo', specification.repo, '--queue', '--body', marker, '--hold-reason', marker],
+        task => task.kind === 'feature' && task.body === marker && task.held && task.repo === specification.repo);
+      }
+      if (!parent) throw new DefinitiveTaskRejection('feature_parent_not_found');
+      if (specification?.kind === 'new' && (parent.body !== marker || parent.kind !== 'feature' || parent.repo !== specification.repo)) {
+        throw new DefinitiveTaskRejection('feature_parent_id_collision');
+      }
+      if (observed && !observed.deps.some(edge => edge.type === 'parent' && edge.id === mapping.featureTaskId)) {
+        throw new DefinitiveTaskRejection('native_feature_parent_mismatch');
+      }
+    }
     if (!observed) {
       if (payload.action !== 'create' || payload.task.kind !== 'new') throw new DefinitiveTaskRejection('mapped_task_not_found');
       const newTask = payload.task;
       const atomic = /(?:^|\s)--hold-reason(?:\s|=|$)/u.test(wrapper.run(['add', '--help']));
       const args = ['add', mapping.firstMateTaskId, payload.task.title, '--kind', 'ship', '--repo', payload.task.repo,
         '--queue', '--body', creationMarker];
+      if (mapping.featureTaskId) args.push('--parent', mapping.featureTaskId);
       if (payload.priority !== undefined) args.push('--priority', String(payload.priority));
       for (const id of availableIds) args.push('--blocked-by', id);
       if (atomic) args.push('--hold-reason', holdReason);
@@ -446,6 +473,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
         task.title === newTask.title.trim() && task.repo === newTask.repo.trim() && task.kind === 'ship' &&
         (payload.priority === undefined || task.priority === payload.priority) &&
         availableIds.every((id) => taskIds(task).includes(id)) &&
+        (!mapping.featureTaskId || task.deps.some(edge => edge.type === 'parent' && edge.id === mapping.featureTaskId)) &&
         (atomic ? ownHold(task) : taskIds(task).includes(options.guardTaskId!)),
         [...availableIds, ...(!atomic ? [options.guardTaskId!] : [])]);
     } else if (payload.action === 'create' && payload.task.kind === 'new' &&

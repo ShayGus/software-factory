@@ -81,10 +81,18 @@ export const StageRevisionSchema = record('stage_revision', {
   stage: z.enum(['understand', 'design', 'plan', 'detail']), feature: RefSchema,
   sourceRequests: z.array(RefSchema).min(1), criteria: z.array(RefSchema), artifact: RefSchema,
   previousStage: RefSchema.optional(), changeReason: TextSchema,
-  reuse: z.strictObject({
-    check: ComparisonSchema,
-    criterionMap: z.array(z.strictObject({ current: RefSchema, existing: RefSchema })),
-  }).optional(),
+  reuse: z.union([
+    // Untagged history keeps its original factory-artifact semantics.
+    z.strictObject({
+      kind: z.literal('factory_artifact').optional(), check: ComparisonSchema,
+      criterionMap: z.array(z.strictObject({ current: RefSchema, existing: RefSchema })),
+    }),
+    z.strictObject({
+      kind: z.literal('project_code'), check: ComparisonSchema,
+      sources: z.array(SourceRefSchema).min(1),
+      criterionMap: z.array(z.never()).length(0),
+    }),
+  ]).optional(),
 });
 export const ReadinessFindingSchema = z.strictObject({
   code: z.enum(['dropped_behavior', 'example_driven_narrowing', 'invented_scope', 'missing_integration',
@@ -163,6 +171,7 @@ export const DetailedPlanTaskSchema = record('detailed_plan_task', {
     (field) => value[field as keyof typeof value] !== undefined), 'Non-draft task requires complete legacy detail');
 
 export const TaskMappingSchema = record('task_mapping', {
+  featureTaskId: IdSchema.optional(),
   firstMateTaskId: IdSchema, feature: RefSchema.nullable(), criteria: z.array(RefSchema),
   detailedPlanTask: RefSchema.nullable(), dependencies: z.array(IdSchema), legacy: z.boolean(),
   disposition: DispositionSchema,
@@ -181,7 +190,8 @@ export const TaskMappingSchema = record('task_mapping', {
   }).optional(),
 }).refine((value) => value.legacy || (value.detailedPlanTask !== null &&
   (value.feature !== null || value.criteria.length === 0)),
-  'Managed mapping requires a detailed task and a feature for product criteria');
+  'Managed mapping requires a detailed task and a feature for product criteria')
+  .refine(value => !value.featureTaskId || value.feature !== null, 'Native feature parent requires a feature');
 
 export const SelectedContextSchema = z.strictObject({
   source: SourceRefSchema, artifact: ArtifactSchema.optional(), projectedArtifact: ArtifactSchema.optional(), extract: TextSchema.optional(),
@@ -386,3 +396,9 @@ export type UnderstandingRevision = z.infer<typeof UnderstandingRevisionSchema>;
 export type StageRevision = z.infer<typeof StageRevisionSchema>;
 export type PlanReadinessRevision = z.infer<typeof PlanReadinessRevisionSchema>;
 export type ReadinessFinding = z.infer<typeof ReadinessFindingSchema>;
+
+/** Only selection of an older factory artifact grants lineage/criterion reuse.
+ * Project-code reuse still authors and checks a new artifact for this feature. */
+export function artifactReuse(stage: StageRevision) {
+  return stage.reuse?.kind === 'project_code' ? undefined : stage.reuse;
+}

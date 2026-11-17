@@ -908,3 +908,49 @@ test('review 1489 finding 3: explicit edit supersedes a foreign native observati
   assert.deepEqual(taskReadinessReasons(flow.store.records(projectId), consumer), []);
   assert.equal(flow.fake.read().tasks.consumer!.held, false);
 });
+
+
+for (const existing of [false, true]) test(`planned tasks retain their native feature parent (${existing ? 'existing' : 'created'})`, t => {
+  const flow = setup(t, true);
+  if (existing) flow.fake.edit(state => { state.tasks['feature-f03'] = fakeTask('feature-f03', { kind: 'feature' }); });
+  const parentBefore = existing ? structuredClone(flow.fake.read().tasks['feature-f03']) : undefined;
+  const input = flow.command({ readiness: pendingCondition, featureTask: existing ?
+    { kind: 'existing', firstMateTaskId: 'feature-f03' } :
+    { kind: 'new', firstMateTaskId: 'feature-f03', title: 'Feature three', repo: 'sample' } });
+  const result = flow.succeeded(input);
+  assert.equal(flow.mapping().featureTaskId, 'feature-f03');
+  assert.ok(flow.fake.read().trace.every(entry => entry.mappingSaved), 'Parent and child writes require saved canonical mapping intent');
+  assert.deepEqual(flow.fake.read().tasks['managed-task']!.deps, [{ type: 'parent', id: 'feature-f03' }]);
+  assert.equal(flow.fake.read().tasks['managed-task']!.blocked, false);
+  assertNeverReady(flow.fake.read());
+  if (existing) assert.deepEqual(flow.fake.read().tasks['feature-f03'], parentBefore);
+  const calls = flow.fake.read().calls.length;
+  assert.equal(reconcileManagedTask(flow.store, projectId, result.operation.id, flow.options).state, 'succeeded');
+  assert.equal(flow.fake.read().calls.length, calls, 'A completed operation replays without native writes');
+  flow.succeeded(flow.existing({ readiness: [{ ...pendingCondition[0]!, evidence }] }));
+  assert.deepEqual(flow.fake.read().tasks['managed-task']!.deps, [{ type: 'parent', id: 'feature-f03' }]);
+  assert.equal(flow.fake.read().tasks['managed-task']!.held, false);
+  assert.throws(() => queueManagedTask(flow.store, flow.existing({ featureTask: { kind: 'existing', firstMateTaskId: 'another-feature' } })), /feature_parent_is_immutable/);
+});
+
+test('a missing existing feature ticket fails before creating any child', t => {
+  const flow = setup(t, true);
+  const result = flow.manage(flow.command({ featureTask: { kind: 'existing', firstMateTaskId: 'missing-feature' } }));
+  assert.equal(result.operation.state, 'failed');
+  assert.match(result.operation.reconciliation!.note, /feature_parent_not_found/);
+  assert.equal(flow.fake.read().tasks['managed-task'], undefined);
+});
+
+test('lost feature creation output recovers the same parent before creating the child', t => {
+  const flow = setup(t, true);
+  flow.fake.edit(state => { state.failure = { action: 'add', when: 'wrong-receipt' }; });
+  const result = flow.manage(flow.command({ readiness: pendingCondition, featureTask:
+    { kind: 'new', firstMateTaskId: 'feature-f03', title: 'Feature three', repo: 'sample' } }));
+  assert.equal(result.operation.state, 'unknown');
+  assert.ok(flow.fake.read().tasks['feature-f03']);
+  assert.equal(flow.fake.read().tasks['managed-task'], undefined);
+  const retry = reconcileManagedTask(flow.store, projectId, result.operation.id, flow.options);
+  assert.equal(retry.state, 'succeeded', retry.reconciliation?.note);
+  assert.equal(flow.fake.read().calls.filter(call => call.args[0] === 'add' && call.args[1] === 'feature-f03').length, 1);
+  assert.deepEqual(flow.fake.read().tasks['managed-task']!.deps, [{ type: 'parent', id: 'feature-f03' }]);
+});
