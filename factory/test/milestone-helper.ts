@@ -114,7 +114,7 @@ if(step===mode.failStep) {
 let out=JSON.parse(readFileSync(root+'/outputs.json','utf8'))[step];
 // This scenario authors records after capture; other tests' fixed fixtures stay unchanged.
 if(out) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()).replaceAll(${JSON.stringify(request.id)},snapshot.request.id).replaceAll(${JSON.stringify(requestFile)},snapshot.request.source.uri));
-if(step==='plan_check') out=mode.planFailure ? {verdict:'fail',findings:[{type:'omission',message:'Missing required behavior',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} : {verdict:'pass',findings:[]};
+if(step==='plan_check') out=mode.planFailure ? {verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} : {verdict:'pass',findings:[]};
 if(step==='instruction_check') {
  assert.ok(snapshot.originalRequests[0].text===${JSON.stringify(original)});
  if(mode.requirePreparationHold) {

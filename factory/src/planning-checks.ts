@@ -295,6 +295,7 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
     add('missing_integration', plan, 'workflow', 'Multiple slices need integration steps; every plan needs final feature verification');
   }
   for (const scope of understanding.scope) {
+    if (scope.role === 'example') continue;
     for (const [owner, selectedStage] of [[design, designStage], [plan, planStage]] as const) {
       const actual = owner.workflow?.scope.find((entry) => samePlanningRef(entry.request, scope.request) &&
         entry.term.toLocaleLowerCase('en') === scope.term.toLocaleLowerCase('en'));
@@ -302,10 +303,8 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
       // requests. A directly applicable scope entry still has to agree.
       const checkedReuse = artifactReuse(selectedStage)?.check.result === 'passed' && samePlanningRef(selectedStage.artifact, owner);
       if (!actual && checkedReuse) continue;
-      const expected = scope.role === 'example' ? 'general' : scope.role;
-      if (!actual || actual.coverage !== expected) add(scope.role === 'example' ? 'example_driven_narrowing' :
-        scope.role === 'entire_scope' ? 'invented_scope' : 'dropped_behavior', owner, 'workflow.scope',
-      `${scope.term} has request role ${scope.role}; planned coverage must be ${expected}`);
+      if (!actual || actual.coverage !== scope.role) add(scope.role === 'entire_scope' ? 'invented_scope' : 'dropped_behavior',
+        owner, 'workflow.scope', `${scope.term} has request role ${scope.role}; planned coverage must be ${scope.role}`);
     }
   }
   for (const ref of design.decisions) {
