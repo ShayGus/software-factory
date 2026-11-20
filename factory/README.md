@@ -854,17 +854,9 @@ method history separately from the source feature revision and execution state.
 The check requires delivery coverage for active required criteria and for optional
 criteria that the plan elects to implement. Tasks/slices without a current criterion
 need an explicit maintenance objective on every maintenance task in that slice.
-It catches unlinked scope, example-only scope, expansion beyond an entire-scope
-request, failure to preserve required integrations, absent integration across multiple slices, absent
-final feature verification, open product decisions, unresolved source findings,
-missing actionable detail, and inconsistent stage/dependency ordering. Scope roles
-come from recorded source analysis: for example, the BUILD-02 request says ERPNext
-is an example, so Understand records `role: "example"` and Design/Plan must record
-`coverage: "general"` for that request and term. An ERPNext-only scope is recorded as
-`coverage: "example_only"` and blocks readiness even when all criterion IDs survive.
-This deterministic check does not infer arbitrary natural-language intent or prove
-the completeness of the source analysis. The original text and the recorded source
-comparisons remain available for that review; no model call is hidden in readiness.
+Readiness checks coverage of required and entire-scope entries from recorded source analysis.
+It also checks integration, final feature verification, open product decisions, unresolved source findings, actionable detail, and stage and dependency ordering.
+The independent plan review judges whether design or plan content narrows the original request, including treating an example as the full scope.
 
 For a material discovery, write a new affected design/plan revision with its reason
 and update the corresponding stage revision. An unchanged task can remain at its

@@ -140,17 +140,38 @@ for (const narrow of [false, true]) test(`${narrow ? 'narrow correction' : 'gene
   } finally { flow.store.close(); }
 });
 
+for (const coverage of ['omitted', 'example_only'] as const) test(`example scope can be ${coverage} at structural readiness`, () => {
+  const flow = setup();
+  try {
+    flow.design.productBehavior = originalScenario.edits[0].value;
+    for (const artifact of [flow.design, flow.plan, flow.detailedPlan]) {
+      if (coverage === 'omitted') artifact.workflow!.scope = [];
+      else artifact.workflow!.scope[0]!.coverage = coverage;
+    }
+    flow.start(); flow.finish();
+    const archived = {
+      ...base, kind: 'plan_readiness_revision', id: 'old-example-check', feature, plan: ref(flow.detailedPlan),
+      detailStage: ref(flow.detailStage), ready: false,
+      findings: [flow.design, flow.detailedPlan].map(artifact => ({
+        code: 'example_driven_narrowing', record: ref(artifact), path: 'workflow.scope',
+        message: 'ERPNext has request role example; planned coverage must be general',
+      })),
+    } as const;
+    flow.store.mutate({ schemaVersion: 1, id: 'archive-example-check', projectId: base.projectId, issuedAt: time,
+      idempotencyKey: 'archive-example-check', command: 'record_decision_suggestion', targetId: archived.id, expectedRevision: 0,
+      payload: { decision: flow.decision } }, () => [archived]);
+    const result = flow.check();
+    assert.ok(result.check?.kind === 'plan_readiness_revision');
+    assert.equal(result.check.ready, true, JSON.stringify(result.check.findings));
+    assert.deepEqual(result.readyPlan, { id: 'plan-new', revision: 3 });
+    assert.deepEqual(flow.store.get(base.projectId, archived.id), archived);
+  } finally { flow.store.close(); }
+});
+
 const findingCases: { name: string; code: string; edit: (flow: ReturnType<typeof setup>) => void }[] = [
   { name: 'dropped behavior', code: 'dropped_behavior', edit: (flow) => {
     flow.detailedPlan.workflow!.slices[1]!.criteria = [];
     flow.detailedTasks[1]!.criteria = []; flow.detailedTasks[1]!.maintenanceObjective = 'Draft maintenance';
-  } },
-  { name: 'BUILD-02 ERPNext-only narrowing with all criterion IDs retained', code: 'example_driven_narrowing', edit: (flow) => {
-    // Use the same original request and narrowing text as the BUILD-02 dispatch failure.
-    assert.equal(originalScenario.edits[0].value, 'Implement feature X for ERPNext only.');
-    flow.design.productBehavior = originalScenario.edits[0].value;
-    flow.design.workflow!.scope[0]!.coverage = 'example_only';
-    flow.detailedPlan.workflow!.scope[0]!.coverage = 'example_only';
   } },
   { name: 'missing integration', code: 'missing_integration', edit: (flow) => { flow.detailedPlan.workflow!.integrationSteps = []; } },
   { name: 'missing final feature verification on one slice', code: 'missing_integration', edit: (flow) => { flow.detailedPlan.workflow!.finalVerification = []; } },
@@ -497,7 +518,7 @@ test('review finding 2: legacy ready plans cannot dispatch draft or incomplete t
   }
 });
 
-test('review finding 3: all explicit scope roles retain their meaning in design and plan', () => {
+test('review finding 3: required and entire-scope entries retain their meaning in design and plan', () => {
   for (const role of ['required', 'entire_scope'] as const) for (const owner of ['design', 'plan'] as const) {
     const flow = setup(true);
     try {
@@ -529,7 +550,7 @@ test('review finding 4: reuse translates changed prerequisite criteria in the ge
   } finally { flow.store.close(); }
 });
 
-test('review finding 5: checked reuse covers additional requests while current scope entries still apply', () => {
+test('review finding 5: checked reuse covers additional requests while explicit required scope entries still apply', () => {
   const flow = setup();
   try {
     flow.start(); flow.finish();
@@ -537,12 +558,17 @@ test('review finding 5: checked reuse covers additional requests while current s
     assert.ok(current.check().readyPlan);
     for (const owner of ['design_revision', 'implementation_plan_revision'] as const) {
       const records = flow.store.history(base.projectId);
+      const understanding = records.find(record => record.kind === 'understanding_revision' && record.revision === 2);
+      assert.ok(understanding?.kind === 'understanding_revision');
+      const scope = understanding.scope.find(entry => entry.request.id === current.additional.id);
+      assert.ok(scope);
+      scope.role = 'required';
       const artifact = records.find((record) => record.kind === owner && record.revision === (owner === 'design_revision' ? 1 : 2));
       assert.ok(artifact?.kind === owner);
       if (artifact.kind !== 'design_revision' && artifact.kind !== 'implementation_plan_revision') continue;
       artifact.workflow!.scope.push({ request: ref(current.additional), term: 'ERPNext', coverage: 'example_only' });
       assert.ok(planReadinessFindings(records, current.detail).some((finding) =>
-        finding.code === 'example_driven_narrowing' && finding.record.id === artifact.id));
+        finding.code === 'dropped_behavior' && finding.record.id === artifact.id));
     }
   } finally { flow.store.close(); }
 });

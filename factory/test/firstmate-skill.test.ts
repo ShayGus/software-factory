@@ -137,7 +137,7 @@ test('one author session produces four stages before an independent review can b
     assert.equal(flow.wrapper.read().calls.length, 0);
     assert.equal(existsSync(join(config.runDirectory, 'planned.json')), false);
     const failure = JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent.json'), 'utf8'));
-    assert.match(failure.verdict.findings[0].message, /Missing required behavior/);
+    assert.equal(failure.verdict.findings[0].type, 'narrowing');
     const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
     const [understand, design, plan, detail, review] = calls;
     assert.deepEqual(calls.map(call => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check']);

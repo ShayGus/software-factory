@@ -499,7 +499,9 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       if (stage) {
         ctx.equal(record, stage.feature, record.feature, 'feature');
         ctx.equal(record, stage.artifact, record.plan, 'plan');
-        if (canonical(planReadinessFindings(ctx.records, stage)) !== canonical(record.findings)) {
+        // Archived checks retain example findings from the former readiness rule.
+        const findings = record.findings.filter(finding => finding.code !== 'example_driven_narrowing');
+        if (canonical(planReadinessFindings(ctx.records, stage)) !== canonical(findings)) {
           ctx.add(record, 'readiness_mismatch', 'findings', 'Readiness findings must match deterministic checks');
         }
       }
