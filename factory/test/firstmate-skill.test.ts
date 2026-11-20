@@ -345,3 +345,38 @@ for (const existingParent of [false, true]) test(`existing project code without 
       observedDependencies: flow.wrapper.read().tasks[planned.tasks[0].taskId]!.deps }));
   } finally { flow.close(); }
 });
+
+test('planning records the exact stored excerpt for an authored request range', () => {
+  const { flow, config, request } = intake();
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const understanding = outputs.understand.input.records[0]!;
+    const sourceRequest = understanding.sourceRequests[0]!;
+    const excerpt = 'שלום';
+    const start = request.indexOf(excerpt);
+    const decision = {
+      kind: 'decision_change', id: 'range-decision', projectId: understanding.projectId,
+      schemaVersion: 1, revision: 1, createdAt: understanding.createdAt, updatedAt: understanding.updatedAt,
+      questionOrChange: 'Preserve the Unicode request text', affectedRecords: [sourceRequest, understanding.feature],
+      rationale: 'Keep the captured source', disposition: 'selected', scopeChanges: [],
+      choice: { kind: 'technical', state: 'resolved' },
+      sourceRefs: [{ uri: config.requestFile, record: sourceRequest }],
+      requestMapping: { request: sourceRequest, start, end: start + excerpt.length, disposition: 'work',
+        feature: understanding.feature, criteria: [], replaces: [] },
+    };
+    outputs.design.records[0].decisions = [{ id: decision.id, revision: 1 }];
+    outputs.design.records.push(decision);
+    flow.save(outputsPath, outputs);
+    runFeature(config, 'plan');
+    const store = new ProjectStore(config.database, { readOnly: true });
+    try {
+      const stored = store.get('project-1', decision.id, 1);
+      assert.ok(stored?.kind === 'decision_change' && stored.requestMapping);
+      const { request: mapped } = stored.requestMapping;
+      assert.deepEqual(stored.sourceRefs[0], { uri: config.requestFile, record: mapped });
+      assert.ok(stored.sourceRefs.some(source => source.record?.id === mapped.id &&
+        source.record.revision === mapped.revision && source.excerpt === excerpt));
+    } finally { store.close(); }
+  } finally { flow.close(); }
+});

@@ -20,6 +20,11 @@ export function requestRecord(store: ProjectStore, projectId: string, id: string
   return value;
 }
 
+export function requestRangeSource(request: Ref, originalText: string, { start, end }: { start: number; end: number }) {
+  return { uri: `factory:request/${encodeURIComponent(request.id)}#chars=${start},${end}`,
+    record: request, excerpt: originalText.slice(start, end) };
+}
+
 export function initializeProject(store: ProjectStore, input: unknown) {
   const project = ProjectSchema.parse(input);
   const decision = DecisionChangeSchema.parse({
@@ -89,8 +94,7 @@ export function mapRequest(store: ProjectStore, input: unknown) {
   const request = requestRecord(store, data.projectId, data.requestId);
   // Every mapping points to the original capture, even after corrections.
   const sourceRequest = { id: request.id, revision: 1 };
-  const source = { uri: `factory:request/${encodeURIComponent(request.id)}#chars=${data.start},${data.end}`,
-    record: sourceRequest, excerpt: request.originalText.slice(data.start, data.end) };
+  const source = requestRangeSource(sourceRequest, request.originalText, data);
   const id = stableId('mapping', data.projectId, data.idempotencyKey);
   const base = { projectId: data.projectId, schemaVersion: 1 as const, revision: 1,
     createdAt: data.issuedAt, updatedAt: data.issuedAt };
