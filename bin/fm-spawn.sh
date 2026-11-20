@@ -54,7 +54,8 @@
 #   to start from and target instead of origin's default branch. A fresh launch
 #   resets its pooled copy to origin/<branch>, refusing when the project has no
 #   origin or origin lacks that branch, or when the project's registered forge
-#   cannot carry it. It must agree with every Setup "Base branch:" line in the
+#   cannot carry it. Factory local-only sub-tasks start from their recorded
+#   local fm/ticket/ branch. The flag must agree with every Setup "Base branch:" line in the
 #   brief (bin/fm-brief.sh --base-branch writes one; other such lines are prose),
 #   and a brief with such a line refuses a spawn without the flag. The spawn records it as
 #   base_branch= in state/<id>.meta, which a relaunch reuses and later review and
@@ -4782,6 +4783,16 @@ freshen_spawn_worktree_base() { # <worktree> <base-branch> <project> <mode>; 2 w
       echo "error: pooled worktree '$worktree' is not clean; refusing to discard uncommitted work while refreshing its base" >&2
     fi
     return 2
+  fi
+  if fm_local_ticket_base "$mode" "$base"; then
+    target="refs/heads/$base"
+    expected=$(git -C "$project" rev-parse --verify "$target^{commit}" 2>/dev/null) || {
+      echo "error: local ticket base '$base' is unavailable in '$project'" >&2
+      return 1
+    }
+    git -C "$worktree" reset --hard "$expected" >/dev/null || return 1
+    [ "$(git -C "$worktree" rev-parse --verify HEAD)" = "$expected" ]
+    return
   fi
   if ! spawn_worktree_has_origin_config "$worktree"; then
     [ -z "$base" ] || {

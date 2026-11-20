@@ -571,6 +571,23 @@ test_opted_in_base_branch_stays_on_origin() {
   pass "fm-review-diff keeps an opted-in named base branch on origin's copy"
 }
 
+test_factory_subtask_reviews_against_local_ticket() {
+  local case_dir out
+  case_dir=$(seed_case factory-subtask)
+  git -C "$case_dir/project" checkout -q -b fm/ticket/parent main
+  land_locally "$case_dir" 1
+  git -C "$case_dir/project" checkout -q main
+  plant_task_branch "$case_dir" fm/ticket/parent
+  write_task_meta "$case_dir" "kind=ship" "mode=local-only" "base_branch=fm/ticket/parent"
+
+  out=$(run_review_diff "$case_dir" task-x1 --stat 2> "$case_dir/stderr")
+
+  assert_contains "$out" 'diff base: refs/heads/fm/ticket/parent' "factory sub-task: review should use the local ticket branch"
+  assert_contains "$out" 'task-change.txt' "factory sub-task: review should show its own commit"
+  assert_not_contains "$out" 'landed-1.txt' "factory sub-task: review should exclude earlier sub-tasks"
+  pass "fm-review-diff compares a factory sub-task with its local ticket branch"
+}
+
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
 test_stale_recorded_pr_head_loses_to_fetched_pull_head
@@ -591,3 +608,4 @@ test_opted_in_diverged_defaults_anchor_where_the_task_was_planted
 test_opted_in_landed_branch_reports_an_empty_review
 test_opted_in_unrelated_merge_bases_are_reported
 test_opted_in_base_branch_stays_on_origin
+test_factory_subtask_reviews_against_local_ticket

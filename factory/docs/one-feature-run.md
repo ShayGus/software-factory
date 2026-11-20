@@ -223,6 +223,9 @@ Task inputs, checks, worker return and phase outputs live under `runDirectory/ta
 The build instructions receive the exact assignment identity and return location from the prepared brief.
 The start hook checks every launch candidate, just as for the single-task convenience phase.
 A failed preparation or start check leaves work undispatched.
+For publishing runs, each sub-task receives a native local-only brief and starts from the shared local `fm/ticket/<native-ticket-id>` branch.
+FirstMate initializes that branch on the first start.
+After the sub-task passes review, the guarded local landing fast-forwards the ticket branch to its reviewed commit.
 Preparation and reviews are single-use; recover failures using saved inputs and existing individual commands with deliberate new keys, rather than deleting markers and blindly replaying effects.
 
 Review each producer before completing its normal FirstMate delivery and releasing consumers.
@@ -233,7 +236,10 @@ Failed or uncertain task judgments stop that task's delivery and its dependents,
 The final aggregate review must pass before the feature is reported complete.
 `review-all` captures the available return bytes once at its start and saves `review-all-snapshot.json` with exact deliveries and `pendingTasks`.
 When any task is pending, it returns `state: awaiting_worker_returns` without an agent call or a single-use review marker, so a later aggregate attempt can include later arrivals.
+For publishing runs, it reports `state: awaiting_ticket_branch` until the branch contains every exact returned commit and its tip is one of those commits.
 With all returns present, it calls the existing `review-product` operation using only that snapshot and exact assignment and commit identities, preserving the original request as the authority across slices.
+After a passing aggregate review, it saves and returns `ticketDelivery` with the ticket ID, branch, reviewed head, and configured FirstMate delivery posture.
+The [factory skill](../skills/software-factory/SKILL.md) owns publishing the ticket from this handoff.
 Whole-feature completeness is separate from any single task's delivery eligibility.
 A per-task pass does not replace this final integration review.
 No phase polls workers, changes native completion state, installs hooks, enqueues technical review or adds a scheduling service.

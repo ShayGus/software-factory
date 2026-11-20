@@ -323,7 +323,23 @@ test_local_merge_hooks() {
   pass 'local merge hooks veto before ref transaction and notify after landing'
 }
 
-fm_test_run test_local_merge_hooks
+test_local_ticket_target_is_a_ref_only_landing() {
+  local ticket=fm/ticket/feature-task
+  make_case ticket-branch
+  git -C "$PROJ" branch "$ticket" "$BASE"
+  printf 'base_branch=%s\n' "$ticket" >> "$META"
+  record_done || fail 'done not accepted'
+  git -C "$PROJ" switch -q "$ticket"
+  assert_refused
+  git -C "$PROJ" switch -q -
+  land >/dev/null || fail 'approved commit did not land on the ticket branch'
+  [ "$(git -C "$PROJ" rev-parse "refs/heads/$ticket")" = "$X" ] || fail 'ticket branch did not advance'
+  [ "$(git -C "$PROJ" rev-parse HEAD)" = "$BASE" ] || fail 'ticket landing advanced main'
+  [ ! -e "$PROJ/approved.txt" ] || fail 'ticket landing modified the default checkout'
+  pass 'local ticket landing updates only its recorded ref and refuses a checked-out target'
+}
+
+fm_test_run test_local_merge_hooks test_local_ticket_target_is_a_ref_only_landing
 fm_test_run test_two_tasks_cannot_undo_a_same_tree_landing test_branch_advance_does_not_change_approval \
   test_missing_and_malformed_head_refuse test_change_after_hold_check_refuses \
   test_diverged_default_refuses test_change_during_approval_check_refuses \

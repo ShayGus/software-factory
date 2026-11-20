@@ -1103,7 +1103,22 @@ test_named_base_branch_starts_from_that_branch() {
   status=$?
   [ "$status" -ne 0 ] || fail "a base branch on a local-only ship should refuse the spawn"
   assert_contains "$out" "mode=local-only" "the local-only refusal did not explain itself"
-  pass "--base-branch picks the copy's starting point and is recorded; a missing or local-only base refuses"
+  id='pool-local-ticket-base-r1'
+  rec=$(make_case local-ticket-base "$id")
+  read_case_record "$rec"
+  git -C "$PROJECT_DIR" switch -q -c fm/ticket/feature-task
+  printf 'local ticket base\n' > "$PROJECT_DIR/ticket-only.txt"
+  git -C "$PROJECT_DIR" add ticket-only.txt
+  git -C "$PROJECT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm ticket
+  git -C "$PROJECT_DIR" switch -q "$DEFAULT_BRANCH"
+  brief_with_base "$id" fm/ticket/feature-task
+  out=$(run_spawn "$id" --mode local-only --yolo off --base-branch fm/ticket/feature-task)
+  status=$?
+  expect_code 0 "$status" "a factory sub-task should start from its local ticket ref"$'\n'"$out"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$(git -C "$PROJECT_DIR" rev-parse refs/heads/fm/ticket/feature-task)" ] \
+    || fail "the local ticket copy did not start from the ticket ref"
+  assert_grep 'base_branch=fm/ticket/feature-task' "$HOME_DIR/state/$id.meta" "the local ticket base was not recorded"
+  pass "--base-branch verifies remote named bases and permits a factory sub-task to start from its local ticket ref"
 }
 
 test_base_branch_must_agree_with_the_brief() {
