@@ -8,9 +8,10 @@ import { z } from 'zod';
 import { ProjectAgentConfigSchema, nativeStepProfile, planningAuthorSteps, stepAgentCommand } from './agent-profiles.js';
 import { runStepAgent, type PlanningSession } from './agent-runner.js';
 import { briefPreparationGateId, PrepareWorkerBriefInputSchema } from './briefs.js';
-import { MapRequestInputSchema, ref, stableId } from './intake.js';
+import { MapRequestInputSchema, ref, requestRangeSource, stableId } from './intake.js';
 import { InstructionJudgeVerdictSchema } from './instruction-judge.js';
 import { digestText, requiredAssignmentContext, sameSource } from './instruction-context.js';
+import { planningRecord, samePlanningRef } from './planning-checks.js';
 import { RecordStageInputSchema } from './planning.js';
 import { EvidenceSchema, RefSchema, type Ref } from './primitives.js';
 import { ProjectSchema, ProductReviewSchema, type FactoryRecord, type StageRevision } from './records.js';
@@ -226,7 +227,7 @@ Use exact record references. Understand maps the whole request to one new featur
 Each detailed task must require its worker to commit code, verify each assigned criterion, and write a JSON return using workerReturnSchema in the evidence file. ${phase === 'prepare' ? `Return location is ${join(directory, 'worker-return.json')}; assignment is ${config.taskId}-assignment revision 1.` : 'Use the exact assignment identity and return location supplied later in the factory brief.'} Criterion results use exact identities, the committed artifact SHA, evidence, limitations and suggestions. Preserve FirstMate's delivery and technical-quality contract. Product review reads existing exact-commit technical results separately.`;
       const records = attemptRecords(history(), ref(request), previousStage);
       const { originalText, ...requestReference } = request;
-      const result = runStepAgent(agents, project.id, step, directions, { ...agentFiles, planningSession, evidence: {
+      const result = runStepAgent(agents, project.id, step, directions + '\nFor request mappings, supply source references, exact request revisions and ranges. The runner derives the exact mapped excerpt.', { ...agentFiles, planningSession, evidence: {
         schema: z.toJSONSchema(schema), workerReturnSchema: z.toJSONSchema(FeatureWorkerReturnSchema),
         project: currentProject, projectId: project.id, issuedAt: issuedAt(),
         request: continuing ? requestReference : request, requestLength: originalText.length,
@@ -244,6 +245,19 @@ Each detailed task must require its worker to commit code, verify each assigned 
         inputCommand('map', understood.mapping); input = understood.input;
       }
       const stage = RecordStageInputSchema.parse(input);
+      const stageHistory = history();
+      for (const record of stage.records) {
+        if (record.kind !== 'decision_change' || !record.requestMapping) continue;
+        const mapping = record.requestMapping;
+        const mapped = planningRecord(stageHistory, mapping.request);
+        if (mapped?.kind !== 'request' || mapping.end > mapped.originalText.length) continue;
+        const source = requestRangeSource(mapping.request, mapped.originalText, mapping);
+        if (record.sourceRefs.some(citation => citation.record && samePlanningRef(citation.record, mapped) &&
+          citation.excerpt === source.excerpt)) continue;
+        const citation = record.sourceRefs.find(entry => entry.uri === source.uri && entry.record && samePlanningRef(entry.record, mapped));
+        if (citation) citation.excerpt = source.excerpt;
+        else record.sourceRefs.push(source);
+      }
       if (stage.stage.stage !== step || stage.stage.projectId !== project.id || stage.stage.feature.id !== featureId ||
         stage.stage.feature.revision !== 1 || !stage.stage.sourceRequests.some((source) => source.id === captured.request.id && source.revision === 1)) {
         throw new Error('run_stage_mismatch');
