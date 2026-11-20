@@ -378,6 +378,22 @@ test('review 1299-2: incomplete target inventory never authorizes an initial lau
   assert.throws(() => runtimeTask(snapshot, 'orphan'), /inventory|metadata/);
 });
 
+test('a queued worker can start when inventory gaps identify only other in-flight tasks', async () => {
+  const { FleetSnapshotSchema, runtimeTask } = await import('../src/index.js');
+  const snapshot = FleetSnapshotSchema.parse({ schema: 'fm-fleet-snapshot.v1', generated: new Date().toISOString(), fm_home: '/fake',
+    backlog: { present: true, records: [{ id: 'orphan', state: 'in_flight' }, { id: 'target', state: 'queued' }] }, tasks: [],
+    main_inventory: { valid: false, orphan_in_flight: ['orphan'], unstructured_current_count: 0 } });
+  assert.equal(runtimeTask(snapshot, 'target'), undefined);
+  assert.throws(() => runtimeTask(snapshot, 'orphan'), /inventory|metadata/);
+  assert.throws(() => runtimeTask(snapshot, 'unlisted'), /inventory|metadata/);
+  for (const inventory of [
+    { valid: false, orphan_in_flight: ['orphan'], unstructured_current_count: 1 },
+    { valid: false, orphan_in_flight: ['unaccounted'], unstructured_current_count: 0 },
+  ]) {
+    assert.throws(() => runtimeTask({ ...snapshot, main_inventory: inventory }, 'target'), /inventory|metadata/);
+  }
+});
+
 test('review 1299-3: unchanged failed crew state with a live endpoint cannot prove an interrupt succeeded', t => {
   const flow = setup(t);
   const a = assignment(flow);

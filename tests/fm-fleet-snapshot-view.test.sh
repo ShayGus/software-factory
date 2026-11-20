@@ -151,6 +151,50 @@ test_empty_fleet_json() {
   pass "empty fleet snapshot and view use explicit absence markers"
 }
 
+test_structured_backend_backlog() {
+  local home fakebin out
+  home=$(make_home beads-backlog)
+  fakebin=$(make_fakebin "$home")
+  printf 'backend = "beads"\n' > "$home/.tasks.toml"
+  cat > "$fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+[ "$(pwd -P)" = "$FM_HOME" ] && [ -z "${TASKS_AXI_FILE+x}" ] && [ "$*" = 'list --json' ] || exit 2
+cat "$FM_HOME/list.json"
+SH
+  chmod +x "$fakebin/tasks-axi"
+  cat > "$home/list.json" <<'JSON'
+{
+  "count": 3,
+  "total": 3,
+  "tasks": [
+    {"id":"orphan","state":"in_flight","kind":"ship","title":"Detached worker","links":[],"deps":[]},
+    {"id":"queued","state":"queued","title":"A title, with punctuation","links":[],"deps":[{"type":"blocked-by","id":"finished"}],"hold":{"kind":"captain","reason":"Review this"},"body":"Keep these task details."},
+    {"id":"finished","state":"done","kind":"ship","title":"Delivered","closed":"2026-07-01","links":[{"kind":"pr","url":"https://github.com/example/demo/pull/1"}],"deps":[]}
+  ]
+}
+JSON
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json) || fail "snapshot could not read the configured Beads backlog"
+  printf '%s' "$out" | jq -e '
+    .backlog.present and (.backlog.records | map(.id)) == ["orphan","queued","finished"]
+    and .backlog.records[1].title == "A title, with punctuation"
+    and .backlog.records[1].body_excerpt == "Keep these task details."
+    and .backlog.records[1].hold_bucket == "live"
+    and .backlog.records[1].unresolved_blocker_ids == []
+    and .backlog.records[2].completion.verb == "merged"
+    and .main_inventory.orphan_in_flight == ["orphan"]
+  ' >/dev/null || fail "structured listing must feed the same backlog and inventory projections"
+  [ ! -e "$home/data/backlog.md" ] || fail "snapshot wrote a markdown backlog"
+
+  jq '.total += 1' "$home/list.json" > "$home/partial.json"
+  mv "$home/partial.json" "$home/list.json"
+  if PATH="$fakebin:$PATH" FM_HOME="$home" "$SNAPSHOT" --json > "$home/result.json" 2> "$home/error"; then
+    fail "partial backend response was accepted as a complete backlog"
+  fi
+  [ ! -s "$home/result.json" ] || fail "partial backend response emitted a fleet snapshot"
+  grep -q 'incomplete tasks-axi backlog listing' "$home/error" || fail "partial listing should be diagnosed"
+  pass "snapshot reads the configured structured backlog and rejects a partial listing"
+}
+
 test_fixture_snapshot_json() {
   local home fakebin out ids
   home=$(make_home fixture)
@@ -1154,6 +1198,7 @@ EOF
 
 fm_test_run \
   test_empty_fleet_json \
+  test_structured_backend_backlog \
   test_fixture_snapshot_json \
   test_home_summary_excludes_secondmate_from_child_inventory \
   test_undated_captain_hold_phrasing_and_aging \

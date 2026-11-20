@@ -66,7 +66,7 @@ export const TOP_HELP = `usage: tasks-axi [command] [args] [flags]
 commands[19]:
   (none)=dashboard, add, list, show, start, done, reopen, update, rm, block, unblock, hold, unhold, ready, public-followup, mv, prune, render, setup
 flags[4]:
-  --backend <name> (after command), --file <path> (after command), --json (mutations: machine-readable result), --help, -v/-V/--version
+  --backend <name> (after command), --file <path> (after command), --json (list and mutations), --help, -v/-V/--version
 examples:
   tasks-axi
   tasks-axi add homemux-h7 "owns HomeMux end to end" --kind secondmate --start

@@ -14,10 +14,10 @@
 #   generated: UTC observation time for this fresh command execution.
 #   fm_home: resolved operational home.
 #   roots: resolved root/config/data/state/projects directories.
-#   backlog: {path,present,records[]} where records are ordered as written in
-#     data/backlog.md and cover In flight, Queued, and Done.
-#     Canonical tasks-axi rows are structured; free-form non-empty lines in
-#     those sections are preserved as unstructured records.
+#   backlog: {path,present,records[]} covers In flight, Queued, and Done in
+#     backend order. Markdown homes read data/backlog.md, preserving free-form
+#     rows as unstructured records. Other tasks-axi backends read the complete
+#     structured listing from the home selected by the backlog wrapper.
 #     Structured rows preserve captain-hold metadata such as hold_kind,
 #     hold_reason, and hold_until when tasks-axi emits it. They also carry
 #     normalized current_role, requires_child_metadata, blocked_by_ids,
@@ -232,6 +232,10 @@ esac
 . "$SCRIPT_DIR/fm-merge-authority-lib.sh"
 # shellcheck source=bin/fm-hold-reason-lib.sh
 . "$SCRIPT_DIR/fm-hold-reason-lib.sh"
+# shellcheck source=bin/fm-tasks-axi-lib.sh
+. "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-backlog-transition-lib.sh
+. "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 
 usage() {
   cat <<'EOF'
@@ -385,16 +389,30 @@ first_pr_url_in_file() {  # <file>
 }
 
 # Isolate this read-only projection from the fleet collector's shell state.
-backlog_json() (  # [<backlog-path>] - defaults to this home's $BACKLOG
-  local backlog=${1:-$BACKLOG}
-  if [ ! -f "$backlog" ]; then
-    jq -n --arg path "$backlog" '{path:$path,present:false,records:[]}'
+backlog_json() (
+  local input=$BACKLOG path=$BACKLOG root backend=markdown
+  if [ -d "$DATA" ] && ! fm_backlog_backend_manual "$CONFIG"; then
+    root=$(fm_backlog_root "$DATA") || return 1
+    fm_backlog_config_present "$root" "$(fm_backlog_authorized_root "$DATA")" || {
+      printf '%s\n' "$FM_BACKLOG_TRANSITION_ERROR" >&2
+      return 1
+    }
+    backend=$(fm_tasks_axi_backend "$root") || return 1
+  fi
+  if [ "$backend" != markdown ]; then
+    path="$root/.tasks.toml"
+    input=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-fleet-backlog.XXXXXX") || return 1
+    trap 'rm -f -- "$input"' EXIT
+    export PATH="$FM_HOME/.tools/bin${PATH:+:$PATH}"
+    FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-tasks-axi.sh" list --json > "$input" || return 1
+  elif [ ! -f "$input" ]; then
+    jq -n --arg path "$path" '{path:$path,present:false,records:[]}'
     return 0
   fi
 
   set -o pipefail
   # shellcheck disable=SC2094
-  jq -Rn --arg path "$backlog" --arg today "$SNAPSHOT_TODAY" --arg now "$SNAPSHOT_NOW" \
+  jq -Rn --arg path "$path" --arg backend "$backend" --arg today "$SNAPSHOT_TODAY" --arg now "$SNAPSHOT_NOW" \
     --argjson age_days "$FM_SNAPSHOT_UNDATED_HOLD_AGE_DAYS" '
     def trim: gsub("^[[:space:]]+|[[:space:]]+$"; "");
     def timestamp_epoch($d):
@@ -518,7 +536,35 @@ backlog_json() (  # [<backlog-path>] - defaults to this home's $BACKLOG
              body_lines:[],
              body_excerpt:null}
         end;
-    reduce inputs as $line
+    def structured_backlog:
+      [inputs] | join("\n") | fromjson
+      | if (.tasks | type) != "array" or .count != (.tasks | length) or .total != .count
+           or ([.tasks[].id] | unique | length) != .count
+           or any(.tasks[]; (.id | type) != "string" or .id == ""
+               or (.state != "queued" and .state != "in_flight" and .state != "done"))
+        then error("incomplete tasks-axi backlog listing") else . end
+      | {path:$path,present:true,records:[.tasks | to_entries[] |
+         .key as $index | .value as $task
+         | [$task.deps[] | select(.type == "blocked-by")] as $blockers
+         | ([$task.links[] | select(.kind == "pr") | .url][0]) as $pr
+         | ([$task.links[] | select(.kind == "report") | .url][0]) as $report
+         | (if $task.closed == null then null
+            elif $pr != null then "merged" elif $report != null then "reported" else "done" end) as $completion
+         | {order:($index + 1),structured:true,id:$task.id,state:$task.state,
+            checked:($task.state == "done"),title:$task.title,kind:$task.kind,repo:$task.repo,
+            priority:($task.priority | if . == null then null else tostring end),
+            hold_reason:$task.hold.reason,hold_kind:$task.hold.kind,hold_until:$task.hold.until,hold_set:null,
+            blocked_by:$blockers[0].id,blocked_by_ids:($blockers | map(.id)),blocked_reason:$blockers[0].reason,
+            since:$task.created,
+            merged:(if $completion == "merged" then $task.closed else null end),
+            reported:(if $completion == "reported" then $task.closed else null end),
+            done:(if $completion == "done" then $task.closed else null end),
+            completion:{verb:$completion,date:$task.closed},
+            links:[$task.links[].url | select(test("^https?://"))],pr_url:$pr,report_path:$report,
+            local_note:null,raw:$task.title,
+            body_lines:(($task.body // "") | split("\n") | map(trim | select(length > 0))),
+            body_excerpt:null}]};
+    (if $backend != "markdown" then structured_backlog else reduce inputs as $line
       ({path:$path,present:true,records:[],section:null,order:0};
        if ($line | test("^##[[:space:]]+")) then
          .section = (($line | sub("^##[[:space:]]+";"") | trim) | section_state)
@@ -535,6 +581,7 @@ backlog_json() (  # [<backlog-path>] - defaults to this home's $BACKLOG
          .order += 1
          | .records += [{order:.order,state:.section,structured:false,id:null,raw:$line,body_lines:[],body_excerpt:null}]
        end)
+    end)
     | .records |= map(
         if (.body_lines | length) > 0 then
           .hold_set = cap(.body_lines[0]; "^Captain hold set:[[:space:]]*(?<v>[0-9]{4}-[0-9]{2}-[0-9]{2}(?:T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)?)$")
@@ -575,7 +622,7 @@ backlog_json() (  # [<backlog-path>] - defaults to this home's $BACKLOG
           | .captain_actionable = (.hold_bucket == "live")
         else . end)
     | del(.section,.order)
-  ' < "$backlog" | fm_hold_reason_decode_stream json
+  ' < "$input" | fm_hold_reason_decode_stream json
 )
 
 SNAPSHOT_TASK_DIR=
