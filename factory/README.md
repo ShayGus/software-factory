@@ -58,7 +58,8 @@ Keep the home at its installed absolute path.
 `config/software-factory.agents.json` contains the installed agent profiles: Codex with GPT-6.1 Sol for workers and Claude for product review.
 Its exact profile shape is [fixtures/workflow-agents.json](fixtures/workflow-agents.json): `understand`, `design`, `plan`, `detail`, `plan_check`, `instruction_check`, `build`, `product_review` and `learning_consolidation`, plus absolute installed `executables`.
 Profiles can be adjusted to accessible models and supported effort values when needed.
-The build profile becomes the native `fm-spawn.sh` harness/model/effort selection; planning and review run in fresh independent processes.
+The build profile becomes the native `fm-spawn.sh` harness/model/effort selection.
+See [the feature run guide](docs/one-feature-run.md) for planning and review session behavior.
 Learning consolidation is a required shared profile but is not executed by this skill.
 Each project's copy is created at `data/software-factory/projects/<registered-name>/agents.json` on first intake; later requests reuse it.
 Edit that project copy when changing an already initialized project's profiles.
@@ -1023,9 +1024,8 @@ to a FirstMate crew-dispatch profile object with the same field names and values
 `harness`, `provider`, `model`, `effort`. Harness is required; the other fields are
 optional as in FirstMate. The seven base step entries, including
 `learning_consolidation`, remain required; the connected run path also requires
-`plan_check` and `build`. Understand, Design, Plan and Detail execute agents in that
-run path. Missing entries and cross-project
-configuration are refused rather than inherited from another step or session.
+`plan_check` and `build`. See [the feature run guide](docs/one-feature-run.md) for authoring profiles and session behavior.
+Missing entries and cross-project configuration are refused.
 
 ```json
 {
@@ -1051,11 +1051,11 @@ independent `plan_check`, `instruction_check`, `build`, `product_review` and
 `learning_consolidation` profiles.
 Each review step selects its own profile, never the worker's or the main session's.
 The executable map names installed harness binaries, not arbitrary command argv.
-The adapter constructs the command itself:
+Independent reviews use these native commands.
 
 - Codex: fresh `exec --ephemeral --ignore-user-config` with a read-only sandbox, the selected `--model`,
   and `-c model_reasoning_effort=...`. Native JSON-schema output uses the bundled
-  judge schema. No resume/continue/session reuse is supported.
+  judge schema.
 - Claude runs with `--print --no-session-persistence --safe-mode --strict-mcp-config`, the selected `--model` and `--effort`, and only the `Read`, `Glob` and `Grep` tools.
 
 The native effort mapping matches the inspected FirstMate adapter: Codex supports

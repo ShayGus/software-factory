@@ -129,7 +129,7 @@ test('two dependent tasks stay held until producer evidence, then both receive o
   } finally { flow.close(); }
 });
 
-test('failed plan check stops before any task is queued', () => {
+test('one author session produces four stages before an independent review can block queueing', () => {
   const { flow, config } = intake(true);
   try {
     flow.mode({ planFailure: true });
@@ -138,6 +138,28 @@ test('failed plan check stops before any task is queued', () => {
     assert.equal(existsSync(join(config.runDirectory, 'planned.json')), false);
     const failure = JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent.json'), 'utf8'));
     assert.match(failure.verdict.findings[0].message, /Missing required behavior/);
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const [understand, design, plan, detail, review] = calls;
+    assert.deepEqual(calls.map(call => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check']);
+    assert.ok(understand.sessionId);
+    assert.ok(!understand.args.includes('resume'));
+    assert.ok(review.args.includes('--ephemeral'));
+    assert.equal(review.sessionId, undefined);
+    const snapshot = (turn: typeof understand) => {
+      const { evidence } = JSON.parse(turn.prompt.trimEnd().split('\n').at(-1));
+      return JSON.parse(readFileSync(evidence, 'utf8'));
+    };
+    const originalText = readFileSync(config.requestFile, 'utf8');
+    assert.equal(snapshot(understand).request.originalText, originalText);
+    for (const turn of [design, plan, detail]) {
+      assert.ok(turn.args.includes('resume'));
+      assert.equal(turn.sessionId, understand.sessionId);
+      assert.equal(turn.cwd, understand.cwd);
+      const evidence = snapshot(turn);
+      assert.equal(evidence.request.originalText, undefined);
+      assert.equal(evidence.records.find((record: any) => record.kind === 'request').originalText, undefined);
+    }
+    assert.equal(snapshot(review).records.find((record: any) => record.kind === 'request').originalText, originalText);
   } finally { flow.close(); }
 });
 

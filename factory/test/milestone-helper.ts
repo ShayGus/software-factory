@@ -96,7 +96,8 @@ export function scenario(options: { bootstrap: boolean; originalRequest?: string
   }
   save(join(root, 'outputs.json'), outputs); save(join(root, 'mode.json'), { narrow: false, badDelivery: false, planFailure: false });
   const agent = executable('agent.mjs', `import assert from 'node:assert/strict';
-import {readFileSync,appendFileSync,copyFileSync} from 'node:fs';
+import {randomUUID} from 'node:crypto';
+import {readFileSync,appendFileSync,copyFileSync,writeFileSync} from 'node:fs';
 const root=${JSON.stringify(root)};
 const args=process.argv.slice(2); const step=args[args.indexOf('--model')+1];
 const prompt=readFileSync(0,'utf8'); const files=JSON.parse(prompt.trimEnd().split('\\n').at(-1));
@@ -104,7 +105,8 @@ const snapshot=JSON.parse(readFileSync(files.evidence,'utf8'));
 const mode=JSON.parse(readFileSync(root+'/mode.json','utf8'));
 assert.equal(args.includes('--resume'),false);
 assert.equal(Object.keys(process.env).some(k=>k.startsWith('FM_')||k==='CODEX_THREAD_ID'),false);
-appendFileSync(root+'/agents.jsonl',JSON.stringify({step,pid:process.pid,args,prompt})+'\\n');
+const sessionId = !args.includes('--json') ? undefined : args.includes('resume') ? args.at(-2) : randomUUID();
+appendFileSync(root+'/agents.jsonl',JSON.stringify({step,pid:process.pid,args,prompt,sessionId,cwd:process.cwd()})+'\\n');
 if(step===mode.failStep) {
  process.stderr.write('Agent diagnostic before exit.\\n');
  process.exit(17);
@@ -133,7 +135,10 @@ if(step==='product_review') {
  criteria:snapshot.assignedCriteria.map((criterion,i)=>({criterion,state:mode.badDelivery&&i===1?'failed':'accomplished',behavior:'Common interface behavior',quotes:[{source:'delivery',text:code.trim()}],limitations:[]})),
  findings:mode.badDelivery?['instructionFidelity','planConformance'].map(check=>({check,type:'narrowed_generality',message:'ERPNext only violates original generality',quotes:[{source:'original_request',text:${JSON.stringify(original)}},{source:'delivery',text:code.trim()}]})):[],suggestions:[],unresolvedQuestions:[]};
 }
-process.stdout.write(JSON.stringify(out));`);
+if (sessionId) {
+ writeFileSync(args[args.indexOf('--output-last-message')+1],JSON.stringify(out));
+ process.stdout.write(JSON.stringify({type:'thread.started',thread_id:sessionId})+'\\n');
+} else process.stdout.write(JSON.stringify(out));`);
   const profiles = Object.fromEntries(['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'product_review', 'build', 'learning_consolidation']
     .map((step) => [step, { harness: 'codex', provider: 'codex', model: step, effort: step.includes('check') || step === 'product_review' ? 'high' : 'medium' }]));
   const agentConfig = join(root, 'agents.json'); save(agentConfig, { schemaVersion: 1, projectId: 'project-1', steps: profiles, executables: { codex: agent } });
