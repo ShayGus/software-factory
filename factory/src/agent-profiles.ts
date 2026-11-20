@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -6,6 +7,7 @@ import { IdSchema, TextSchema } from './primitives.js';
 export const WorkflowAgentStepSchema = z.enum(['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'build', 'product_review', 'learning_consolidation']);
 export type WorkflowAgentStep = z.infer<typeof WorkflowAgentStepSchema>;
 export type ExecutedAgentStep = Exclude<WorkflowAgentStep, 'build'>;
+export const planningAuthorSteps = ['understand', 'design', 'plan', 'detail'] as const;
 // The profile object is FirstMate's crew-dispatch profile subshape. Provider is
 // its account/quota family, not a new API endpoint or a provider SDK selection.
 export const WorkflowAgentProfileSchema = z.strictObject({
@@ -49,25 +51,29 @@ export function nativeStepProfile(input: unknown, projectId: string, step: Workf
   return resolved;
 }
 
-/** Planning, review and consolidation steps execute an agent. Each call starts a fresh
- * one-shot session; neither adapter can resume or reuse the worker/main session.
- * Effort values follow the inspected FirstMate adapter's native mappings. */
-export function stepAgentCommand(input: unknown, projectId: string, step: ExecutedAgentStep) {
+/** Authoring may use a dedicated planning session. Other calls are one-shot. */
+export function stepAgentCommand(input: unknown, projectId: string, step: ExecutedAgentStep,
+  session?: { id?: string; outputPath: string }) {
   const { config, profile } = nativeStepProfile(input, projectId, step);
   const { harness, model, effort } = profile;
   // nativeStepProfile limits these harnesses before executable lookup.
   if (harness !== 'codex' && harness !== 'claude') throw new Error(`unsupported_${step}_harness: ${harness}`);
   const executable = config.executables[harness];
   if (!executable) throw new Error(`agent_executable_not_configured: ${harness}`);
-  const args = harness === 'codex' ? ['exec', '--sandbox', 'read-only', '--ephemeral', '--ignore-user-config', '--color', 'never',
+  const sessionId = session?.id ?? (session && harness === 'claude' ? randomUUID() : undefined);
+  const args = harness === 'codex' ? ['exec', '--sandbox', 'read-only', '--color', 'never',
+    ...(session?.id ? ['resume'] : []), '--ignore-user-config', ...(!session ? ['--ephemeral'] : []),
     '--skip-git-repo-check',
     ...(['instruction_check', 'product_review', 'plan_check', 'learning_consolidation'].includes(step) ? ['--output-schema',
       fileURLToPath(new URL(`../../fixtures/${step === 'learning_consolidation' ? 'learning-consolidation' : step === 'product_review' ? 'product-review' : 'instruction-judge'}.schema.json`, import.meta.url))] : []),
-    ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []), '-'] :
+    ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []),
+    ...(session ? ['--json', '--output-last-message', session.outputPath] : []),
+    ...(session?.id ? ['-c', 'sandbox_mode="read-only"', session.id] : []), '-'] :
     ['--print', '--safe-mode', '--strict-mcp-config', '--output-format', 'text', '--tools', 'Read,Glob,Grep',
-      '--permission-mode', 'dontAsk', '--allowedTools', 'Read,Glob,Grep', '--disable-slash-commands', '--no-session-persistence',
+      '--permission-mode', 'dontAsk', '--allowedTools', 'Read,Glob,Grep', '--disable-slash-commands',
+      ...(session ? [session.id ? '--resume' : '--session-id', sessionId!] : ['--no-session-persistence']),
       ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])];
-  return { executable, args, timeoutMs: config.timeoutMs, ...(config.cwd ? { cwd: config.cwd } : {}), profile };
+  return { executable, args, timeoutMs: config.timeoutMs, ...(config.cwd ? { cwd: config.cwd } : {}), profile, sessionId };
 }
 
 export function instructionAgentCommand(input: unknown, projectId: string) {

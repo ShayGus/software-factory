@@ -87,10 +87,12 @@ their own harness, provider, model and effort. The run path requires all eight.
 The shared configuration also requires BUILD-11's `learning_consolidation` profile;
 this feature run does not execute it. Individual commands retain the seven base
 profile entries, with `plan_check` and `build` added for the connected run path.
-Supported native harnesses are Codex and Claude, with the existing effort/provider
-validation. Unsupported profiles fail before capture or dispatch. Build flags go to
-real `fm-spawn.sh`; planning and review use fresh one-shot processes. All review
-calls are separate from the build worker even when they select the same model.
+Supported native harnesses are Codex and Claude, with the existing effort/provider validation.
+The four authoring profiles must use the same harness so understand, design, plan and detail can share a read-only session.
+Each turn returns a separate output for validation and storage before the next turn.
+Continuations receive the current stored records and carry forward the planner's earlier reading of the request and repository.
+Build flags go to real `fm-spawn.sh`.
+The independent plan check and other reviews use fresh sessions, separate from planning and the build worker.
 There are no agent calls for mechanical capture, mapping, rendering or transport.
 If an agent process fails, its exit error points to the saved `agent.stderr` beside its input and stdout.
 
