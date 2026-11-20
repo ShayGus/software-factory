@@ -121,7 +121,8 @@ test('two dependent tasks stay held until producer evidence, then both receive o
     assert.equal(evidence.additionalDeliveries.length, 1);
     const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     assert.equal(calls.filter((call) => call.step === 'instruction_check').length, 6);
-    const aggregate = JSON.parse(calls.at(-1).prompt.trimEnd().split('\n').at(-1));
+    const files = JSON.parse(calls.at(-1).prompt.trimEnd().split('\n').at(-1));
+    const aggregate = JSON.parse(readFileSync(files.evidence, 'utf8'));
     assert.equal(aggregate.deliveries.length, 2);
     assert.equal(aggregate.technicalReviews.length, 2);
     assert.equal(aggregate.assignedCriteria.length, 2);
@@ -311,9 +312,13 @@ for (const existingParent of [false, true]) test(`existing project code without 
     const checked = calls.find(call => call.step === 'instruction_check');
     const judged = calls.filter(call => call.step === 'product_review');
     assert.ok(checked);
-    assert.equal(JSON.parse(checked.prompt.trimEnd().split('\n').at(-1)).originalRequests[0].text, request);
+    const original = (prompt: string) => {
+      const { evidence } = JSON.parse(prompt.trimEnd().split('\n').at(-1)!);
+      return JSON.parse(readFileSync(evidence, 'utf8')).originalRequests[0].text;
+    };
+    assert.equal(original(checked.prompt), request);
     assert.equal(judged.length, 2);
-    for (const call of judged) assert.equal(JSON.parse(call.prompt.trimEnd().split('\n').at(-1)).originalRequests[0].text, request);
+    for (const call of judged) assert.equal(original(call.prompt), request);
     t.diagnostic(JSON.stringify({ taskCreate: added.find(call => call.args[1] === child.id)!.args,
       observedDependencies: flow.wrapper.read().tasks[planned.tasks[0].taskId]!.deps }));
   } finally { flow.close(); }

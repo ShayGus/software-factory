@@ -3,7 +3,8 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 const options = JSON.parse(process.env.SF_FAKE_LEARNING_OPTIONS ?? '{}');
 const input = readFileSync(0, 'utf8');
-const snapshot = JSON.parse(input.slice(input.indexOf('\n{"observations":') + 1));
+const { evidence } = JSON.parse(input.trimEnd().split('\n').at(-1));
+const snapshot = JSON.parse(readFileSync(evidence, 'utf8'));
 if (options.record) appendFileSync(options.record, JSON.stringify({ pid: process.pid, args: process.argv.slice(2), snapshot,
   inherited: Object.keys(process.env).filter((name) => /^(FM_|ORCA_|CLAUDECODE$|CLAUDE_SESSION_ID$|CODEX_THREAD_ID$)/u.test(name)) }) + '\n');
 if (options.capture) {

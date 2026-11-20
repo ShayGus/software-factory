@@ -1056,8 +1056,7 @@ The adapter constructs the command itself:
 - Codex: fresh `exec --ephemeral --ignore-user-config` with a read-only sandbox, the selected `--model`,
   and `-c model_reasoning_effort=...`. Native JSON-schema output uses the bundled
   judge schema. No resume/continue/session reuse is supported.
-- Claude: fresh `--print --no-session-persistence --safe-mode --strict-mcp-config` with tools disabled, the selected
-  `--model` and `--effort`, and text stdout carrying the structured JSON verdict.
+- Claude runs with `--print --no-session-persistence --safe-mode --strict-mcp-config`, the selected `--model` and `--effort`, and only the `Read`, `Glob` and `Grep` tools.
 
 The native effort mapping matches the inspected FirstMate adapter: Codex supports
 `low|medium|high|xhigh`, with `max` limited to `gpt-5.6-luna`; Claude supports
@@ -1070,10 +1069,10 @@ Raw `executable`/`args` judge configurations are no longer accepted.
 Worker/main session markers and FirstMate lifecycle/inbox environment variables
 are removed before launch; native authentication is preserved. Customizations are
 disabled for these review calls, rather than attaching to a running agent.
-Every check launches a separate one-shot process with a complete prompt on stdin
-and the default two-minute timeout. The CLI must return only its final JSON verdict
-on stdout; progress belongs on stderr. There are no retries, provider SDKs or
-RoboRev subprocesses in instruction checking.
+Every check launches a separate one-shot process with directions and a frozen evidence file path on stdin.
+The default timeout is two minutes.
+The CLI returns its final JSON verdict on stdout and sends progress to stderr.
+Instruction checking makes one agent call per check.
 Product review uses the same isolated agent runner and reads existing RoboRev evidence as described below.
 
 The result follows `fixtures/instruction-judge.schema.json`:
@@ -1284,7 +1283,7 @@ A brief that incorrectly narrows a general design to ERPNext cannot redefine cor
 Suggestions remain separate from required findings and criterion outcomes.
 
 `product_review` selects its own harness, provider, model, effort and executable through the shared profile mechanism above.
-Each new operation starts one fresh, read-only, one-shot agent process with the frozen package on stdin, without worker session identity or lifecycle environment.
+The product reviewer reads the frozen package through the shared one-shot runner.
 `fixtures/product-review.schema.json` describes its strict JSON output; runtime validation also rejects duplicate keys, ungrounded quotations and missing or duplicate criterion outcomes.
 An accomplished outcome requires committed-code evidence from a delivery assigned to that criterion.
 Every assigned criterion, including optional criteria, must have a worker return before the review can pass.

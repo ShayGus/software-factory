@@ -75,12 +75,10 @@ and launch paths agree; individual adapters retain their existing configuration 
 Supply original, readable research/code snapshots in `sourceFiles`.
 Every `sourceFiles[].path` must be absolute; relative snapshot paths are
 rejected before capture so planning and brief preparation read the same file.
-Planning agents receive their bytes, record history and the exact captured request. These agents are
-read-only and do not inspect the repository themselves. The snapshots must be enough
-to establish existing behavior, reuse and the actual gap. External references in
-generated designs and tasks must resolve through these operator-provided mappings
-or the captured request. Unlisted paths and file URIs are refused before brief
-preparation; the captured request is supplied from its saved text.
+Planning agents receive paths to the captured request, selected snapshots, repository and records for the current attempt.
+They read these inputs and can inspect additional repository files read-only.
+External references in generated designs and tasks must resolve through the operator-provided mappings or the captured request.
+Unlisted paths and file URIs are refused before brief preparation.
 
 Set `agentConfig` using `fixtures/workflow-agents.json`, with the matching project
 ID and absolute installed harness executables. `understand`, `design`, `plan`,
@@ -94,6 +92,7 @@ validation. Unsupported profiles fail before capture or dispatch. Build flags go
 real `fm-spawn.sh`; planning and review use fresh one-shot processes. All review
 calls are separate from the build worker even when they select the same model.
 There are no agent calls for mechanical capture, mapping, rendering or transport.
+If an agent process fails, its exit error points to the saved `agent.stderr` beside its input and stdout.
 
 ## Execute the path
 
@@ -119,9 +118,10 @@ The phases call the existing CLI and FirstMate commands in this order:
 | Worker return | Worker commits code, verifies acceptance and writes `worker-return.json` at the assignment's return location, preserving the scaffold's delivery contract; FirstMate owns worker supervision, task state and delivery |
 | Review | `review-product` imports worker results, reads the actual committed code and existing exact-commit technical evidence, then calls a separate `product_review` agent against the original request, design and detailed plan |
 
-Stage agents return the existing `RecordStageInputSchema`; Understand also returns
-`MapRequestInputSchema`. Their prompts include the runtime JSON schemas and complete
-record context. The `prepare` convenience phase rejects multiple features, multiple tasks and plan dependencies.
+Stage agents return the existing `RecordStageInputSchema`.
+Understand also returns `MapRequestInputSchema`.
+Each stage opens the schemas and record context from its evidence file.
+The `prepare` convenience phase rejects multiple features, multiple tasks and plan dependencies.
 The skill uses `plan` followed by task-specific phases for larger plans; those phases invoke the existing individual commands described below. A failed plan
 review stops before queueing. The native task stays held until brief preparation,
 instruction checking and hook/registry verification succeed.

@@ -99,11 +99,16 @@ export function scenario(options: { bootstrap: boolean; originalRequest?: string
 import {readFileSync,appendFileSync,copyFileSync} from 'node:fs';
 const root=${JSON.stringify(root)};
 const args=process.argv.slice(2); const step=args[args.indexOf('--model')+1];
-const prompt=readFileSync(0,'utf8'); const snapshot=JSON.parse(prompt.trimEnd().split('\\n').at(-1));
+const prompt=readFileSync(0,'utf8'); const files=JSON.parse(prompt.trimEnd().split('\\n').at(-1));
+const snapshot=JSON.parse(readFileSync(files.evidence,'utf8'));
 const mode=JSON.parse(readFileSync(root+'/mode.json','utf8'));
 assert.equal(args.includes('--resume'),false);
 assert.equal(Object.keys(process.env).some(k=>k.startsWith('FM_')||k==='CODEX_THREAD_ID'),false);
 appendFileSync(root+'/agents.jsonl',JSON.stringify({step,pid:process.pid,args,prompt})+'\\n');
+if(step===mode.failStep) {
+ process.stderr.write('Agent diagnostic before exit.\\n');
+ process.exit(17);
+}
 let out=JSON.parse(readFileSync(root+'/outputs.json','utf8'))[step];
 // This scenario authors records after capture; other tests' fixed fixtures stay unchanged.
 if(out) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()).replaceAll(${JSON.stringify(request.id)},snapshot.request.id).replaceAll(${JSON.stringify(requestFile)},snapshot.request.source.uri));

@@ -64,7 +64,8 @@ export function stepAgentCommand(input: unknown, projectId: string, step: Execut
     ...(['instruction_check', 'product_review', 'plan_check', 'learning_consolidation'].includes(step) ? ['--output-schema',
       fileURLToPath(new URL(`../../fixtures/${step === 'learning_consolidation' ? 'learning-consolidation' : step === 'product_review' ? 'product-review' : 'instruction-judge'}.schema.json`, import.meta.url))] : []),
     ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []), '-'] :
-    ['--print', '--safe-mode', '--strict-mcp-config', '--output-format', 'text', '--tools', '', '--disable-slash-commands', '--no-session-persistence',
+    ['--print', '--safe-mode', '--strict-mcp-config', '--output-format', 'text', '--tools', 'Read,Glob,Grep',
+      '--permission-mode', 'dontAsk', '--allowedTools', 'Read,Glob,Grep', '--disable-slash-commands', '--no-session-persistence',
       ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])];
   return { executable, args, timeoutMs: config.timeoutMs, ...(config.cwd ? { cwd: config.cwd } : {}), profile };
 }

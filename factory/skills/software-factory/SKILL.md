@@ -40,10 +40,10 @@ Do not report completion until the command and acceptance succeed.
    If several projects are plausible, ask which project and preserve the request while waiting.
    Use only that home's configuration; a factory configuration is installation metadata, not a second project registry.
 3. Inspect the repository to choose the files the planning agents need: current behavior, relevant interfaces, nearby tests, integration points and project instructions.
-   Planners read only the supplied snapshots and records; they cannot discover omitted files themselves.
+   Planners open the captured request, records for the current attempt and source paths from the run, and can inspect additional repository files read-only.
    Select tracked UTF-8 files inside the repository, with a reason for each choice and a baseline description grounded in what you inspected.
    Select relevant unchanged dependencies too.
-   If the bounded snapshots cannot support planning, stop and explain the missing evidence rather than inventing research.
+   Include snapshots for sources the design and task may cite so later brief preparation can resolve them.
 4. Write an agent-authored selection JSON with this shape:
 
    ```json
