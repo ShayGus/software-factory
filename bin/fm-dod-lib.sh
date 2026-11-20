@@ -18,8 +18,8 @@
 # and is the immutable task branch rendered in every delivery contract.
 # The optional fifth argument is the task's base branch from bin/fm-brief.sh
 # --base-branch; empty means the repository default. A named base is the branch
-# the worker starts from, never pushes to, and targets with its pull request, and
-# fm_base_branch_valid refuses it where no pull request carries the work.
+# the worker starts from and never pushes to. Publishing modes target it with
+# their pull request; factory sub-tasks land on their local ticket base.
 # The optional seventh argument is the task's PR-text posture, auto|manual,
 # defaulting to auto: `manual` is bin/fm-brief.sh --pr manual, the registry's
 # `pr=manual` token (bin/fm-project-mode.sh owns what the binding means). It
@@ -241,9 +241,13 @@ fm_ship_branch_prefix() {  # <branch> <task-id>
 # as a "Base branch: <name>" line under the brief's `# Setup` heading,
 # bin/fm-spawn.sh takes it as --base-branch, refuses a brief whose Base branch
 # lines (fm_brief_base_branches) disagree, and records base_branch= in the task
-# metadata, and every later consumer reads that metadata field. It is
-# refused on local-only, whose landing fast-forwards local main, and on a Gerrit
-# forge, whose publish path targets the change's own branch.
+# metadata, and every later consumer reads that metadata field. Local-only
+# factory sub-tasks use a local ticket branch as both base and landing target.
+fm_local_ticket_base() {  # <mode> <base>
+  [ "$1" = local-only ] || return 1
+  case "$2" in fm/ticket/?*) return 0 ;; *) return 1 ;; esac
+}
+
 fm_base_branch_valid() {  # <base> <mode> <forge> <caller>
   local base=$1 mode=$2 forge=$3 caller=$4
   [ -n "$base" ] || return 0
@@ -251,8 +255,8 @@ fm_base_branch_valid() {  # <base> <mode> <forge> <caller>
     echo "error: $caller: base branch '$base' is not a valid git branch name" >&2
     return 1
   fi
-  if [ "$mode" = local-only ]; then
-    echo "error: $caller: a base branch cannot ship mode=local-only, whose landing fast-forwards local main; ship no-mistakes or direct-PR, which open a pull request against the base" >&2
+  if [ "$mode" = local-only ] && ! fm_local_ticket_base "$mode" "$base"; then
+    echo "error: $caller: a base branch cannot ship mode=local-only outside fm/ticket/; ordinary local-only landing fast-forwards local main" >&2
     return 1
   fi
   if [ "$forge" != none ]; then
@@ -300,7 +304,7 @@ fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> [branch] [<
       printf '%s\n' "1. Never push to $target (push only your \`$branch\` branch). Never merge a PR."
       ;;
     local-only)
-      printf '%s\n' "1. Never push to any remote and never open a PR. Work only on your \`$branch\` branch; firstmate handles the merge into local \`main\`."
+      printf '%s\n' "1. Never push to any remote and never open a PR. Work only on your \`$branch\` branch; firstmate handles the merge into local \`${base:-main}\`."
       ;;
     no-mistakes)
       printf '%s\n' "1. Never push to $target. Never merge a PR."
@@ -655,6 +659,19 @@ Do NOT run /no-mistakes. The configured merge authority decides whether to merge
 EOF
       ;;
     local-only:*)
+      if fm_local_ticket_base "$mode" "$base"; then
+        cat <<EOF
+# Definition of done
+Delivery contract: mode=local-only
+Ship branch: $branch
+This is a factory sub-task for the ticket whose shared local branch is \`$base\`.
+Commit the assigned implementation on your isolated branch \`$branch\`, based on \`$base\`. Do not push, open a PR, or merge.
+Run the task's checks and report the exact commit and results for independent technical and product review before handoff.
+Keep your branch a clean fast-forward of \`$base\`. When the work is ready, append \`done [at=<epoch>]: ready in branch $branch\` to the status file and stop.
+Firstmate lands the reviewed commit on \`$base\` through the guarded local fast-forward. Firstmate owns the ticket's technical delivery and its single PR after all sub-tasks and the aggregate product review pass.
+EOF
+        return
+      fi
       cat <<EOF
 # Definition of done
 Delivery contract: mode=local-only

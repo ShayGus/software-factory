@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Perform the approved local merge for a local-only ship task: fast-forward the
-# project's default branch to local_done_head= in state/<task-id>.meta,
+# project's default branch or recorded local ticket branch to local_done_head= in state/<task-id>.meta,
 # recorded when the done report was accepted by bin/fm-dod-lib.sh. Missing or
 # malformed heads refuse. Legacy tasks with no head must report readiness again
 # before approval. The recorded ship branch must still point at that exact commit.
@@ -106,6 +106,8 @@ MERGE_HEAD=$(fm_dod_local_done_head "$META") || {
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
+BASE_BRANCH=$(grep '^base_branch=' "$META" | cut -d= -f2- || true)
+fm_base_branch_valid "$BASE_BRANCH" "$MODE" none fm-merge-local.sh || exit 1
 
 default_branch() {
   local ref branch
@@ -140,19 +142,27 @@ MERGE_PROJECT_LOCK="$project_git_dir/fm-local-landing.lock"
 fm_lock_acquire_wait "$MERGE_PROJECT_LOCK"
 local_head_matches || { echo "error: branch $BRANCH differs from the recorded local done head; refusing" >&2; exit 1; }
 
-DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
-
-# The project's main checkout must be on its default branch and clean, so the
-# fast-forward lands predictably (firstmate never writes here otherwise).
-cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")
-[ "$cur" = "$DEFAULT" ] || { echo "error: $PROJ is on '$cur', expected default branch '$DEFAULT'; cannot merge safely" >&2; exit 1; }
-if [ -n "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ]; then
-  echo "error: $PROJ has a dirty working tree; refusing to merge into it" >&2
-  exit 1
+ticket_branch_is_unchecked_out() {
+  local checkout
+  checkout=$(git -C "$PROJ" for-each-ref --format='%(worktreepath)' "refs/heads/$DEFAULT") || return 1
+  [ -z "$checkout" ] || { echo "error: local ticket branch '$DEFAULT' is checked out; refusing to update it" >&2; return 1; }
+}
+if [ -n "$BASE_BRANCH" ]; then
+  DEFAULT=$BASE_BRANCH
+  ticket_branch_is_unchecked_out || exit 1
+else
+  DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
+  # A default-branch landing also updates its checked-out files.
+  cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")
+  [ "$cur" = "$DEFAULT" ] || { echo "error: $PROJ is on '$cur', expected default branch '$DEFAULT'; cannot merge safely" >&2; exit 1; }
+  if [ -n "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ]; then
+    echo "error: $PROJ has a dirty working tree; refusing to merge into it" >&2
+    exit 1
+  fi
 fi
 
 # Clean fast-forward only: DEFAULT must be an ancestor of BRANCH.
-before=$(git -C "$PROJ" rev-parse "$DEFAULT")
+before=$(git -C "$PROJ" rev-parse --verify "refs/heads/$DEFAULT^{commit}")
 if ! git -C "$PROJ" merge-base --is-ancestor "$before" "$MERGE_HEAD"; then
   echo "REFUSED: $BRANCH is not a fast-forward of $DEFAULT (it has diverged)." >&2
   echo "Have the crewmate rebase $BRANCH onto $DEFAULT, then retry." >&2
@@ -185,7 +195,11 @@ fi
 merge_status=0
 # Stage the fast-forward with Git's two-tree checkout, which preserves local
 # changes made since the clean-tree check and refuses obstructing files.
-git -C "$PROJ" read-tree -m -u "$before" "$MERGE_HEAD" || exit $?
+if [ -n "$BASE_BRANCH" ]; then
+  ticket_branch_is_unchecked_out || exit 1
+else
+  git -C "$PROJ" read-tree -m -u "$before" "$MERGE_HEAD" || exit $?
+fi
 git -C "$PROJ" update-ref -m "merge $BRANCH: Fast-forward" --stdin >/dev/null <<EOF || merge_status=$?
 start
 verify refs/heads/$BRANCH $MERGE_HEAD
@@ -193,7 +207,7 @@ update refs/heads/$DEFAULT $MERGE_HEAD $before
 prepare
 commit
 EOF
-if [ "$merge_status" -ne 0 ]; then
+if [ "$merge_status" -ne 0 ] && [ -z "$BASE_BRANCH" ]; then
   # The transaction left main untouched. Undo only the staged fast-forward;
   # the two-tree checkout also protects any intervening local edits here.
   git -C "$PROJ" read-tree -m -u "$MERGE_HEAD" "$before" || {

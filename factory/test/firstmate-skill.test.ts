@@ -129,6 +129,48 @@ test('two dependent tasks stay held until producer evidence, then both receive o
   } finally { flow.close(); }
 });
 
+test('a publishing run gives both sub-tasks a local handoff and one ticket delivery', () => {
+  const { flow, config } = intake(true);
+  config.firstMate.mode = 'no-mistakes';
+  config.firstMate.briefExecutable = join(factory, '../bin/fm-brief.sh');
+  const git = (...args: string[]) => execFileSync('git', ['-C', config.repository, ...args], { encoding: 'utf8' }).trim();
+  try {
+    const planned = runFeature(config, 'plan') as any;
+    const [producer, consumer] = planned.tasks.map((task: any) => task.taskId);
+    assert.equal(planned.tasks.length, 2);
+    const parent = flow.wrapper.read().tasks[producer]!.deps.find(edge => edge.type === 'parent')!;
+    const branch = `fm/ticket/${parent.id}`;
+    const localRef = `refs/heads/${branch}`;
+    const base = git('rev-parse', 'HEAD');
+    const produce = (taskId: string) => {
+      runFeature(config, 'prepare-task', taskId);
+      const brief = readFileSync(join(flow.data, taskId, 'brief.md'), 'utf8');
+      assert.ok(brief.includes(`Base branch: ${branch}`));
+      assert.match(brief, /Delivery contract: mode=local-only/);
+      assert.match(brief, /Do not push, open a PR, or merge/);
+      runFeature(config, 'start', taskId);
+      const args = JSON.parse(readFileSync(join(flow.root, 'spawn-args.json'), 'utf8'));
+      assert.deepEqual(args.slice(2, 8), ['--mode', 'local-only', '--yolo', 'off', '--base-branch', branch]);
+      assert.equal((runFeature(config, 'review', taskId) as any).taskOutcome, 'passed');
+      return git('rev-parse', 'HEAD');
+    };
+    const firstCommit = produce(producer);
+    assert.equal(git('rev-parse', localRef), base);
+    assert.equal((runFeature(config, 'review-all') as any).state, 'awaiting_worker_returns');
+    git('update-ref', localRef, firstCommit, base);
+    flow.wrapper.edit(native => { native.tasks[producer]!.state = 'done'; });
+    const finalCommit = produce(consumer);
+    assert.equal((runFeature(config, 'review-all') as any).state, 'awaiting_ticket_branch');
+    assert.equal(existsSync(join(config.runDirectory, 'ticket-delivery.json')), false);
+    git('update-ref', localRef, finalCommit, firstCommit);
+    const result = runFeature(config, 'review-all') as any;
+    assert.equal(result.review.outcome, 'passed');
+    assert.deepEqual(result.ticketDelivery, { taskId: parent.id, branch, mode: 'no-mistakes', yolo: 'off',
+      repository: config.repository, commit: finalCommit });
+    assert.deepEqual(JSON.parse(readFileSync(join(config.runDirectory, 'ticket-delivery.json'), 'utf8')), result.ticketDelivery);
+  } finally { flow.close(); }
+});
+
 test('one author session produces four stages before an independent review can block queueing', () => {
   const { flow, config } = intake(true);
   try {

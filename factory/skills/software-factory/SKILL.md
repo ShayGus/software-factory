@@ -117,7 +117,7 @@ For each task, use the returned native `taskId`:
    Do not replace supervision with a polling service or add another scheduler or backlog.
    A successful spawn means only that the launch operation succeeded.
 4. After delivery, inspect the exact assignment's `worker-return.json`, repository and delivered full commit SHA.
-   Follow the project's existing technical validation/delivery contract until exact-commit evidence is available.
+   For sub-tasks of a publishing ticket, obtain the project's existing commit-level technical evidence without publishing the sub-task.
    Keep each returned repository and commit readable through the final aggregate review; defer normal worktree cleanup until that review finishes.
    Preserve the return's criterion identities, limitations and evidence; do not manufacture a technical pass or use a result from a different commit.
    Run `run-feature.mjs review <configPath> <taskId>`.
@@ -127,7 +127,8 @@ For each task, use the returned native `taskId`:
    `taskOutcome: passed` means this task's own criteria, worker results and exact-commit technical evidence passed; its canonical review can remain feature-incomplete.
    Sibling returns are not inputs to this task's eligibility.
    Continue eligible consumers after a task pass without calling the whole feature complete.
-5. Complete normal FirstMate delivery/backlog reconciliation for the producer before proceeding to its consumers.
+5. Complete normal FirstMate delivery and backlog reconciliation for the producer before proceeding to its consumers.
+   A publishing ticket's sub-task lands on the shared local ticket branch named in its brief, through the guarded `fm-merge-local.sh` path after the sub-task passes review.
    Native done state alone does not establish the factory's product prerequisites.
    Continue with the next eligible task through the same commands and supervision.
 
@@ -136,6 +137,13 @@ This invokes the existing `review-product` command with all exact assignments an
 If returns are missing, it reports `state: awaiting_worker_returns` and `pendingTasks`; resume aggregate review on later return wakes.
 Aggregate failure or pending work keeps the feature incomplete and never blocks an independently passing task's delivery.
 For one task the same final phase supplies a whole-request review.
+For a publishing run, wait for the verified `ticketDelivery` result from the aggregate review.
+Look up the ticket's PR using the destination repository and exact head branch, including closed and merged PRs.
+Reuse any existing PR across retries and record its URL on the parent ticket.
+If none exists, verify that the ticket branch still has the recorded commit, then start its configured delivery with the original ticket intent.
+On a no-mistakes run, use the existing pipeline from an isolated checkout of that ticket branch and reuse any active run on it. The pipeline owns opening the PR.
+On a direct-PR run, push the ticket branch and open its single PR through the normal FirstMate forge workflow.
+The ticket is the sole PR owner.
 Use [the command runbook](../../docs/one-feature-run.md) for phase mechanics and recovery.
 After a partial or ambiguous external effect, inspect saved output, `outbox`, native state and the existing recovery operations; never restart planning or blindly spawn a replacement.
 
