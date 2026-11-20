@@ -41,7 +41,9 @@ for (const harness of ['codex', 'claude'] as const) test(`${harness} gets its in
     } else {
       assert.ok(command.args.includes('--print')); assert.ok(command.args.includes('--no-session-persistence'));
       assert.ok(command.args.includes('--safe-mode') && command.args.includes('--strict-mcp-config'));
-      assert.equal(command.args[command.args.indexOf('--tools') + 1], '');
+      assert.equal(command.args[command.args.indexOf('--tools') + 1], 'Read,Glob,Grep');
+      assert.equal(command.args[command.args.indexOf('--allowedTools') + 1], 'Read,Glob,Grep');
+      assert.equal(command.args[command.args.indexOf('--permission-mode') + 1], 'dontAsk');
       assert.equal(command.args[command.args.indexOf('--effort') + 1], 'high');
     }
     assert.ok(!command.args.includes('--resume') && !command.args.includes('--continue'));

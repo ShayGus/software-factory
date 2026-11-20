@@ -54,6 +54,7 @@ All commands print JSON; chat-hook is silent on success. No settings are install
                  [--preparation-gate <reserved brief-preparation condition ID>]
   review-product --db <sqlite> --input <ReviewProductInput JSON file>
                  --agent-config <ProjectAgentConfig JSON file>
+                 [--run-directory <agent evidence output directory>]
   learning-capture --db <sqlite> --input <CaptureLearningInput JSON file>
   learning-consolidate --db <sqlite> --input <ConsolidateLearningInput JSON file>
                  --agent-config <ProjectAgentConfig JSON file>
@@ -118,7 +119,7 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   'check-plan': { db: valueOption, input: valueOption },
   'prepare-brief': { db: valueOption, input: valueOption },
   'check-brief': { db: valueOption, project: valueOption, assignment: valueOption, revision: valueOption, brief: valueOption, 'agent-config': valueOption, 'preparation-gate': valueOption },
-  'review-product': { db: valueOption, input: valueOption, 'agent-config': valueOption },
+  'review-product': { db: valueOption, input: valueOption, 'agent-config': valueOption, 'run-directory': valueOption },
   findings: { db: valueOption, project: valueOption, plan: valueOption },
   stages: { db: valueOption, project: valueOption, feature: valueOption },
   unclassified: { db: valueOption, project: valueOption },
@@ -235,7 +236,7 @@ export function runCli(args: string[]): number {
           output(report); return report.ok ? 0 : 1;
         }
         case 'review-product': {
-          const report = reviewProduct(store, jsonFile('input'), jsonFile('agent-config'));
+          const report = reviewProduct(store, jsonFile('input'), jsonFile('agent-config'), undefined, optional('run-directory'));
           output(report); return report.review.outcome === 'passed' ? 0 : 1;
         }
         case 'findings': output(planReadinessHistory(store, required('project'), required('plan'))); break;

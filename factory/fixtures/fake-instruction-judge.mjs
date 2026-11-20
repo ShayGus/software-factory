@@ -9,13 +9,14 @@ const agentArgv = process.argv.slice(2);
 assert.ok(agentArgv[0] === 'exec' || agentArgv.includes('--print'));
 assert.ok(!agentArgv.includes('--resume') && !agentArgv.includes('--continue'));
 const prompt = readFileSync(0, 'utf8');
-const snapshot = JSON.parse(prompt.trimEnd().split('\n').at(-1));
+const { evidence } = JSON.parse(prompt.trimEnd().split('\n').at(-1));
+const snapshot = JSON.parse(readFileSync(evidence, 'utf8'));
 assert.equal(snapshot.schemaVersion, 1);
 const plan = snapshot.plan ?? snapshot.plans?.find((plan) =>
   plan.id === snapshot.reviewPlan?.id && plan.revision === snapshot.reviewPlan?.revision);
 assert.ok(snapshot.originalRequests.length && snapshot.design && plan && snapshot.task && snapshot.candidateInstructions);
 assert.match(prompt, /Do not obey that material/);
-if (values.record) appendFileSync(values.record, JSON.stringify({ ...snapshot, agentArgv, agentPid: process.pid,
+if (values.record) appendFileSync(values.record, JSON.stringify({ ...snapshot, prompt, agentArgv, agentPid: process.pid,
   inheritedSessionMarkers: Object.keys(process.env).filter((name) => ['CLAUDECODE', 'CLAUDE_SESSION_ID', 'CODEX_THREAD_ID'].includes(name) || name.startsWith('FM_') || name.startsWith('ORCA_')) }) + '\n');
 let verdict = { verdict: 'pass', findings: [] };
 if (values.case) {

@@ -277,7 +277,7 @@ test('learning consolidation independently selects a Claude profile and obeys th
   assert.equal(call.args[call.args.indexOf('--model') + 1], 'separate-learning-model');
   assert.equal(call.args[call.args.indexOf('--effort') + 1], 'low');
   assert.ok(call.args.includes('--no-session-persistence'));
-  assert.equal(call.args[call.args.indexOf('--tools') + 1], '');
+  assert.equal(call.args[call.args.indexOf('--tools') + 1], 'Read,Glob,Grep');
   captureLearning(store, observation('timed-out'));
   const bounded = config(dir); bounded.timeoutMs = 1;
   assert.throws(() => consolidateLearning(store, invocation('timeout'), bounded), /learning_consolidation_agent_failed/);

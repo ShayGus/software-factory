@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { checkStartingWorker, ProjectStore, ref, recordSource, runFeature,
@@ -45,7 +45,8 @@ test('review 1251 finding 5: hook checks the current attempt and refuses a histo
     assert.equal(report.ok, true, JSON.stringify(report));
     const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
     const call = JSON.parse(calls.trimEnd().split('\n').at(-1)!);
-    const judged = JSON.parse(call.prompt.trimEnd().split('\n').at(-1)!);
+    const { evidence } = JSON.parse(call.prompt.trimEnd().split('\n').at(-1)!);
+    const judged = JSON.parse(readFileSync(evidence, 'utf8'));
     assert.equal(judged.assignment.id, latest.assignment.id);
     const historical = checkStartingWorker(registry, startingEvent(flow, join(flow.data, 'milestone-worker', 'brief.md')));
     assert.equal(historical.ok, false);
@@ -143,8 +144,54 @@ test('one captured feature reaches product completion through the existing CLI a
     finally { store.close(); }
     const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
     assert.deepEqual(calls.map((call) => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'instruction_check', 'instruction_check', 'product_review']);
+    for (const call of calls) {
+      const original = readFileSync(flow.config.requestFile, 'utf8');
+      assert.equal(call.prompt.includes(original), false, call.step);
+      assert.ok(call.prompt.length < 10_000, call.step);
+      const files = JSON.parse(call.prompt.trimEnd().split('\n').at(-1));
+      assert.equal(files.runDirectory, flow.config.runDirectory);
+      assert.deepEqual(files.repositories, [flow.config.repository]);
+    }
     assert.deepEqual(JSON.parse(readFileSync(join(flow.root, 'spawn-args.json'), 'utf8')).slice(-6), ['--harness', 'codex', '--model', 'build', '--effort', 'medium']);
     assert.equal((runFeature(flow.config, 'start') as { state: string }).state, 'awaiting_worker_return');
+  } finally { flow.close(); }
+});
+
+test('a new planning attempt reads its own request and source paths, and saves agent failure output', () => {
+  const flow = scenario();
+  try {
+    flow.mode({ planFailure: true });
+    assert.throws(() => runFeature(flow.config, 'plan'), /plan_review_failed/);
+    const store = new ProjectStore(flow.database, { readOnly: true });
+    try {
+      assert.ok(store.history('project-1').some((record) => record.kind === 'implementation_plan_revision'));
+    } finally { store.close(); }
+
+    const source = join(flow.config.repository, 'large-source.txt');
+    const sourceText = 'CONTENTS_TO_READ_FROM_DISK\n'.repeat(45_000);
+    writeFileSync(source, sourceText);
+    const config = { ...flow.config, runDirectory: join(flow.root, 'new-attempt'), clientRequestId: 'new-attempt',
+      sourceFiles: [{ source: { uri: 'research:large-source' }, path: source }] };
+    flow.mode({ failStep: 'understand' });
+    assert.throws(() => runFeature(config, 'plan'), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const failure = /^understand_agent_failed: 17; inspect (.+\/agent\.stderr)$/u.exec(error.message);
+      assert.ok(failure?.[1], error.message);
+      assert.equal(readFileSync(failure[1], 'utf8'), 'Agent diagnostic before exit.\n');
+      const call = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trimEnd().split('\n').at(-1)!;
+      const { prompt } = JSON.parse(call);
+      const files = JSON.parse(prompt.trimEnd().split('\n').at(-1));
+      assert.equal(files.evidence, join(dirname(failure[1]), 'input.json'));
+      assert.equal(files.runDirectory, config.runDirectory);
+      assert.equal(readFileSync(files.requestFile, 'utf8'), readFileSync(config.requestFile, 'utf8'));
+      const input = JSON.parse(readFileSync(files.evidence, 'utf8'));
+      assert.deepEqual(input.records.map((record: { kind: string }) => record.kind), ['request']);
+      assert.equal(input.records[0].clientRequestId, config.clientRequestId);
+      assert.deepEqual(input.research, config.sourceFiles);
+      assert.equal(prompt.includes('CONTENTS_TO_READ_FROM_DISK'), false);
+      assert.ok(prompt.length < 10_000);
+      return true;
+    });
   } finally { flow.close(); }
 });
 
