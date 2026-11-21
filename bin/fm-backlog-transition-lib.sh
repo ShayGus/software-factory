@@ -886,6 +886,14 @@ fm_backlog_close_marker_path() {  # <state-dir> <id>
   printf '%s/%s.backlog-close\n' "$1" "$2"
 }
 
+fm_backlog_close_note_valid() {  # <serialized-note>
+  case "$1" in
+    local%20main|discarded) return 0 ;;
+    local%20fm/ticket/?*) git check-ref-format "refs/heads/${1#local%20}" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
 fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <expected-id> <state-dir>
   local marker=$1 authorized_data data_resolved expected_id=$3 state=$4
   local id='' data='' marker_spawn_gen='' cleanup_incomplete=0 mode=close line raw_bytes arg_value
@@ -986,8 +994,7 @@ fm_backlog_close_marker_validate() {  # <marker-path> <authorized-data-dir> <exp
     2)
       case "${args[0]}" in
         --note)
-          [ "${args[1]}" = "local%20main" ] \
-            || [ "${args[1]}" = "discarded" ]
+          fm_backlog_close_note_valid "${args[1]}"
           ;;
         --pr)
           arg_value=${args[1]}
@@ -1086,11 +1093,16 @@ fm_backlog_close_marker_stage() {  # <temporary-path> <id> <data-dir> <spawn-gen
     shift
   fi
   for arg in "$@"; do
-    if [ "$previous_arg" = --note ] && [ "$arg" = "local main" ]; then
-      serialized_args+=("local%20main")
-    else
-      serialized_args+=("$arg")
+    if [ "$previous_arg" = --note ]; then
+      if [[ "$arg" == 'local '* ]]; then
+        arg="local%20${arg#local }"
+      fi
+      fm_backlog_close_note_valid "$arg" || {
+        FM_BACKLOG_TRANSITION_ERROR="invalid pending-close arguments in $tmp"
+        return 1
+      }
     fi
+    serialized_args+=("$arg")
     previous_arg=$arg
   done
   {
@@ -1162,8 +1174,8 @@ fm_backlog_close_marker_replay() {  # <state-dir> <marker-path> <authorized-data
   mode=$FM_BACKLOG_CLOSE_VALIDATED_MODE
   [ "$mode" = close ] || mode_flags=(--retain)
   args=("${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]+"${FM_BACKLOG_CLOSE_VALIDATED_ARGS[@]}"}")
-  if [ "${args[0]-}" = --note ] && [ "${args[1]-}" = "local%20main" ]; then
-    args[1]="local main"
+  if [ "${args[0]-}" = --note ] && [[ "${args[1]-}" == local%20* ]]; then
+    args[1]="local ${args[1]#local%20}"
   fi
   meta="$state/$id.meta"
   if [ -e "$meta" ] || [ -L "$meta" ]; then

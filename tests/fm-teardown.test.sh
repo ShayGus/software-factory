@@ -911,6 +911,46 @@ test_local_only_merged_to_local_main_allows() {
   pass "local-only worktree with work merged into local main is torn down (no regression)"
 }
 
+test_local_only_ticket_branch_closes_only_landed_clean_work() {
+  local case_dir state wt_head rc base=fm/ticket/tachles-f12
+  for state in landed unlanded dirty; do
+    case_dir=$(make_case "ticket-branch-$state")
+    write_meta "$case_dir" local-only ship
+    printf 'base_branch=%s\n' "$base" >> "$case_dir/state/task-x1.meta"
+    seed_backlog_in_flight "$case_dir"
+    git -C "$case_dir/project" branch "$base" main
+    wt_commit_file "$case_dir" feature.txt ticket-work "work for the ticket"
+    wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+    if [ "$state" != unlanded ]; then
+      git -C "$case_dir/project" update-ref "refs/heads/$base" "$wt_head"
+    fi
+    if [ "$state" = dirty ]; then
+      printf '%s\n' 'local edit' > "$case_dir/wt/feature.txt"
+    fi
+
+    rc=0
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    if [ "$state" = landed ]; then
+      expect_code 0 "$rc" "ticket-branch: landed work must close and finish"$'\n'"$(cat "$case_dir/stderr")"
+      [ "$(backlog_row_state "$case_dir")" = "done" ] || fail "ticket-branch: backlog item did not close"
+      assert_grep "local $base" "$case_dir/data/backlog.md" "ticket-branch: close lost the landing target"
+      assert_absent "$case_dir/state/task-x1.meta" "ticket-branch: completed cleanup kept the task record"
+      [ "$(git -C "$case_dir/project" rev-parse "refs/heads/$base")" = "$wt_head" ] \
+        || fail "ticket-branch: cleanup moved the landing target"
+    else
+      expect_code 1 "$rc" "ticket-branch-$state: unsafe cleanup must refuse"
+      assert_grep 'REFUSED:' "$case_dir/stderr" "ticket-branch-$state: refusal was not reported"
+      assert_refusal_retained_task_state "$case_dir" "ticket-branch-$state" "$wt_head"
+      [ "$(backlog_row_state "$case_dir")" = in_flight ] || fail "ticket-branch-$state: refusal closed the item"
+      if [ "$state" = dirty ]; then
+        [ "$(cat "$case_dir/wt/feature.txt")" = 'local edit' ] || fail "ticket-branch: refusal discarded a local edit"
+      fi
+    fi
+    assert_absent "$case_dir/state/task-x1.backlog-close" "ticket-branch-$state: cleanup left a pending close"
+  done
+  pass "local ticket branch cleanup closes landed work and refuses unlanded or dirty work"
+}
+
 # Send the task branch's commits to <target> on origin from a separate clone, so
 # the task copy's tracking refs do not show them. Args: case_dir target
 land_task_commits_from_other_clone() {
@@ -6463,6 +6503,7 @@ test_teardown_closes_a_gitlab_task_with_its_merge_request_url_as_a_note
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_local_only_ticket_branch_closes_only_landed_clean_work
 test_landed_on_other_origin_branch_with_stale_refs_allows
 test_refresh_failure_does_not_read_as_landed
 test_refreshed_refs_still_refuse_unreachable_commits
