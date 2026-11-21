@@ -25,7 +25,9 @@ An invalid inventory without a trustworthy target generation also prevents launc
 An existing generation before a new launch requires an explicit
 operator decision/new attempt. The one-feature runbook uses this same path.
 
-If the start check refused and the operation recorded no external attempt, correct the brief through `prepare-brief`.
+If the start check refused and the operation recorded no external attempt, repeat `prepare-task` for the planned task.
+It generates a fresh scaffold, writes the next revision, and checks it before releasing preparation readiness.
+For standalone preparation, correct the brief through `prepare-brief`.
 For a changed FirstMate scaffold, generate it in a scratch data directory and pass its absolute path as `scaffoldPath` in the saved prepare input.
 Keep the original assignment, attempt, plan, task, return location and native brief path.
 Set `expectedRevision` to the current assignment revision and use a new preparation idempotency key.

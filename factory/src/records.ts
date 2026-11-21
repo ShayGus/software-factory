@@ -218,6 +218,7 @@ export const AssignmentSchema = record('assignment', {
   // lifecycle template and identities so a later gate can detect file damage.
   brief: z.strictObject({
     path: TextSchema, sidecarPath: TextSchema, scaffold: TextSchema,
+    contextLayout: z.literal('sidecar').optional(),
     sidecarDigest: TextSchema,
     materialized: z.strictObject({ brief: TextSchema, sidecar: TextSchema }).optional(),
     preparationFindings: z.array(z.strictObject({ code: TextSchema, path: TextSchema, message: TextSchema })).optional(),

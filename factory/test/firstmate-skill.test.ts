@@ -143,11 +143,20 @@ test('a publishing run gives both sub-tasks a local handoff and one ticket deliv
     const localRef = `refs/heads/${branch}`;
     const base = git('rev-parse', 'HEAD');
     const produce = (taskId: string) => {
-      runFeature(config, 'prepare-task', taskId);
-      const brief = readFileSync(join(flow.data, taskId, 'brief.md'), 'utf8');
+      const prepared = runFeature(config, 'prepare-task', taskId) as any;
+      const briefPath = join(flow.data, taskId, 'brief.md');
+      if (taskId === producer) {
+        writeFileSync(briefPath, 'Old or damaged instructions');
+        assert.throws(() => runFeature(config, 'start', taskId), /start check refused/);
+        const retry = runFeature(config, 'prepare-task', taskId) as any;
+        assert.deepEqual(retry.assignment, { id: prepared.assignment.id, revision: prepared.assignment.revision + 1 });
+      }
+      const brief = readFileSync(briefPath, 'utf8');
       assert.ok(brief.includes(`Base branch: ${branch}`));
       assert.match(brief, /Delivery contract: mode=local-only/);
       assert.match(brief, /Do not push, open a PR, or merge/);
+      assert.match(brief, /### Context files/);
+      assert.ok(!brief.includes('"selectedContext":'));
       runFeature(config, 'start', taskId);
       const args = JSON.parse(readFileSync(join(flow.root, 'spawn-args.json'), 'utf8'));
       assert.deepEqual(args.slice(2, 8), ['--mode', 'local-only', '--yolo', 'off', '--base-branch', branch]);
@@ -372,6 +381,9 @@ for (const existingParent of [false, true]) test(`existing project code without 
       const assignment = assignmentStore.records('project-1').find(record => record.kind === 'assignment');
       assert.ok(assignment?.kind === 'assignment');
       assert.ok(assignment.selectedContext.some(context => context.extract?.includes('export function connect')));
+      assert.ok(assignment.brief);
+      assert.ok(!readFileSync(assignment.brief.path, 'utf8').includes('export function connect'));
+      assert.match(readFileSync(assignment.brief.sidecarPath, 'utf8'), /export function connect/);
     } finally { assignmentStore.close(); }
     const checked = calls.find(call => call.step === 'instruction_check');
     const judged = calls.filter(call => call.step === 'product_review');

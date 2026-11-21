@@ -1,6 +1,6 @@
 import { startManagedWorker, workerStartCheckRefused, workerStartOperationId } from './runtime.js';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -14,7 +14,7 @@ import { digestText, requiredAssignmentContext, sameSource } from './instruction
 import { planningRecord, samePlanningRef } from './planning-checks.js';
 import { RecordStageInputSchema } from './planning.js';
 import { EvidenceSchema, RefSchema, type Ref } from './primitives.js';
-import { ProjectSchema, ProductReviewSchema, type FactoryRecord, type StageRevision } from './records.js';
+import { ProjectSchema, ProductReviewSchema, type Assignment, type FactoryRecord, type StageRevision } from './records.js';
 import { ReviewProductInputSchema, snapshotDelivery } from './product-review.js';
 import { CommitSchema } from './review-contracts.js';
 import { ProjectStore, StoreError } from './store.js';
@@ -187,15 +187,16 @@ export function runFeature(configInput: unknown, phase: FeatureRunPhase, selecte
   if (phase !== 'review' && phase !== 'review-all') verifyDispatchConfiguration();
   mkdirSync(directory, { recursive: true });
   // Exclusive marker prevents a retry from silently launching a second worker.
-  const begin = () => writeFileSync(join(directory, `${phase}.started`), new Date().toISOString(), { flag: 'wx' });
+  const begin = (label: string = phase) => writeFileSync(join(directory, `${label}.started`), new Date().toISOString(), { flag: 'wx' });
   const save = (name: string, value: unknown) => {
     const path = join(directory, `${name}.json`);
     writeFileSync(path, JSON.stringify(value, null, 2) + '\n'); return path;
   };
-  const invoke = (executable: string, args: string[], label: string, firstMate = false, acceptIncompleteReview = false) => {
+  const invoke = (executable: string, args: string[], label: string, firstMate = false, acceptIncompleteReview = false, fmData?: string) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       !key.startsWith('FM_') && !key.startsWith('TASKS_AXI_')));
     if (firstMate) env.FM_HOME = fm.home;
+    if (fmData) env.FM_DATA_OVERRIDE = fmData;
     // Agent-backed CLI commands need startup and validation time outside the
     // agent's own configured budget, including its maximum supported timeout.
     const result = spawnSync(executable, args, { encoding: 'utf8', env, cwd: firstMate ? fm.home : directory,
@@ -372,12 +373,23 @@ Each detailed task must require its worker to commit code, verify each assigned 
     selectedPlan = plan; selectedDetailedTask = tasks[0]; selectedMappingId = `${config.taskId}-mapping`;
     selectedRequestId = request.id;
   }
+  let previousPreparation: Assignment | undefined;
+  const startKey = `${config.taskId}-start`;
+  const startId = workerStartOperationId(project.id, startKey);
   if (phase === 'prepare-task') {
-    begin();
-    selectedPlan = history().find((record) => record.id === planned!.plan.id && record.revision === planned!.plan.revision);
-    selectedDetailedTask = history().find((record) => record.id === selected!.task.id && record.revision === selected!.task.revision);
+    const records = history();
+    selectedPlan = planningRecord(records, planned!.plan);
+    selectedDetailedTask = planningRecord(records, selected!.task);
     if (selectedPlan?.kind !== 'implementation_plan_revision' || selectedDetailedTask?.kind !== 'detailed_plan_task') throw new Error('planned_task_missing');
     selectedMappingId = `${config.taskId}-mapping`; selectedRequestId = planned!.requestId;
+    const previous = records.filter((record) => record.id === `${config.taskId}-assignment`).at(-1);
+    if (previous) {
+      if (previous.kind !== 'assignment' || previous.firstMateTaskId !== config.taskId) throw new Error('prepared_assignment_mismatch');
+      previousPreparation = previous;
+    }
+    const start = records.filter((record) => record.id === startId).at(-1);
+    if (start && (start.kind !== 'operation' || start.externalAttempt || start.state === 'succeeded')) throw new Error('worker_start_already_attempted');
+    begin(previousPreparation ? `prepare-task-r${previousPreparation.revision + 1}` : phase);
   }
   if (phase === 'prepare' || phase === 'prepare-task') {
     const plan = selectedPlan; const task = selectedDetailedTask;
@@ -405,12 +417,17 @@ Each detailed task must require its worker to commit code, verify each assigned 
       }
     }
     const preparationGate = briefPreparationGateId(config.taskId);
-    invoke(fm.briefExecutable, [config.taskId, basename(config.repository), '--mode', workerMode, ...workerBaseArgs], 'firstmate-brief', true);
     const briefPath = join(fm.dataDirectory, config.taskId, 'brief.md');
+    const scaffoldDirectory = previousPreparation ? mkdtempSync(join(directory, 'firstmate-scaffold-')) : undefined;
+    invoke(fm.briefExecutable, [config.taskId, basename(config.repository), '--mode', workerMode, ...workerBaseArgs],
+      'firstmate-brief', true, false, scaffoldDirectory);
+    const revisionSuffix = previousPreparation ? `-r${previousPreparation.revision + 1}` : '';
     const prepared = inputCommand('prepare-brief', { projectId: project.id, assignmentId: `${config.taskId}-assignment`,
-      attemptId: `${config.taskId}-attempt`, expectedRevision: 0, idempotencyKey: `${config.taskId}-prepare`, issuedAt: issuedAt(),
+      attemptId: previousPreparation?.attemptId ?? `${config.taskId}-attempt`,
+      expectedRevision: previousPreparation?.revision ?? 0, idempotencyKey: `${config.taskId}-prepare${revisionSuffix}`, issuedAt: issuedAt(),
       detailedPlanTask: ref(task), plan: ref(plan), firstMateTaskId: config.taskId,
-      returnLocation: join(directory, 'worker-return.json'), briefPath, sourceFiles });
+      returnLocation: join(directory, 'worker-return.json'), briefPath, sourceFiles, contextLayout: 'sidecar',
+      ...(scaffoldDirectory ? { scaffoldPath: join(scaffoldDirectory, config.taskId, 'brief.md'), unstartedOperationId: startId } : {}) });
     command('check-brief', ['--project', project.id, '--assignment', prepared.assignment.id, '--revision', String(prepared.assignment.revision),
       '--brief', briefPath, '--agent-config', config.agentConfig, '--preparation-gate', preparationGate]);
     // Preserve the native hold through the check and revalidate the hook/registry
@@ -418,8 +435,9 @@ Each detailed task must require its worker to commit code, verify each assigned 
     verifyDispatchConfiguration();
     const mapping = history().filter((record) => record.id === selectedMappingId!).at(-1);
     if (mapping?.kind !== 'task_mapping' || !mapping.management) throw new Error('run_mapping_missing');
-    command('manage-task', ['--input', save('manage-task-input', { schemaVersion: 1, id: `${config.taskId}-release`, projectId: project.id,
-      issuedAt: issuedAt(), idempotencyKey: `${config.taskId}-release`, command: 'map_manage_execution_task',
+    const releaseKey = `${config.taskId}-release${revisionSuffix}`;
+    command('manage-task', ['--input', save('manage-task-input', { schemaVersion: 1, id: releaseKey, projectId: project.id,
+      issuedAt: issuedAt(), idempotencyKey: releaseKey, command: 'map_manage_execution_task',
       targetId: mapping.id, expectedRevision: mapping.revision,
       payload: { action: 'map', feature: mapping.feature, criteria: mapping.criteria, detailedPlanTask: mapping.detailedPlanTask,
         task: { kind: 'existing', firstMateTaskId: config.taskId }, dependencies: mapping.dependencies,
@@ -478,8 +496,11 @@ Each detailed task must require its worker to commit code, verify each assigned 
     command('deliver', ['--project', project.id, '--request', prepared.requestId, '--fm-home', fm.home, '--inbox-executable', fm.inboxExecutable]);
     const store = new ProjectStore(config.database);
     try {
-      const operation = startManagedWorker(store, { projectId: project.id, idempotencyKey: `${config.taskId}-start`,
-        assignment: prepared.assignment, repository: config.repository, executable: fm.spawnExecutable, hookRegistry: config.hookRegistry,
+      const receipt = store.receipt(project.id, startKey);
+      const original = receipt?.command.command === 'record_decision_suggestion' && receipt.command.targetId === startId ?
+        receipt.command.payload.decision.affectedRecords[0] : undefined;
+      const operation = startManagedWorker(store, { projectId: project.id, idempotencyKey: startKey,
+        assignment: original ?? prepared.assignment, repository: config.repository, executable: fm.spawnExecutable, hookRegistry: config.hookRegistry,
         args: [config.taskId, config.repository, '--mode', workerMode, '--yolo', workerTicket ? 'off' : fm.yolo, ...workerBaseArgs,
           '--harness', build.harness, ...(build.model ? ['--model', build.model] : []), ...(build.effort ? ['--effort', build.effort] : [])] },
         { fmHome: fm.home, ...(fm.snapshotExecutable ? { snapshotExecutable: fm.snapshotExecutable } : {}), timeoutMs: fm.timeoutMs });
