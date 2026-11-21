@@ -1,4 +1,4 @@
-import { scenario } from './milestone-helper.js';
+import { scenario, unrequestedOption, unrequestedTest } from './milestone-helper.js';
 import assert from 'node:assert/strict';
 import childProcess, { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -364,6 +364,35 @@ test('legacy return perfectly following a bad brief fails product review despite
     const report = JSON.parse(readFileSync(join(flow.config.runDirectory, 'review-product.stdout'), 'utf8'));
     assert.equal(report.review.outcome, 'failed'); assert.equal(report.review.conformance.technicalReviews[0].verdict, 'passed');
     assert.equal(report.review.planConformance.result, 'failed');
+  } finally { flow.close(); }
+});
+
+for (const gate of ['RoboRev', 'product'] as const) test(`${gate} independently blocks extras in an otherwise complete Factory delivery`, () => {
+  const confirmedDone = 'Deliver feature X across all connected systems through the common interface.';
+  const flow = scenario({ bootstrap: true,
+    originalRequest: `Build feature X for every connected system, ERPNext is only an example.\n\n## Definition of done (confirmed)\n${confirmedDone}` });
+  try {
+    flow.config.maxRevisionRounds = 0;
+    flow.mode({ extraScope: true, confirmedDone, productAcceptsExtra: gate === 'RoboRev', technicalAcceptsExtra: gate === 'product' });
+    runFeature(flow.config, 'prepare');
+    runFeature(flow.config, 'start');
+    assert.throws(() => runFeature(flow.config, 'review'), /review-product_failed/);
+    const { review } = JSON.parse(readFileSync(join(flow.config.runDirectory, 'review-product.stdout'), 'utf8'));
+    const { verdict, technicalReviews } = review.conformance;
+    assert.equal(review.outcome, 'failed');
+    assert.ok(verdict.criteria.every((criterion: { state: string }) => criterion.state === 'accomplished'));
+    assert.equal(technicalReviews[0].verdict, 'passed');
+    assert.equal(technicalReviews[1].verdict, gate === 'RoboRev' ? 'failed' : 'passed');
+    assert.equal(technicalReviews[1].commit, review.reviewedArtifacts[0].revision);
+    const findings = [unrequestedOption, unrequestedTest];
+    if (gate === 'RoboRev') {
+      const scoped = JSON.parse(JSON.parse(technicalReviews[1].raw).output);
+      assert.deepEqual(scoped.findings, findings);
+      assert.equal(verdict.planConformance, 'passed');
+    } else {
+      assert.deepEqual(verdict.findings.map((finding: { type: string; message: string }) =>
+        [finding.type, finding.message]), findings.map((message) => ['unrequested_addition', message]));
+    }
   } finally { flow.close(); }
 });
 

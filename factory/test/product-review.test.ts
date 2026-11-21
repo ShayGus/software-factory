@@ -253,7 +253,7 @@ test('closed technical review with no structured verdict stays uncertain', () =>
   assert.equal(parseRoborevResult(JSON.stringify(raw), sha, at).verdict, 'uncertain');
 });
 
-test('RoboRev executable adapter calls only show --json for the delivered commit', () => {
+test('ordinary RoboRev reads still use only show --json for the delivered commit', () => {
   const directory = mkdtempSync(join(tmpdir(), 'sf-quality-read-'));
   try {
     const sha = 'a'.repeat(40); const executable = join(directory, 'roborev.mjs'); const calls = join(directory, 'calls.json');

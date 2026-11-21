@@ -254,7 +254,8 @@ After a passing aggregate review, it saves and returns `ticketDelivery` with the
 The [factory skill](../skills/software-factory/SKILL.md) owns publishing the ticket from this handoff.
 Whole-feature completeness is separate from any single task's delivery eligibility.
 A per-task pass does not replace this final integration review.
-No phase polls workers, changes native completion state, installs hooks, enqueues technical review or adds a scheduling service.
+No phase polls workers, changes native completion state, installs hooks or adds a scheduling service.
+Review phases run the [Factory scope review](../README.md#plan-based-product-review---build-10) alongside the existing technical review evidence.
 
 ## Worker-start hook
 

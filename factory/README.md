@@ -1271,6 +1271,7 @@ Supply relevant unchanged dependencies in `paths`; the reviewer must report unce
 
 The package includes exact original request text, the design and plan revisions, detailed task and acceptance cases, canonical assignment metadata, actual delivered code, per-criterion worker returns, selected decisions, baseline evidence and existing technical-review results.
 The reviewer checks the plan independently against the original request and reports original-request omissions even when no listed criterion mentions them.
+It also checks the pinned changes and names each addition that neither the confirmed ticket nor the assigned plan requires.
 A brief that incorrectly narrows a general design to ERPNext cannot redefine correctness.
 Suggestions remain separate from required findings and criterion outcomes.
 
@@ -1287,7 +1288,10 @@ A passing review requires passing original-source, instruction-fidelity and plan
 The adapter follows the inspected `roborev v0.74.0-fmpatch.1` response: review `job_id`, raw output and `structured_output`, plus nested `job.id`, `job.git_ref`, `job.status` and `job.job_type`.
 Only completed review jobs for that exact commit are accepted.
 The structured technical verdict is retained; a missing verdict is uncertain, and a closed review does not imply a pass.
-No review, tests, analysis or quality checks are enqueued.
+The Factory review also submits the pinned diff and confirmed definition of done as a read-only RoboRev scope review.
+That result must name each unrequested addition and fails the delivery when any are found.
+Factory binds the returned job to the exact submitted prompt and reuses a definitive scoped result only for that same prompt.
+The ordinary result reader still only reads the existing commit review.
 A definitive exact-commit quality result already retained by an earlier product review is reused, including when that product review failed.
 An uncertain cached quality result is refreshed on a new review operation, preserving the original uncertain review and receipt replay.
 A changed delivered commit reads its own quality result.
