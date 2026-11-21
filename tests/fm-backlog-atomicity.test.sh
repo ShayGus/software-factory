@@ -2085,6 +2085,23 @@ test_recovery_replays_a_close_an_interrupted_cleanup_left_open() {
   pass "session start finishes a close an interrupted cleanup recorded but never landed"
 }
 
+test_recovery_replays_a_local_ticket_branch_close() {
+  local case_dir id marker out base=fm/ticket/tachles-f12
+  id=atomic-heal-ticket-branch
+  case_dir=$(make_home heal-pending-ticket-branch)
+  add_item "$case_dir" "$id"
+  start_item "$case_dir" "$id"
+  marker="$(home_of "$case_dir")/state/$id.backlog-close"
+  printf 'id=%s\ndata=%s\nspawn_gen=spawn-heal-ticket\narg=--note\narg=local%%20%s\n' \
+    "$id" "$(home_of "$case_dir")/data" "$base" > "$marker"
+
+  out=$(run_bootstrap "$case_dir")
+  [ "$(row_state "$case_dir" "$id")" = "done" ] || fail "ticket branch close did not replay: $out"
+  assert_grep "local $base" "$(backlog_of "$case_dir")" "the replayed close dropped the ticket branch"
+  assert_absent "$marker" "a replayed ticket branch close left its record behind"
+  pass "session start replays a pending close with its local ticket branch"
+}
+
 test_recovery_replays_a_discarded_scout_close_as_discarded() {
   local case_dir id out
   id=atomic-heal-discarded-scout-b9
@@ -3172,6 +3189,7 @@ test_recovery_marks_an_owned_record_in_flight
 test_recovery_rejects_an_internal_worker_record_symlink
 test_recovery_ignores_a_symlinked_worker_record
 test_recovery_replays_a_close_an_interrupted_cleanup_left_open
+test_recovery_replays_a_local_ticket_branch_close
 test_recovery_replays_a_discarded_scout_close_as_discarded
 test_recovery_replays_a_gerrit_close_with_its_change_url_as_a_note
 test_recovery_backfills_a_recorded_link_on_an_already_done_item
