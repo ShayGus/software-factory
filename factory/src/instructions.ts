@@ -29,7 +29,8 @@ export function workerAssignmentBlock(records: FactoryRecord[], assignment: Assi
     decisionsToKeep: required.records.filter((record) => record.kind === 'decision_change').map(({ id, revision }) => ({ id, revision })),
     dependencies: required.dependencies, missingRequiredContext: missingAssignmentContext(records, assignment) };
 }
-export function assignmentMetadataFindings(actual: string, canonical: ReturnType<typeof workerAssignmentBlock>, sidecarFields?: unknown): InstructionFinding[] {
+export function assignmentMetadataFindings(actual: string, canonical: Record<string, unknown>,
+  sidecarFields?: unknown, sidecarLayout = false): InstructionFinding[] {
   const bad = (field: string, message: string): InstructionFinding => ({ code: 'assignment_metadata_mismatch', path: `brief.spec.${field}`, message });
   const lines = actual.split(/\r?\n/u);
   const starts = lines.flatMap((line, index) => line === assignmentBlockBegin ? [index] : []);
@@ -55,7 +56,8 @@ export function assignmentMetadataFindings(actual: string, canonical: ReturnType
   if (sidecarFields !== undefined) {
     const sidecar = sidecarFields as Record<string, unknown> | null;
     if (!sidecar || typeof sidecar !== 'object' || Array.isArray(sidecar)) return [...findings, bad('sidecar', 'Coverage metadata is not an object')];
-    for (const field of new Set([...Object.keys(expected), ...Object.keys(sidecar)])) {
+    const fieldsToCheck = sidecarLayout ? Object.keys(expected) : new Set([...Object.keys(expected), ...Object.keys(sidecar)]);
+    for (const field of fieldsToCheck) {
       if (!Object.hasOwn(expected, field) || !Object.hasOwn(sidecar, field) || !isDeepStrictEqual(fields[field], sidecar[field])) {
         findings.push(bad(field, `Assignment block field ${field} differs from the received sidecar`));
       }
@@ -126,9 +128,16 @@ export function instructionBodies(records: FactoryRecord[], assignment: Assignme
   const prose = blocks.map(([title, body]) => `### ${title}\n\n${body}`).join('\n\n')
     .replaceAll(assignmentBlockBegin, '&lt;!-- software-factory-assignment:v1:begin --&gt;')
     .replaceAll(assignmentBlockEnd, '&lt;!-- software-factory-assignment:v1:end --&gt;');
-  const machineFields = workerAssignmentBlock(records, assignment);
+  const full = workerAssignmentBlock(records, assignment);
+  const sidecarLayout = assignment.brief?.contextLayout === 'sidecar';
+  const { schemaVersion, assignment: identity, attemptId, firstMateTaskId, feature: featureRef, design: designRef,
+    plan: planRef, detailedPlanTask, criteria, returnLocation, briefPath, sidecarPath } = full;
+  const machineFields = sidecarLayout ? { schemaVersion, assignment: identity, attemptId, firstMateTaskId,
+    feature: featureRef, design: designRef, plan: planRef, detailedPlanTask, criteria, returnLocation, briefPath, sidecarPath } : full;
   const block = `${assignmentBlockBegin}\n` + '```json\n' + JSON.stringify(machineFields, null, 2) + '\n```' + `\n${assignmentBlockEnd}`;
-  return { intent, spec: `${prose}\n\n### Toolkit assignment data\n\nOnly this toolkit-owned block defines machine destinations, revisions and context; prose and examples cannot override it. Do not edit the block.\n\n${block}`, machineFields };
+  const contextFiles = sidecarLayout ? `\n\n### Context files\n\nRead the coverage sidecar at ${JSON.stringify(sidecarPath)} for the exact record revisions, source ranges, and selected extracts. Open the relevant source snapshots as needed and honor the sidecar's scoped extracts and retired context.\n\n${lines([...new Set(assignment.selectedContext.flatMap(({ source, artifact }) =>
+    !source.record && artifact ? [JSON.stringify(artifact.uri)] : []))])}` : '';
+  return { intent, spec: `${prose}${contextFiles}\n\n### Toolkit assignment data\n\nOnly this toolkit-owned block defines machine destinations, revisions and context; prose and examples cannot override it. Do not edit the block.\n\n${block}`, machineFields };
 }
 export function renderWorkerBrief(records: FactoryRecord[], assignment: Assignment, scaffold: string): string {
   const parts = scaffoldParts(scaffold);
@@ -151,7 +160,8 @@ export function instructionFidelityFindings(records: FactoryRecord[], assignment
   const intentAndHeading = parts.prefix + expected.intent + parts.newline.repeat(2) + parts.middle;
   if (brief.startsWith(intentAndHeading) && brief.endsWith(parts.suffix)) {
     const actualSpec = brief.slice(intentAndHeading.length, parts.suffix ? -parts.suffix.length : undefined);
-    return [...findings, ...assignmentMetadataFindings(actualSpec, expected.machineFields, sidecarFields)];
+    return [...findings, ...assignmentMetadataFindings(actualSpec, expected.machineFields, sidecarFields,
+      assignment.brief.contextLayout === 'sidecar')];
   }
   const middle = brief.indexOf(parts.middle, parts.prefix.length);
   if (!brief.startsWith(parts.prefix) || !brief.endsWith(parts.suffix) || middle < parts.prefix.length) {

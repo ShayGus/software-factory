@@ -27,6 +27,8 @@ export const PrepareWorkerBriefInputSchema = z.strictObject({
   expectedRevision: z.number().int().nonnegative(), idempotencyKey: IdSchema, issuedAt: TimestampSchema,
   detailedPlanTask: RefSchema, plan: RefSchema, firstMateTaskId: IdSchema,
   returnLocation: TextSchema, briefPath: TextSchema, sidecarPath: TextSchema.optional(), scaffoldPath: TextSchema.optional(),
+  contextLayout: z.literal('sidecar').optional(),
+  unstartedOperationId: IdSchema.optional(),
   maxSourceChars: z.number().int().positive().default(16_000),
   // Local snapshots of sources whose original URI cannot be read offline. Range
   // offsets select an exact task-relevant extract; no summarization/model call.
@@ -104,6 +106,12 @@ export function prepareWorkerBrief(store: ProjectStore, input: unknown) {
 }
 
 function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof PrepareWorkerBriefInputSchema>) {
+  if (data.unstartedOperationId) {
+    const start = store.get(data.projectId, data.unstartedOperationId);
+    if (start && (start.kind !== 'operation' || start.externalAttempt || start.state === 'succeeded')) {
+      throw new StoreError('conflict', 'worker_start_already_attempted');
+    }
+  }
   // Resolve replay before reading files or deriving context from mutable project state.
   const receipt = store.receipt(data.projectId, data.idempotencyKey);
   if (receipt) {
@@ -115,6 +123,8 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
       detailedPlanTask: data.detailedPlanTask, plan: data.plan, firstMateTaskId: data.firstMateTaskId, returnLocation: data.returnLocation,
       generation: { ...original.payload.generation, attemptId: data.attemptId, briefPath: path, sidecarPath,
         scaffoldPath: data.scaffoldPath === undefined ? undefined : resolve(data.scaffoldPath),
+        contextLayout: data.contextLayout,
+        unstartedOperationId: data.unstartedOperationId,
         maxSourceChars: data.maxSourceChars, sourceFiles: data.sourceFiles.map((entry) => ({ ...entry, path: resolve(entry.path) })) } } };
     if (commandDigest(replay) !== commandDigest(original)) throw new StoreError('conflict', 'idempotency_conflict');
     const savedRef = receipt.result.records.find((item) => item.id === data.assignmentId);
@@ -172,7 +182,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
     } : {}),
     instructionText: 'Preparation in progress', instructionFidelity: { result: 'untested', sourceRefs: [recordSource(task)],
       findings: [], reviewerSession: 'factory:structural-instruction-checks', comparedAt: data.issuedAt },
-    brief: { path: briefPath, sidecarPath, scaffold, sidecarDigest: 'pending' },
+    brief: { path: briefPath, sidecarPath, scaffold, contextLayout: data.contextLayout, sidecarDigest: 'pending' },
   });
   const selection = selectAssignmentContext(records, assignment, (source, artifact) => {
     const file = artifact ? sourceFiles.find((entry) => sameSource(entry.source, source) && entry.artifact &&
@@ -214,6 +224,8 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
       design: assignment.design, plan: assignment.plan, firstMateTaskId: assignment.firstMateTaskId,
       selectedContext: assignment.selectedContext, returnLocation: assignment.returnLocation,
       generation: { attemptId: assignment.attemptId, briefPath, sidecarPath, scaffold, ...(scaffoldPath ? { scaffoldPath } : {}),
+        contextLayout: data.contextLayout,
+        unstartedOperationId: data.unstartedOperationId,
         maxSourceChars: data.maxSourceChars, sourceFiles } },
   });
   const result = store.mutate(command, () => [assignment]);
@@ -289,7 +301,8 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
           metadataCandidate = candidate.slice(0, start) + candidate.slice(start + intent.length);
         }
       }
-      findings.push(...assignmentMetadataFindings(metadataCandidate, workerAssignmentBlock(records, assignment), sidecarFields));
+      findings.push(...assignmentMetadataFindings(metadataCandidate, instructionBodies(records, assignment).machineFields,
+        sidecarFields, assignment.brief?.contextLayout === 'sidecar'));
     }
   }
   const dispatch = validateAssignmentForDispatch(eligibilityContext(records), assignmentRef);

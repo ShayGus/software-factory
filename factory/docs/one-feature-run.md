@@ -222,6 +222,7 @@ Prerequisites must have the existing current producer criterion/artifact evidenc
 Producer return artifacts are materialized from their exact Git commits with the existing delivery snapshot reader and included as handover context.
 Task inputs, checks, worker return and phase outputs live under `runDirectory/tasks/<taskId>`.
 The build instructions receive the exact assignment identity and return location from the prepared brief.
+The brief points to its verified coverage sidecar and source snapshots for exact context without embedding source extracts.
 The start hook checks every launch candidate, just as for the single-task convenience phase.
 A failed preparation or start check leaves work undispatched.
 For publishing runs, each sub-task receives a native local-only brief and starts from the shared local `fm/ticket/<native-ticket-id>` branch.

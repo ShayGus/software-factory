@@ -517,7 +517,10 @@ test('followup: automated preparation accepts an operator source snapshot and pr
       `if(step==='plan_check') { const fs=await import('node:fs'); fs.writeFileSync(${JSON.stringify(flow.config.requestFile)},'MUTATED_REQUEST_FILE'); }\nif(step==='plan_check')`));
     runFeature(flow.config, 'prepare');
     const text = readFileSync(join(flow.data, 'milestone-worker', 'brief.md'), 'utf8');
-    assert.ok(text.includes('OPERATOR_SUPPLIED_INTERFACE'));
+    const coverage = readFileSync(join(flow.data, 'milestone-worker', 'brief.sf.json'), 'utf8');
+    assert.ok(text.includes(snapshot));
+    assert.ok(!text.includes('OPERATOR_SUPPLIED_INTERFACE'));
+    assert.ok(coverage.includes('OPERATOR_SUPPLIED_INTERFACE'));
     assert.ok(text.includes(originalRequest));
     assert.equal(text.includes('MUTATED_REQUEST_FILE'), false);
   } finally { flow.close(); }
