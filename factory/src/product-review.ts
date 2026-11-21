@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { isUtf8 } from 'node:buffer';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -67,11 +67,13 @@ export function snapshotDelivery(repository: string, artifact: z.infer<typeof Ar
     if (path.startsWith('/') || path.split('/').some((part) => part === '..' || part === '.')) throw new StoreError('validation', 'invalid_delivery_path');
     if (!present.has(path) && !changed.includes(path)) throw new StoreError('validation', `delivery_path_not_found: ${path}`);
     const bytes = present.has(path) ? git(repository, ['show', `${commit}:${path}`], Math.max(1024, maxSourceChars * 4)) : Buffer.from('[Deleted in delivered commit]');
-    if (!isUtf8(bytes) || bytes.includes(0)) throw new StoreError('validation', `delivery_snapshot_requires_text: ${path}`);
-    const text = bytes.toString('utf8');
+    const binary = !isUtf8(bytes) || bytes.includes(0);
+    const text = binary ? '' : bytes.toString('utf8');
     remaining -= path.length + text.length;
     if (remaining < 0) throw new StoreError('validation', 'delivery_snapshot_too_large');
-    return DeliveredFileSchema.parse({ path, text, artifact: { uri: `${artifact.uri}#${path}`, revision: commit, digest: digestText(text) } });
+    const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    return DeliveredFileSchema.parse({ path, text, artifact: { uri: `${artifact.uri}#${path}`, revision: commit, digest },
+      ...(binary ? { sizeBytes: bytes.length } : {}) });
   });
 }
 
@@ -84,7 +86,7 @@ Review every supplied delivery and its assignment, detailed task, instructions, 
 Every finding needs a check (sourceComparison, instructionFidelity or planConformance), type (missing_behavior, wrong_implementation, original_request_omission, narrowed_generality, instruction_mismatch or unrequested_addition), message and quotes. Each quote is {source,text}; quote exact evidence strings. Sources are original_request, design, plan, task, instructions, delivery or worker_return. Quote the absent authoritative requirement for omissions and the actual implementation for wrong behavior where possible. A check with a finding cannot pass; failed checks need findings. Use uncertain for unsupported claims.
 Use out_of_scope only for a named criterion that the current ticket excludes or whose requirement has been removed from its confirmed definition of done. Explain the removal and quote the relevant current ticket wording or definition of done as original_request. For a currentTicket, quotes with source original_request must come from its text.
 Output exactly: {"sourceComparison":"passed|failed|uncertain","instructionFidelity":"passed|failed|uncertain","planConformance":"passed|failed|uncertain","criteria":[{"criterion":{"id":"...","revision":1},"state":"accomplished|failed|uncertain|out_of_scope","behavior":"...","quotes":[{"source":"delivery","text":"exact code"}],"limitations":[]}],"findings":[],"suggestions":[],"unresolvedQuestions":[]}.
-The referenced JSON snapshot is the complete evidence.`;
+The referenced JSON snapshot is the complete evidence. An entry in deliveredFiles with sizeBytes identifies a binary file by committed path and byte size. It supplies no contents to inspect or quote.`;
 
 function leaves(value: unknown): string[] {
   if (typeof value === 'string') return [value];
@@ -296,10 +298,12 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
   const primary = deliveryEvidence[0]!;
   const snapshot = productReviewPackage(history, data.assignment, data.deliveredArtifact, primary.deliveredFiles,
     data.results, primary.technicalReviews, data.baselineEvidence, deliveryEvidence.slice(1), currentTicket);
-  const manifest = { ...snapshot, deliveries: snapshot.deliveries.map((delivery, index) => {
-    const { confirmedDefinitionOfDone, patch } = changes[index]!;
-    return { ...delivery, confirmedDefinitionOfDone, diffDigest: digestText(patch) };
-  }) };
+  const manifest = { ...snapshot,
+    deliveredFiles: deliveredFiles.map(({ text, ...file }) => file.sizeBytes === undefined ? { ...file, text } : file),
+    deliveries: snapshot.deliveries.map((delivery, index) => {
+      const { confirmedDefinitionOfDone, patch } = changes[index]!;
+      return { ...delivery, confirmedDefinitionOfDone, diffDigest: digestText(patch) };
+    }) };
   const serialized = JSON.stringify(manifest);
   if (serialized.length > 1_500_000) throw new StoreError('validation', 'review_package_too_large');
   const session = `factory:product-review:${randomUUID()}`;

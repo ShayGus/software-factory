@@ -1264,8 +1264,9 @@ A maintenance delivery with no criteria contributes one null-criterion outcome a
 The feature-wide completion rule still requires all active required criteria, so a delivered partial slice stays incomplete until the aggregate supplies the remaining evidence.
 `paths` optionally adds unchanged dependency files to the review snapshot; every path changed by the commit is included automatically.
 `maxSourceChars` bounds the delivered snapshot, defaulting to 256,000 characters and limited to 1,000,000.
-The snapshot accepts at most 1,000 text files and the complete package is limited to 1,500,000 characters.
-Binary files, unreadable commits, missing requested paths and exceeded limits return explicit errors rather than silently truncating evidence.
+The snapshot accepts at most 1,000 paths and the complete package is limited to 1,500,000 characters.
+Binary files are listed by committed path and byte size without supplying their contents to the reviewer.
+Unreadable commits, missing requested paths and exceeded limits return explicit errors rather than silently truncating evidence.
 Files come from the pinned commit, including first-parent merge changes, regardless of local worktree edits.
 Supply relevant unchanged dependencies in `paths`; the reviewer must report uncertainty when the supplied evidence cannot establish behavior.
 
