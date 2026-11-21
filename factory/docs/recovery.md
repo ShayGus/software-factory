@@ -25,6 +25,13 @@ An invalid inventory without a trustworthy target generation also prevents launc
 An existing generation before a new launch requires an explicit
 operator decision/new attempt. The one-feature runbook uses this same path.
 
+If the start check refused and the operation recorded no external attempt, correct the brief through `prepare-brief`.
+For a changed FirstMate scaffold, generate it in a scratch data directory and pass its absolute path as `scaffoldPath` in the saved prepare input.
+Keep the original assignment, attempt, plan, task, return location and native brief path.
+Set `expectedRevision` to the current assignment revision and use a new preparation idempotency key.
+After successful preparation, repeat `run-feature.mjs start` with its original run configuration and task ID, or replay the original `start-worker` input.
+The existing start operation checks the new revision, records that exact revision if dispatch begins, and keeps the original start receipt.
+
 Corrections carry a unique operation ID in the exact transport payload. After an
 ambiguous send, `deliver-correction` checks a fresh fleet snapshot and the recorded
 task's durable `.inbox/*.msg` and `.inbox/handled/*.msg` records for that exact

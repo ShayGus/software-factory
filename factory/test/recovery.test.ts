@@ -119,6 +119,48 @@ test('ambiguous worker timeout plus an empty fleet never authorizes a second lau
   assert.equal(readFileSync(join(flow.home, 'starts'), 'utf8'), 'start\n');
 });
 
+test('a refused start rechecks the re-prepared assignment under the original start key', t => {
+  const flow = setup(t); const hookRegistry = readyWorkerStart(flow);
+  const original = assignment(flow);
+  const brief = original.brief!;
+  const starts = join(flow.home, 'starts');
+  const executable = flow.executable('retry-start.cjs',
+    `require('node:fs').appendFileSync(${JSON.stringify(starts)}, 'start\\n');`);
+  const input = { projectId, idempotencyKey: 'retry-refused-start', assignment: ref(original), repository: flow.home,
+    executable, hookRegistry, args: ['pilot-build', flow.home] };
+  const adapter = { fmHome: flow.home, snapshotExecutable: flow.runtime.executable };
+  writeFileSync(brief.path, 'Unprepared launch candidate');
+  const refused = startManagedWorker(flow.store, input, adapter);
+  assert.equal(refused.state, 'pending');
+  assert.match(refused.reconciliation!.note, /worker_start_check_failed/);
+  assert.equal(refused.externalAttempt, undefined);
+  assert.equal(existsSync(starts), false);
+  const receipt = flow.store.receipt(projectId, input.idempotencyKey);
+
+  const scaffoldPath = join(flow.home, 'retry-scaffold.md');
+  const scaffold = brief.scaffold + '\nFresh delivery scaffold.\n';
+  writeFileSync(scaffoldPath, scaffold);
+  const sourceFiles = requiredAssignmentContext(flow.store.history(projectId), original).sources
+    .filter(source => !source.record).map((source, index) => ({ source, path: join(flow.home, `launch-source-${index}.txt`) }));
+  const preparation = { projectId, assignmentId: original.id, attemptId: original.attemptId, expectedRevision: original.revision,
+    idempotencyKey: 'reprepare-refused-start', issuedAt: new Date().toISOString(), detailedPlanTask: original.detailedPlanTask,
+    plan: original.plan, firstMateTaskId: original.firstMateTaskId, returnLocation: original.returnLocation, briefPath: brief.path,
+    scaffoldPath, sourceFiles };
+  const current = prepareWorkerBrief(flow.store, preparation);
+  assert.equal(current.ok, true);
+  assert.match(readFileSync(brief.path, 'utf8'), /Fresh delivery scaffold/);
+  writeFileSync(scaffoldPath, 'Discarded after preparation');
+  assert.deepEqual(prepareWorkerBrief(flow.store, preparation), current);
+  flow.reopen();
+  const started = startManagedWorker(flow.store, input, adapter);
+  assert.equal(started.state, 'succeeded', started.reconciliation?.note);
+  assert.equal(started.id, refused.id);
+  assert.deepEqual(started.externalAttempt?.assignment, current.assignment);
+  assert.deepEqual(flow.store.receipt(projectId, input.idempotencyKey), receipt);
+  assert.deepEqual(startManagedWorker(flow.store, input, adapter), started);
+  assert.equal(readFileSync(starts, 'utf8'), 'start\n');
+});
+
 for (const replacementId of ['assignment-1', 'replacement-assignment']) test(`review 1453-3: a timed-out start cannot claim a replacement generation (${replacementId})`, t => {
   const flow = setup(t); const hookRegistry = readyWorkerStart(flow);
   const timeout = flow.executable('start-timeout.cjs', `setTimeout(()=>process.exit(0),10000);`);

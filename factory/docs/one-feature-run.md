@@ -184,8 +184,9 @@ Prepare and review have exclusive `.started` markers. Start uses a durable opera
 CLI stdout/stderr and `prepared.json` remain under `runDirectory`; the manifest binds
 later phases to the same parsed run configuration. There is no automatic retry after
 an ambiguous FirstMate effect. Inspect the saved output and use the existing
-`outbox`/`reconcile-task`, idempotent command replay and FirstMate recovery commands
-to reconcile the original operation. Repeating start uses the same worker-start operation; see [Recovery and incremental adoption](recovery.md). After incomplete product review, inspect its saved input and receipt,
+`outbox`/`reconcile-task` for backlog changes, or repeat start for a worker-start operation.
+For a start check refusal, the [recovery runbook](recovery.md#unknown-outcomes) explains how to re-prepare the existing assignment and repeat start.
+After incomplete product review, inspect its saved input and receipt,
 then use `review-product` directly with a new review key if fresh evidence is needed.
 
 ## Plans with several tasks

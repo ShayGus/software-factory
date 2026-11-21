@@ -4,10 +4,11 @@ import { randomUUID, createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { TimestampSchema } from './primitives.js';
-import { type Operation } from './records.js';
+import { type Assignment, type Operation } from './records.js';
 import { ref, stableId } from './intake.js';
 import { pendingOperation, ProjectStore, StoreError } from './store.js';
 import { commandDigest } from './rules.js';
+import { samePlanningRef } from './planning-checks.js';
 
 const absolute = z.string().refine(isAbsolute, 'Absolute path required');
 export const RuntimeAdapterSchema = z.strictObject({
@@ -104,21 +105,52 @@ export const WorkerStartInputSchema = z.strictObject({
   projectId: z.string().min(1), idempotencyKey: z.string().min(1), assignment: z.object({ id: z.string(), revision: z.number().int().positive() }),
   repository: absolute, executable: absolute, hookRegistry: absolute.optional(), args: z.array(z.string()),
 });
+export const workerStartOperationId = (projectId: string, key: string) => stableId('worker-start', projectId, key);
+
+export function workerStartCheckRefused(operation: Operation) {
+  if (operation.state !== 'pending' || operation.externalAttempt || !operation.reconciliation) return false;
+  try { return JSON.parse(operation.reconciliation.note)?.reason === 'worker_start_check_failed'; }
+  catch { return false; }
+}
+
+/** Keep the immutable start intent while selecting a re-prepared brief or
+ * recovering the exact revision already sent to FirstMate. */
+export function selectWorkerStartAssignment(store: ProjectStore, original: Assignment, operation: Operation): Assignment {
+  const attempted = operation.externalAttempt?.assignment;
+  const anchor = attempted ? store.get(original.projectId, attempted.id, attempted.revision) : original;
+  if (anchor?.kind !== 'assignment' || anchor.id !== original.id || anchor.firstMateTaskId !== original.firstMateTaskId) {
+    throw new Error('worker_start_attempt_superseded');
+  }
+  const latest = store.get(original.projectId, anchor.id);
+  const competing = store.records(original.projectId).some((record) => record.kind === 'assignment' &&
+    record.firstMateTaskId === anchor.firstMateTaskId && record.id !== anchor.id &&
+    Date.parse(record.updatedAt) >= Date.parse(anchor.updatedAt));
+  if (latest?.kind !== 'assignment' || latest.attemptId !== anchor.attemptId ||
+    latest.firstMateTaskId !== anchor.firstMateTaskId || competing) throw new Error('worker_start_attempt_superseded');
+  if (operation.externalAttempt || latest.revision === original.revision) return anchor;
+  if (latest.brief?.materialized && latest.brief.materialized.brief !== original.brief?.materialized?.brief &&
+    latest.brief.path === original.brief?.path && latest.returnLocation === original.returnLocation &&
+    samePlanningRef(latest.plan, original.plan) && samePlanningRef(latest.detailedPlanTask, original.detailedPlanTask) &&
+    (workerStartCheckRefused(operation) || store.history(original.projectId).some((record) =>
+      record.kind === 'operation' && record.id === operation.id && workerStartCheckRefused(record)))) return latest;
+  throw new Error('worker_start_attempt_superseded');
+}
+
 /** One explicit start through FirstMate. An ambiguous call is observed, never blindly retried. */
 export function startManagedWorker(store: ProjectStore, input: unknown, adapter: RuntimeAdapter): Operation {
   const data = WorkerStartInputSchema.parse(input);
   const options = RuntimeAdapterSchema.parse(adapter);
   return store.withTaskLock(data.projectId, () => {
     store.assertExternalOperationsAllowed(data.projectId);
-    const assignment = store.get(data.projectId, data.assignment.id, data.assignment.revision);
-    if (assignment?.kind !== 'assignment' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(assignment.firstMateTaskId) ||
-      data.args[0] !== assignment.firstMateTaskId || data.args[1] !== data.repository) throw new Error('worker_start_assignment_mismatch');
-    const id = stableId('worker-start', data.projectId, data.idempotencyKey);
+    const original = store.get(data.projectId, data.assignment.id, data.assignment.revision);
+    if (original?.kind !== 'assignment' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(original.firstMateTaskId) ||
+      data.args[0] !== original.firstMateTaskId || data.args[1] !== data.repository) throw new Error('worker_start_assignment_mismatch');
+    const id = workerStartOperationId(data.projectId, data.idempotencyKey);
     const at = new Date().toISOString();
     const decision = { kind: 'decision_change' as const, id: stableId('worker-start-intent', id), projectId: data.projectId,
       schemaVersion: 1 as const, revision: 1, createdAt: at, updatedAt: at, questionOrChange: 'Start checked worker through FirstMate',
       affectedRecords: [data.assignment], rationale: JSON.stringify({ ...data, fmHome: options.fmHome }),
-      disposition: 'selected' as const, sourceRefs: [{ uri: `firstmate:task/${assignment.firstMateTaskId}` }], scopeChanges: [] };
+      disposition: 'selected' as const, sourceRefs: [{ uri: `firstmate:task/${original.firstMateTaskId}` }], scopeChanges: [] };
     const command = { schemaVersion: 1 as const, id, projectId: data.projectId, issuedAt: at, idempotencyKey: data.idempotencyKey,
       command: 'record_decision_suggestion' as const, targetId: id, expectedRevision: 0, payload: { decision } };
     // Compare semantic receipt content independent of its first issuance timestamp.
@@ -139,12 +171,8 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
     try { snapshot = readFleetSnapshot(options); }
     catch (error) { return recordOperationObservation(store, operation, operation.externalAttempt ? 'unknown' : 'pending', String(error)); }
     try {
-      const task = runtimeTask(snapshot, assignment.firstMateTaskId);
-      const latest = store.get(data.projectId, assignment.id);
-      const currentAttempts = store.records(data.projectId).filter((record) => record.kind === 'assignment' && record.firstMateTaskId === assignment.firstMateTaskId);
-      if (latest?.kind !== 'assignment' || latest.attemptId !== assignment.attemptId ||
-        latest.firstMateTaskId !== assignment.firstMateTaskId || currentAttempts.some((record) => record.id !== assignment.id &&
-          Date.parse(record.updatedAt) >= Date.parse(assignment.updatedAt))) throw new Error('worker_start_attempt_superseded');
+      const task = runtimeTask(snapshot, original.firstMateTaskId);
+      const assignment = selectWorkerStartAssignment(store, original, operation);
       if (operation.externalAttempt) {
         if (task?.spawn_gen && task.project === data.repository &&
           Date.parse(snapshot.generated) >= Date.parse(operation.externalAttempt.startedAt) &&
@@ -153,14 +181,13 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
         }
         return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Start outcome unresolved; no retry authorized', snapshot }));
       }
-      if (latest.revision !== assignment.revision) throw new Error('worker_start_attempt_superseded');
       // Any pre-existing generation belongs to ordinary FirstMate management.
       if (task?.spawn_gen) return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Existing worker generation; explicit new attempt required', snapshot }));
       if (!data.hookRegistry || !assignment.brief) return recordOperationObservation(store, operation, 'pending', 'Worker start requires configured instruction and dispatch check');
       const checked = checkConfiguredWorkerStart(store, data.projectId, assignment.firstMateTaskId, options.fmHome, data.hookRegistry, assignment.brief.path);
       if (!checked.ok || !checked.managed) return recordOperationObservation(store, operation, 'pending', JSON.stringify({ reason: 'worker_start_check_failed', checked }));
       operation = recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Worker start begun', snapshot }), {
-        externalAttempt: { action: 'start', firstMateTaskId: assignment.firstMateTaskId, assignment: data.assignment,
+        externalAttempt: { action: 'start', firstMateTaskId: assignment.firstMateTaskId, assignment: ref(assignment),
           attemptId: assignment.attemptId, repository: data.repository, baselineGeneration: null, startedAt: new Date().toISOString() } });
       const stdout = execFileSync(data.executable, data.args, { cwd: options.fmHome, env: firstMateEnv(options.fmHome),
         encoding: 'utf8', timeout: options.timeoutMs ?? 120_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });

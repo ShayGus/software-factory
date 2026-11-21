@@ -26,7 +26,7 @@ export const PrepareWorkerBriefInputSchema = z.strictObject({
   projectId: IdSchema, assignmentId: IdSchema, attemptId: IdSchema,
   expectedRevision: z.number().int().nonnegative(), idempotencyKey: IdSchema, issuedAt: TimestampSchema,
   detailedPlanTask: RefSchema, plan: RefSchema, firstMateTaskId: IdSchema,
-  returnLocation: TextSchema, briefPath: TextSchema, sidecarPath: TextSchema.optional(),
+  returnLocation: TextSchema, briefPath: TextSchema, sidecarPath: TextSchema.optional(), scaffoldPath: TextSchema.optional(),
   maxSourceChars: z.number().int().positive().default(16_000),
   // Local snapshots of sources whose original URI cannot be read offline. Range
   // offsets select an exact task-relevant extract; no summarization/model call.
@@ -114,6 +114,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
     const replay = { ...original, targetId: data.assignmentId, expectedRevision: data.expectedRevision, payload: { ...original.payload,
       detailedPlanTask: data.detailedPlanTask, plan: data.plan, firstMateTaskId: data.firstMateTaskId, returnLocation: data.returnLocation,
       generation: { ...original.payload.generation, attemptId: data.attemptId, briefPath: path, sidecarPath,
+        scaffoldPath: data.scaffoldPath === undefined ? undefined : resolve(data.scaffoldPath),
         maxSourceChars: data.maxSourceChars, sourceFiles: data.sourceFiles.map((entry) => ({ ...entry, path: resolve(entry.path) })) } } };
     if (commandDigest(replay) !== commandDigest(original)) throw new StoreError('conflict', 'idempotency_conflict');
     const savedRef = receipt.result.records.find((item) => item.id === data.assignmentId);
@@ -144,7 +145,10 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
     record.brief && [record.brief.path, record.brief.sidecarPath].some((path) => [briefPath, sidecarPath].includes(path)))) {
     throw new StoreError('conflict', 'brief_path_owned_by_another_assignment');
   }
-  const scaffold = previous?.brief?.path === briefPath ? previous.brief.scaffold : readFileSync(briefPath, 'utf8');
+  const scaffoldPath = data.scaffoldPath && resolve(data.scaffoldPath);
+  if (scaffoldPath === briefPath || scaffoldPath === sidecarPath) throw new StoreError('validation', 'scaffold_and_output_paths_must_differ');
+  const scaffold = scaffoldPath ? readFileSync(scaffoldPath, 'utf8') :
+    previous?.brief?.path === briefPath ? previous.brief.scaffold : readFileSync(briefPath, 'utf8');
   scaffoldParts(scaffold); // Reject ambiguous templates before persisting anything.
   const sourceFiles = data.sourceFiles.map((entry) => ({ ...entry, path: resolve(entry.path) }));
   const sameAttempt = previous?.attemptId === data.attemptId && previous.firstMateTaskId === data.firstMateTaskId;
@@ -209,7 +213,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
     expectedRevision: data.expectedRevision, payload: { detailedPlanTask: ref(task), feature: assignment.feature,
       design: assignment.design, plan: assignment.plan, firstMateTaskId: assignment.firstMateTaskId,
       selectedContext: assignment.selectedContext, returnLocation: assignment.returnLocation,
-      generation: { attemptId: assignment.attemptId, briefPath, sidecarPath, scaffold,
+      generation: { attemptId: assignment.attemptId, briefPath, sidecarPath, scaffold, ...(scaffoldPath ? { scaffoldPath } : {}),
         maxSourceChars: data.maxSourceChars, sourceFiles } },
   });
   const result = store.mutate(command, () => [assignment]);
