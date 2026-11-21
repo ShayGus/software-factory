@@ -77,6 +77,8 @@ Every `sourceFiles[].path` must be absolute; relative snapshot paths are
 rejected before capture so planning and brief preparation read the same file.
 Planning agents receive paths to the captured request, selected snapshots, repository and records for the current attempt.
 They read these inputs and can inspect additional repository files read-only.
+The planner starts with one implementation task and records the reason in `strategyReason` when the ticket is large enough to need several.
+The independent plan review also checks that each new feature and worker ticket title describes what will be built in plain words before any tickets are queued.
 External references in generated designs and tasks must resolve through the operator-provided mappings or the captured request.
 Unlisted paths and file URIs are refused before brief preparation.
 

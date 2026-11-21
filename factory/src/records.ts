@@ -132,6 +132,7 @@ export const SliceCriterionProvenanceSchema = z.strictObject({
 });
 export const ImplementationPlanRevisionSchema = record('implementation_plan_revision', {
   feature: RefSchema.nullable(), design: RefSchema, deliverySequence: z.array(RefSchema).min(1),
+  ticketTitle: TextSchema.optional(),
   strategy: ExecutionStrategySchema, strategyReason: TextSchema, integrationApproach: TextSchema,
   dependencies: z.array(DependencySchema), priorities: z.array(z.strictObject({
     taskId: IdSchema, priority: z.number().int(),

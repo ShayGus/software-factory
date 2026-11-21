@@ -116,9 +116,18 @@ let out=JSON.parse(readFileSync(root+'/outputs.json','utf8'))[step];
 if(out && snapshot.request) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()).replaceAll(${JSON.stringify(request.id)},snapshot.request.id).replaceAll(${JSON.stringify(requestFile)},snapshot.request.source.uri));
 if(step==='detail' && snapshot.findings) out=snapshot.instructionText ? mode.specEdits ?? [] :
  {plan:{},tasks:[{id:snapshot.tasks[0].id,changes:{expectedBehavior:'Correct scope for all connected systems, revision '+snapshot.plan.revision}}]};
+if(step==='detail' && mode.reviseTitles && snapshot.findings && !snapshot.instructionText) {
+ assert.deepEqual(JSON.parse(readFileSync(root+'/fake-state.json','utf8')).calls,[]);
+ assert.deepEqual(snapshot.findings.map(finding=>finding.title),['Project Leap','Phase 1']);
+ out={plan:{ticketTitle:'Export invoices from all connected systems'},
+  tasks:[{id:snapshot.tasks[0].id,changes:{expectedBehavior:'Export invoice records using the shared report'}}]};
+}
 if(step==='plan_check') out=mode.planFailure || (mode.reviseOnce && snapshot.plan.revision===2) ?
  {verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} :
  {verdict:'pass',findings:[]};
+if(step==='plan_check') out.titleFindings=mode.reviseTitles ? snapshot.ticketTitles
+ .filter(ticket=>['Project Leap','Phase 1'].includes(ticket.title))
+ .map(ticket=>({id:ticket.id,reason:'The title omits invoice export'})) : [];
 if(step==='plan_check' && mode.reviseOnce && snapshot.plan.revision===2) out.findings.push({
  type:'omission',message:'A reviewer suggested extra cleanup',quotes:[{source:'design',text:'Extra cleanup'}]
 });
