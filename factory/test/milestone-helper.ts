@@ -221,8 +221,7 @@ if(step==='product_review' && snapshot.changes) {
   const diff=readFileSync(snapshot.deliveries[0].diffPath,'utf8');
   for(const addition of extra) assert.ok(diff.includes('+'+addition));
   if(!mode.productAcceptsExtra) {
-   if(mode.extrasBreakDone) out.planConformance='failed';
-   out.findings=extra.map(addition=>({check:'planConformance',type:'unrequested_addition',disposition:mode.extrasBreakDone?'blocking':'note',message:addition,
+   out.findings=extra.map(addition=>({check:'planConformance',type:'unrequested_addition',disposition:'note',message:addition,
      quotes:[{source:'delivery',text:addition}]}));
   }
  }
@@ -301,7 +300,7 @@ if(command==='run') {
  const findings=[];
  if(input.reviewer==='scope'&&!mode.technicalAcceptsExtra) {
   const additions=${JSON.stringify([unrequestedOption, unrequestedTest])}.filter(addition=>input.patch.includes('+'+addition));
-  for(const message of additions) findings.push({disposition:mode.extrasBreakDone?'blocking':'note',message});
+  for(const message of additions) findings.push({disposition:'note',message});
  }
  if(input.reviewer==='code'&&mode.technicalFailureCommits?.includes(input.commit)) {
   findings.push({disposition:'blocking',message:'Code defect on this commit'});
@@ -323,6 +322,10 @@ if(command==='run') {
  writeFileSync(root+'/review-job-'+id+'.json',JSON.stringify({job_id:id,job,prompt,output,commit:input.commit}));
  if(mode.verifyReviewRound) appendFileSync(root+'/review-events.jsonl',JSON.stringify({phase:'launch',...input})+'\\n');
  process.stdout.write(JSON.stringify({job_id:id,job_uuid:uuid,git_ref:args[3],status:'queued'}));
+} else if(command==='show' && args[0]==='--json') {
+ const verdict=mode.technicalFailureCommits?.includes(args[1])?'fail':'pass';
+ process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical verdict',created_at:${JSON.stringify(at)},
+  structured_output:{verdict},job:{id:42,git_ref:args[1],status:'done',job_type:'review'}}));
 } else {
  assert.equal(args[0],'--job');
  const raw=readFileSync(root+'/review-job-'+args[2]+'.json','utf8');

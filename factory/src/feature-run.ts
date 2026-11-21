@@ -20,7 +20,7 @@ import { planReviewAuthority, planReviewDirections, PlanRevisionSchema, planRevi
 import { BriefSpecEditsSchema, ComparisonSchema, EvidenceSchema, RefSchema, SourceRefSchema, TextSchema, type Ref } from './primitives.js';
 import { DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema, ImplementationPlanRevisionSchema,
   ProjectSchema, ProductReviewSchema, UnderstandingRevisionSchema, type Assignment, type FactoryRecord, type ProductReview, type StageRevision } from './records.js';
-import { deliveryReviewFindings, ReviewProductInputSchema, snapshotDelivery } from './product-review.js';
+import { deliveryReviewFindings, ReviewProductInputSchema } from './product-review.js';
 import { CommitSchema, PullRequestUrlSchema, ReviewTicketSchema, TicketDeliverySchema } from './review-contracts.js';
 import { reviewTicketPullRequest, ForgeTicketHeadSchema } from './ticket-review.js';
 import { repositoryIdentity } from './repository-identity.js';

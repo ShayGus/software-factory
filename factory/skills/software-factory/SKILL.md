@@ -144,8 +144,9 @@ Look up the ticket's PR using the destination repository and exact head branch, 
 Reuse any existing PR across retries.
 If none exists, verify that the ticket branch still has the recorded commit, then start its configured delivery with the original ticket intent.
 On a no-mistakes run, use the [ticket validation handoff](../../docs/one-feature-run.md#publishing-a-reviewed-ticket) from an isolated checkout of the ticket branch.
-Reuse any active run on the branch and verify the full ticket in the pipeline-opened PR before reporting delivery complete.
+Reuse any active run on the branch.
 On a direct-PR run, push the ticket branch and open its single PR through the normal FirstMate forge workflow.
+Follow the [publishing handoff](../../docs/one-feature-run.md#publishing-a-reviewed-ticket) to include and verify the PR description.
 The ticket is the sole PR owner.
 On publication or resumption, use [ticket pull request review](../../docs/one-feature-run.md#reviewing-the-published-head) to record the verified forge URL for the parent ticket and check the current head.
 Repeat on a later head before reporting readiness or attempting to merge.

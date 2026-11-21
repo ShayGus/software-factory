@@ -48,6 +48,7 @@ function checkTicketDeliveryWorker(store: ProjectStore, projectId: string, event
   const mappings = currentTaskMappings(rows).filter((mapping) => mapping.featureTaskId === event.task_id);
   const review = store.get(projectId, `${run.taskId}-aggregate-review`);
   if (review?.kind !== 'product_review' || review.outcome !== 'passed' || !review.conformance ||
+    (delivery.review && (delivery.review.id !== review.id || delivery.review.revision !== review.revision)) ||
     !mappings.length || mappings.some((mapping) => mapping.feature?.id !== review.feature?.id) ||
     !review.reviewedArtifacts.some((artifact) => artifact.revision === delivery.commit && repositoryIdentity(artifact.uri) === target) ||
     !validateReviewForCompletion(history, review).ok) throw fail();

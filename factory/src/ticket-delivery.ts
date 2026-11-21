@@ -1,24 +1,23 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { CommitSchema } from './review-contracts.js';
+import { TicketDeliverySchema } from './review-contracts.js';
 import { digestText, requiredAssignmentContext } from './instruction-context.js';
-import { planningRecord } from './planning-checks.js';
+import { planningRecord, samePlanningRef } from './planning-checks.js';
 import { deliveryReviewFindings } from './product-review.js';
 import type { FactoryRecord, ProductReview } from './records.js';
 import { parseStrictJson } from './strict-json.js';
 
 const absolute = z.string().refine(isAbsolute);
-const TicketDeliverySchema = z.object({
-  taskId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u),
-  mode: z.literal('no-mistakes'), branch: z.string(), repository: absolute, commit: CommitSchema,
+const ValidationHandoffSchema = TicketDeliverySchema.partial({ review: true }).extend({
+  taskId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u), mode: z.literal('no-mistakes'), repository: absolute,
   intentFile: absolute, intentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
-  reviewNotes: z.string().min(1).optional(),
 });
 
 export function readTicketDelivery(path: string, expectedIntentFile?: string) {
-  const delivery = TicketDeliverySchema.parse(parseStrictJson(readFileSync(path, 'utf8')));
+  const delivery = ValidationHandoffSchema.parse(parseStrictJson(readFileSync(path, 'utf8')));
   if (delivery.branch !== `fm/ticket/${delivery.taskId}`) throw new Error('Factory ticket branch does not match its ticket ID.');
   if (expectedIntentFile && realpathSync(delivery.intentFile) !== expectedIntentFile) throw new Error('Factory ticket intent is outside the reviewed run.');
   const intent = readFileSync(delivery.intentFile, 'utf8');
@@ -61,15 +60,24 @@ export function reviewedTicketIntent(records: FactoryRecord[], review: ProductRe
 
 export function reviewedTicketNotes(records: FactoryRecord[], review: ProductReview): string {
   const notes = new Set<string>();
-  let round: ProductReview | undefined = review;
-  while (round) {
-    for (const { reviewer, message, disposition } of deliveryReviewFindings(round)) {
-      if (disposition !== 'note') continue;
-      const text = message.replace(/\s+/gu, ' ').trim().replace(/[&<>@]/gu, (char) => `&#${char.charCodeAt(0)};`);
-      notes.add(`- **${reviewer}** ${text}`);
+  const slices = records.filter((record): record is ProductReview => record.kind === 'product_review' &&
+    record.id !== review.id && record.conformance?.deliveries?.length === 1 &&
+    isDeepStrictEqual(record.conformance.currentTicket, review.conformance?.currentTicket) &&
+    review.conformance?.deliveries?.some((delivery) => {
+      const slice = record.conformance!.deliveries![0]!;
+      return samePlanningRef(delivery.assignment, slice.assignment) && isDeepStrictEqual(delivery.artifact, slice.artifact);
+    }) === true);
+  for (const last of [review, ...slices]) {
+    let round: ProductReview | undefined = last;
+    while (round) {
+      for (const { reviewer, message, disposition } of deliveryReviewFindings(round)) {
+        if (disposition !== 'note') continue;
+        const text = message.replace(/\s+/gu, ' ').trim().replace(/[&<>@]/gu, (char) => `&#${char.charCodeAt(0)};`);
+        notes.add(`- **${reviewer}** ${text}`);
+      }
+      const previous: FactoryRecord | undefined = round.conformance?.previousRound && planningRecord(records, round.conformance.previousRound);
+      round = previous?.kind === 'product_review' && previous.id === round.id && previous.revision < round.revision ? previous : undefined;
     }
-    const previous: FactoryRecord | undefined = round.conformance?.previousRound && planningRecord(records, round.conformance.previousRound);
-    round = previous?.kind === 'product_review' && previous.id === round.id && previous.revision < round.revision ? previous : undefined;
   }
   return notes.size ? `## Factory review notes\n\n${[...notes].join('\n')}` : '';
 }

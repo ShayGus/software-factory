@@ -440,7 +440,7 @@ appendFileSync(${JSON.stringify(sent)},JSON.stringify({target:process.argv[2],me
       ['product', 'blocking', 'ERPNext only violates original generality'], ['product', 'blocking', 'ERPNext only violates original generality'],
     ]);
     const previousCommit = awaiting.review.reviewedArtifacts[0].revision;
-    flow.mode({ returnRevision: 2, verifyReviewRound: true, previousCommit });
+    flow.mode({ returnRevision: 2, verifyReviewRound: true, previousCommit, productNote: true });
     execFileSync(flow.returnWorker, [config.taskId]);
     const revised = runFeature(config, 'review') as any;
     assert.equal(revised.review.outcome, 'passed');
@@ -448,6 +448,7 @@ appendFileSync(${JSON.stringify(sent)},JSON.stringify({target:process.argv[2],me
     const revisedCommit = revised.review.reviewedArtifacts[0].revision;
     assert.notEqual(revisedCommit, previousCommit);
     assert.equal(revised.review.conformance.verdict.criteria.length, 2);
+    assert.equal(revised.review.conformance.verdict.findings[0].disposition, 'note');
     const events = readFileSync(join(flow.root, 'review-events.jsonl'), 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
     for (const commit of [previousCommit, revisedCommit]) {
       assert.deepEqual(events.filter((event) => event.commit === commit).map((event) => event.phase),

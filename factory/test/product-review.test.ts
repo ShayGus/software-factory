@@ -304,7 +304,7 @@ test('ordinary RoboRev reads still use only show --json for the delivered commit
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('CLI persists an incomplete review and exits nonzero when an existing quality result is missing', () => {
+test('CLI persists an incomplete review and exits nonzero when quality reviewers are unavailable', () => {
   const flow = setup();
   try {
     const config = fakeJudgeOptions({ result: JSON.stringify(passing()) });

@@ -1075,7 +1075,7 @@ Every check launches a separate one-shot process with directions and a frozen ev
 The default timeout is two minutes.
 The CLI returns its final JSON verdict on stdout and sends progress to stderr.
 Instruction checking makes one agent call per check.
-Product review uses the same isolated agent runner and reads existing RoboRev evidence as described below.
+Product review uses the same isolated agent runner alongside the Factory's RoboRev reviewers.
 
 The result follows `fixtures/instruction-judge.schema.json`:
 
@@ -1293,22 +1293,24 @@ The product reviewer reads the frozen package through the shared one-shot runner
 An accomplished outcome requires committed-code evidence from a delivery assigned to that criterion.
 Every assigned criterion, including optional criteria, must have a worker return before the review can pass.
 Unavailable agents, timeouts, malformed output, uncertain behavior, missing worker evidence, missing baseline evidence or unavailable quality results leave the review incomplete.
-A failed product comparison or technical verdict records a failed review.
+A blocking product, code, or scope finding records a failed review.
 A passing review requires passing original-source, instruction-fidelity and plan-conformance comparisons, accomplished assigned behavior, and the existing completion rules for required criteria, baseline and improvement evidence.
 
 `readRoborevResult` invokes only `roborev show --json <full-commit-SHA>` in the supplied repository.
 The adapter follows the inspected `roborev v0.74.0-fmpatch.1` response: review `job_id`, raw output and `structured_output`, plus nested `job.id`, `job.git_ref`, `job.status` and `job.job_type`.
 Only completed review jobs for that exact commit are accepted.
 The structured technical verdict is retained; a missing verdict is uncertain, and a closed review does not imply a pass.
-The Factory review also submits the pinned diff and confirmed definition of done as a read-only RoboRev scope review.
-That result must name each unrequested addition and fails the delivery when any are found.
-Factory binds the returned job to the exact submitted prompt and reuses a definitive scoped result only for that same prompt.
-An explicit advisory acceptance can satisfy a failed code or scope job when it covers every finding for the exact delivery.
-The original job verdict and evidence remain in the review record.
-The ordinary result reader still only reads the existing commit review.
-A definitive exact-commit quality result already retained by an earlier product review is reused, including when that product review failed.
-An uncertain cached quality result is refreshed on a new review operation, preserving the original uncertain review and receipt replay.
-A changed delivered commit reads its own quality result.
+The Factory starts read-only RoboRev code and scope jobs against the same pinned commits and confirmed definition of done, then runs product review while those jobs execute.
+Code review covers correctness and security, scope review checks the confirmed ticket, and product review checks the delivered behavior.
+Factory collects all three results before sending the builder one list for the delivery.
+Each finding is blocking or a note.
+Blockers identify a concrete bug, a security problem, or a violated line of the confirmed definition of done.
+A notes-only review passes when the required evidence is complete, and the ticket's pull request carries the notes.
+A follow-up under the same ticket and assignments gives each reviewer its own earlier findings and the diff from its previously reviewed commit.
+Factory retains prior product criterion outcomes when their committed evidence still supports them.
+The original review evidence remains in the review record.
+Factory binds each RoboRev result to its exact submitted prompt and reuses definitive results only for that same prompt and artifact.
+Unavailable or uncertain reviewer results remain incomplete and can be reviewed again in a new operation.
 
 The product review persists its input digest, unique reviewer session, selected profile, committed file snapshots, raw technical evidence and per-criterion accomplished/failed/uncertain verdicts in the existing review record.
 Original source, design, plan, task and worker returns remain available through their exact historical references.

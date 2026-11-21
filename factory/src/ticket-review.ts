@@ -44,16 +44,17 @@ function hasCommit(repository: string, commit: string) {
   return result.status === 0 && result.stdout.toString().trim() === commit;
 }
 
-function ancestor(repository: string, base: string, head: string) {
-  const result = git(repository, 'merge-base', '--is-ancestor', base, head);
+export function isReviewedAncestor(repository: string, base: string, head: string) {
+  const result = git(repository, 'merge-base', '--is-ancestor', CommitSchema.parse(base), CommitSchema.parse(head));
   if (result.status > 1) throw new Error('ticket_commit_history_unavailable');
   return result.status === 0;
 }
 
-function patchBetween(repository: string, from: string, head: string) {
+export function patchBetween(repository: string, from: string, head: string, context?: number) {
   const diff = git(repository, '-c', 'diff.noprefix=false', 'diff', '--patch', '--binary', '--full-index',
     '--find-renames', '-l0', '--no-ext-diff', '--no-textconv', '--no-color', '--ignore-submodules=none',
-    '--no-relative', '--submodule=short', '--src-prefix=a/', '--dst-prefix=b/', from, head, '--');
+    ...(context === undefined ? [] : [`--unified=${context}`]),
+    '--no-relative', '--submodule=short', '--src-prefix=a/', '--dst-prefix=b/', CommitSchema.parse(from), CommitSchema.parse(head), '--');
   if (diff.status !== 0 || diff.stderr.length || !isUtf8(diff.stdout)) throw new Error('ticket_patch_unavailable');
   const patch = diff.stdout.toString('utf8');
   return TicketPatchSchema.parse({ patch, digest: digestText(patch) });
@@ -64,9 +65,9 @@ function reviewTicket(review: ProductReview) {
 }
 
 function nearestBaseline(repository: string, head: string, candidates: { review: ProductReview; commit: string }[]) {
-  const ancestors = candidates.filter(({ commit }) => hasCommit(repository, commit) && ancestor(repository, commit, head));
+  const ancestors = candidates.filter(({ commit }) => hasCommit(repository, commit) && isReviewedAncestor(repository, commit, head));
   const nearest = ancestors.filter(({ commit }) => !ancestors.some((other) => other.commit !== commit &&
-    ancestor(repository, commit, other.commit)));
+    isReviewedAncestor(repository, commit, other.commit)));
   // In a merge DAG, several incomparable reviewed ancestors can be eligible.
   // Pick the one with the smallest remaining ancestry range, then the newest pass.
   return nearest.map((candidate) => {
@@ -116,7 +117,7 @@ function bindPublication(store: ProjectStore, projectId: string, delivery: Ticke
     throw new Error('passing_ticket_delivery_review_required');
   }
   const initialBaseline = hasCommit(gitRepository, delivery.commit) && hasCommit(gitRepository, target.head) &&
-    ancestor(gitRepository, delivery.commit, target.head);
+    isReviewedAncestor(gitRepository, delivery.commit, target.head);
   const publication = TicketPublicationSchema.parse({ kind: 'ticket_publication', id, projectId, schemaVersion: 1,
     revision: 1, createdAt: at, updatedAt: at, ticketId: delivery.taskId, repository, prUrl: target.url, sourceBranch: target.sourceBranch,
     aggregateReview: delivery.review, reviewedCommit: delivery.commit, firstObservedHead: target.head,

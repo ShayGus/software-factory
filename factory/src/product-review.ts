@@ -25,6 +25,7 @@ import { parseStrictJson } from './strict-json.js';
 import { currentTaskMappings } from './task-readiness.js';
 import { readFeatureReviewTicket, type TaskAdapterOptions } from './tasks.js';
 import { assertFactoryReviewHeads } from './factory-locks.js';
+import { isReviewedAncestor, patchBetween } from './ticket-review.js';
 
 const DeliveryInputSchema = ReviewDeliveryTargetSchema.extend({
   repository: z.string().refine(isAbsolute, 'Repository must be absolute'),
@@ -274,19 +275,18 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
     const candidate = prior?.repository === resolve(delivery.repository) && prior.artifact.uri === delivery.deliveredArtifact.uri ?
       prior.artifact.revision : undefined;
     const priorCommit = candidate && CommitSchema.safeParse(candidate).success &&
-      spawnSync('git', ['-C', delivery.repository, 'merge-base', '--is-ancestor', candidate, commit], {
-        timeout: 15_000, killSignal: 'SIGKILL', stdio: 'ignore',
-      }).status === 0 ? candidate : undefined;
-    const diff = (from?: string, delta = false) => git(delivery.repository, [...(from ? ['diff', from, commit] :
-      ['show', '--format=', '--root', '--diff-merges=first-parent', commit]), ...(delta ? ['--unified=0'] : []),
+      isReviewedAncestor(delivery.repository, candidate, commit) ? candidate : undefined;
+    const diff = (from?: string) => git(delivery.repository, [...(from ? ['diff', from, commit] :
+      ['show', '--format=', '--root', '--diff-merges=first-parent', commit]),
       '--no-ext-diff', '--no-textconv', '--no-color', '--']).toString('utf8');
+    const fixPatch = priorCommit ? patchBetween(delivery.repository, priorCommit, commit, 0).patch : undefined;
     const priorQuality = priorCommit ? (prior?.technicalReviewIndexes ?? []).flatMap((qualityIndex) =>
       previousProof?.technicalReviews[qualityIndex] ?? []).filter((result) => result.commit === priorCommit && result.verdict !== 'uncertain') : [];
-    return { confirmedDefinitionOfDone, priorCommit, priorQuality, diff };
+    return { confirmedDefinitionOfDone, priorCommit, priorQuality, fullPatch: diff(baselineCommit), fixPatch };
   });
   const relatedRound = changes.every(({ priorCommit }) => priorCommit);
   const priorProduct = relatedRound ? previousProof?.verdict ?? undefined : undefined;
-  const patches = changes.map(({ diff, priorCommit }) => priorProduct ? diff(priorCommit, true) : diff(baselineCommit));
+  const patches = changes.map(({ fullPatch, fixPatch }) => priorProduct ? fixPatch! : fullPatch);
   const deliveryEvidence: DeliveryEvidence[] = deliveryInputs.map((delivery) => ({
     assignment: delivery.assignment, deliveredArtifact: delivery.deliveredArtifact,
     deliveredFiles: snapshotDelivery(delivery.repository, delivery.deliveredArtifact, delivery.paths, sourceBudget, baselineCommit),
@@ -320,11 +320,11 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
     if (readQuality) return [enqueue(identity, () => () =>
       cached.filter((result) => !result.scopeDigest).at(-1) ??
       QualityResultSchema.parse(readQuality(delivery.repository, commit, data.issuedAt)))];
-    const { confirmedDefinitionOfDone, priorCommit, priorQuality, diff } = changes[index]!;
+    const { confirmedDefinitionOfDone, priorCommit, priorQuality, fullPatch, fixPatch } = changes[index]!;
     return (['code', 'scope'] as const).map((reviewer) => {
       const prior = priorQuality.find((result) => result.reviewer === reviewer);
       const prompt = roborevReviewPrompt(reviewer, commit, confirmedDefinitionOfDone,
-        prior ? diff(priorCommit, true) : diff(baselineCommit), currentTicket,
+        prior ? fixPatch! : fullPatch, currentTicket,
         prior && priorCommit ? { commit: priorCommit, findings: qualityFindings(prior) } : undefined);
       const scopeDigest = digestText(prompt);
       const saved = cached.filter((result) => result.reviewer === reviewer && result.scopeDigest === scopeDigest).at(-1);

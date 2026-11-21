@@ -271,8 +271,8 @@ The [factory skill](../skills/software-factory/SKILL.md) owns publishing the tic
 Whole-feature completeness is separate from any single task's delivery eligibility.
 A per-task pass does not replace this final integration review.
 No phase polls workers, changes native completion state, installs hooks or adds a scheduling service.
-Review phases run the [Factory scope review](../README.md#plan-based-product-review---build-10) alongside the existing technical review evidence.
-Each plan, code and product scope review reads the current Beads ticket body when it contains owner scope.
+Review phases run the [Factory builder reviews](../README.md#plan-based-product-review---build-10).
+Each reviewer uses the current Beads ticket body when it contains owner scope.
 The next delivery review uses changes to that body even when the plan, commit and worker return are unchanged.
 For a chat-originated ticket that still has only its Factory marker, the captured request supplies the scope.
 
@@ -287,7 +287,9 @@ From the isolated checkout at the reviewed ticket head, use `node /absolute/soft
 The helper passes the complete captured ticket to no-mistakes through `--intent-file`, and the pipeline owns opening the PR.
 Reattach to an active run through the ordinary driver and keep its original intent.
 Read the full body of the pipeline-opened PR from the forge and pipe the raw Markdown into `node /absolute/software-factory/factory/scripts/ticket-validation.mjs check-pr /absolute/ticket-delivery.json`.
-Delivery needs the full Intent section, so an omitted, shortened or otherwise incomplete ticket leaves the verification incomplete under the repository's existing publication settings.
+If the handoff contains `reviewNotes`, use the helper's `pr-body` action with the full PR body on stdin after the final pipeline update, save the output as the PR body, and verify it with `check-pr`.
+For direct-PR delivery, include the handoff's `reviewNotes` section in the PR body.
+The no-mistakes delivery verification requires the full Intent section and any review notes.
 
 ### Reviewing the published head
 

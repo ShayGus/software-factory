@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -83,7 +83,9 @@ test('managed reviews refuse a stale return and resume once the builder returns 
     const oldHead = JSON.parse(original).deliveredArtifact.revision as string;
     assert.equal((runFeature(config, 'review', taskId) as any).taskOutcome, 'passed');
     const before = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
-    const originalScope = readFileSync(join(flow.root, 'scope-review.json'), 'utf8');
+    const reviewJobs = () => readdirSync(flow.root).filter((file) => /^review-job-\d+\.json$/u.test(file)).sort();
+    const originalJobs = reviewJobs();
+    assert.equal(originalJobs.length, 2);
     flow.mode({ returnRevision: 2 });
     execFileSync(flow.returnWorker, [taskId]);
     const refreshed = readFileSync(path, 'utf8');
@@ -99,7 +101,7 @@ test('managed reviews refuse a stale return and resume once the builder returns 
     assert.equal(cli.status, 1);
     assert.match(cli.stderr, stale);
     assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), before);
-    assert.equal(readFileSync(join(flow.root, 'scope-review.json'), 'utf8'), originalScope);
+    assert.deepEqual(reviewJobs(), originalJobs);
     assert.equal(existsSync(join(config.runDirectory, 'review-all.started')), false);
     writeFileSync(path, refreshed);
     const reviewed = runFeature(config, 'review', taskId) as any;
@@ -226,7 +228,8 @@ test('two dependent tasks stay held until producer evidence, then both receive o
     const files = JSON.parse(calls.at(-1).prompt.trimEnd().split('\n').at(-1));
     const aggregate = JSON.parse(readFileSync(files.evidence, 'utf8'));
     assert.equal(aggregate.deliveries.length, 2);
-    assert.equal(aggregate.technicalReviews.length, 4);
+    assert.deepEqual(aggregate.technicalReviews, [], 'Product review runs independently of code and scope verdicts');
+    assert.equal(final.review.conformance.technicalReviews.length, 4);
     assert.equal(aggregate.assignedCriteria.length, 2);
   } finally { flow.close(); }
 });
@@ -243,6 +246,7 @@ for (const existingTicket of [false, true]) test(`a publishing run gives both su
   config.firstMate.briefExecutable = join(factory, '../bin/fm-brief.sh');
   const git = (...args: string[]) => execFileSync('git', ['-C', config.repository, ...args], { encoding: 'utf8' }).trim();
   try {
+    flow.mode({ codeNote: true, scopeNote: true, productNote: true });
     if (parentId) {
       flow.wrapper.edit(state => { state.tasks[parentId] = fakeTask(parentId, { kind: 'feature', body: ticket }); });
       const store = new ProjectStore(config.database);
@@ -304,7 +308,6 @@ for (const existingTicket of [false, true]) test(`a publishing run gives both su
     assert.equal(existsSync(join(config.runDirectory, 'ticket-delivery.json')), false);
     git('update-ref', localRef, finalCommit, firstCommit);
     writeFileSync(config.requestFile, 'A mutable replacement cannot become the published ticket.');
-    flow.mode({ codeNote: true, scopeNote: true, productNote: true });
     const result = runFeature(config, 'review-all') as any;
     assert.equal(result.review.outcome, 'passed');
     const deliveryPath = join(config.runDirectory, 'ticket-delivery.json');
@@ -711,10 +714,11 @@ for (const state of ['resolved', 'open-product', 'open-technical']) test(`unders
     if (open) outputs.design.records[0].unresolvedQuestions = [decision.questionOrChange];
     flow.save(outputsPath, outputs);
     if (product) {
-      assert.throws(() => runFeature(config, 'plan'), /check-plan_failed/);
-      const check = JSON.parse(readFileSync(join(config.runDirectory, 'check-plan.stdout'), 'utf8'));
-      assert.ok(check.check.findings.some((finding: any) => finding.code === 'unresolved_product_decision'));
+      assert.throws(() => runFeature(config, 'plan'), /ticket_awaiting_owner: understanding-decision@1/);
+      assert.ok(existsSync(join(config.runDirectory, 'understand.stdout')));
+      assert.equal(existsSync(join(config.runDirectory, 'design.stdout')), false);
       assert.equal(flow.wrapper.read().calls.length, 0);
+      return;
     } else {
       const planned = runFeature(config, 'plan') as any;
       assert.equal(planned.tasks.length, 1);

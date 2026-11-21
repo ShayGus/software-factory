@@ -98,6 +98,7 @@ export const PullRequestUrlSchema = z.string().regex(
 export const TicketDeliverySchema = z.object({
   taskId: IdSchema, branch: TextSchema, mode: z.enum(['no-mistakes', 'direct-PR']),
   repository: TextSchema, repositoryIdentity: TextSchema.optional(), commit: CommitSchema, review: RefSchema,
+  reviewNotes: TextSchema.optional(),
 });
 
 export const TicketPatchSchema = z.strictObject({

@@ -409,6 +409,14 @@ function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' |
         ctx.add(review, 'reused_review_mismatch', 'conformance.reusedProductReview', 'Reused product judgment must retain its exact earlier scope and verdict');
       }
     }
+    if (proof.previousRound) {
+      const previous = ctx.get(review, proof.previousRound, 'product_review', 'conformance.previousRound');
+      if (!previous?.conformance || previous.id !== review.id || previous.revision !== review.revision - 1 ||
+        canonical(previous.assignments) !== canonical(review.assignments) ||
+        canonical(previous.conformance.currentTicket ?? null) !== canonical(proof.currentTicket ?? null)) {
+        ctx.add(review, 'previous_round_mismatch', 'conformance.previousRound', 'Follow-up review must keep the prior assignment and ticket scope');
+      }
+    }
     for (const assignmentRef of review.assignments) {
       const assignment = ctx.index.get(key(assignmentRef));
       if (assignment?.kind !== 'assignment') continue;
@@ -436,7 +444,16 @@ function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' |
         ctx.add(review, 'missing_delivery_provenance', 'conformance.deliveries', 'Every reviewed assignment needs exactly one delivery provenance entry');
       }
     }
+    const roundQuality = proof.technicalReviews.some((result) => result.reviewer !== undefined);
+    if (roundQuality && !proof.deliveries?.length) {
+      ctx.add(review, 'missing_delivery_provenance', 'conformance.deliveries', 'Review round evidence requires exact delivery provenance');
+    }
     for (const delivery of proof.deliveries ?? []) {
+      const quality = delivery.technicalReviewIndexes?.map((index) => proof.technicalReviews[index]);
+      if (roundQuality && !(['code', 'scope'] as const).every((reviewer) =>
+        quality?.some((result) => result?.reviewer === reviewer && result.commit === delivery.artifact.revision))) {
+        ctx.add(review, 'missing_quality_evidence', 'conformance.technicalReviews', 'Code and scope review must both cover the delivered commit');
+      }
       const assignment = ctx.index.get(key(delivery.assignment));
       if (assignment?.kind !== 'assignment' || !sameRef(assignment.detailedPlanTask, delivery.detailedPlanTask) ||
         delivery.fileArtifacts.some((artifact) => artifact.revision !== delivery.artifact.revision ||
