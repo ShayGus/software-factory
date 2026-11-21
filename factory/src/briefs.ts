@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { outstandingTaskCorrections, unresolvedTaskCorrections } from './correction-state.js';
 import { PrepareAssignmentCommandSchema } from './commands.js';
 import { ref } from './intake.js';
-import { ArtifactSchema, BriefSpecEditsSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
+import { ArtifactSchema, BriefSpecEditsSchema, IdSchema, ProjectRuleFilesSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
 import { AssignmentSchema, DetailedPlanTaskSchema, type Assignment, type FactoryRecord } from './records.js';
 import { planningRecord } from './planning-checks.js';
 import { assignmentCriteria, digestText, recordSource, requiredAssignmentContext,
@@ -29,6 +29,7 @@ export const PrepareWorkerBriefInputSchema = z.strictObject({
   returnLocation: TextSchema, briefPath: TextSchema, sidecarPath: TextSchema.optional(), scaffoldPath: TextSchema.optional(),
   contextLayout: z.literal('sidecar').optional(),
   specEdits: BriefSpecEditsSchema.optional(),
+  ruleFiles: ProjectRuleFilesSchema.optional(),
   unstartedOperationId: IdSchema.optional(),
   maxSourceChars: z.number().int().positive().default(16_000),
   // Local snapshots of sources whose original URI cannot be read offline. Range
@@ -126,6 +127,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
         scaffoldPath: data.scaffoldPath === undefined ? undefined : resolve(data.scaffoldPath),
         contextLayout: data.contextLayout,
         specEdits: data.specEdits,
+        ruleFiles: data.ruleFiles,
         unstartedOperationId: data.unstartedOperationId,
         maxSourceChars: data.maxSourceChars, sourceFiles: data.sourceFiles.map((entry) => ({ ...entry, path: resolve(entry.path) })) } } };
     if (commandDigest(replay) !== commandDigest(original)) throw new StoreError('conflict', 'idempotency_conflict');
@@ -184,7 +186,8 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
     } : {}),
     instructionText: 'Preparation in progress', instructionFidelity: { result: 'untested', sourceRefs: [recordSource(task)],
       findings: [], reviewerSession: 'factory:structural-instruction-checks', comparedAt: data.issuedAt },
-    brief: { path: briefPath, sidecarPath, scaffold, contextLayout: data.contextLayout, specEdits: data.specEdits, sidecarDigest: 'pending' },
+    brief: { path: briefPath, sidecarPath, scaffold, contextLayout: data.contextLayout, specEdits: data.specEdits,
+      ruleFiles: data.ruleFiles, sidecarDigest: 'pending' },
   });
   const selection = selectAssignmentContext(records, assignment, (source, artifact) => {
     const file = artifact ? sourceFiles.find((entry) => sameSource(entry.source, source) && entry.artifact &&
@@ -228,6 +231,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
       generation: { attemptId: assignment.attemptId, briefPath, sidecarPath, scaffold, ...(scaffoldPath ? { scaffoldPath } : {}),
         contextLayout: data.contextLayout,
         specEdits: data.specEdits,
+        ruleFiles: data.ruleFiles,
         unstartedOperationId: data.unstartedOperationId,
         maxSourceChars: data.maxSourceChars, sourceFiles } },
   });

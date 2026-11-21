@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { stepAgentCommand, type ExecutedAgentStep } from './agent-profiles.js';
+import { projectRuleDirections, stepAgentCommand, type ExecutedAgentStep } from './agent-profiles.js';
 
 export type PlanningSession = { cwd: string; id?: string };
 
@@ -83,7 +83,7 @@ export function runStepAgent(config: unknown, projectId: string, step: ExecutedA
     return { stdout, profile: command.profile, ...(sessionId ? { sessionId } : {}) };
   };
   writeFileSync(evidence, JSON.stringify(input.evidence, null, 2) + '\n');
-  const prompt = directions.trimEnd() + '\nRead the evidence JSON at the absolute path below using read-only tools.\n' +
+  const prompt = projectRuleDirections(command.ruleFiles) + directions.trimEnd() + '\nRead the evidence JSON at the absolute path below using read-only tools.\n' +
     JSON.stringify({ evidence, runDirectory: runDirectory ?? directory, requestFile, repositories }) + '\n';
   const markers = new Set(['CLAUDECODE', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID']);
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
