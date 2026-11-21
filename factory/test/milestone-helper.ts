@@ -139,7 +139,7 @@ if(step==='instruction_check') {
 if(step==='product_review') {
  if(mode.publishReturnDuringReview) copyFileSync(mode.publishReturnDuringReview.source,mode.publishReturnDuringReview.path);
  assert.equal(snapshot.originalRequests[0].text,${JSON.stringify(original)});
- assert.equal(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').text,mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)});
+ assert.equal(readFileSync(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').snapshotPath,'utf8'),mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)});
  const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};
  out={sourceComparison:'passed',instructionFidelity:mode.badDelivery?'failed':'passed',planConformance:mode.badDelivery?'failed':'passed',
  criteria:snapshot.assignedCriteria.map((criterion,i)=>({criterion,state:mode.badDelivery&&i===1?'failed':'accomplished',behavior:'Common interface behavior',quotes:[{source:'delivery',text:code.trim()}],limitations:[]})),

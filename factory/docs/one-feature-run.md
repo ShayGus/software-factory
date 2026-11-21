@@ -143,6 +143,8 @@ A start precheck refusal can reprepare the brief and retry the same start operat
 An ambiguous launch still requires runtime reconciliation.
 A failed product review with attributable findings sends them to the original worker through its verified FirstMate inbox.
 Review reports `awaiting_worker_revision` while it waits for a new commit or revised criterion evidence, then checks the new delivery on the next return wake.
+Product reviewers open frozen commit snapshots by path from the evidence manifest.
+Preparing a dependent task requires current review evidence for the exact producer delivery before brief preparation or repair starts.
 
 Bootstrap does not read agent settings or require hook installation. It retains
 `bootstrap-project-input.json`, `bootstrap.stdout` and `bootstrap.stderr` under

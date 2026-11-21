@@ -90,6 +90,10 @@ test('two dependent tasks stay held until producer evidence, then both receive o
       assert.ok(taskReadinessReasons(records, mapping).some((reason) => reason.includes('Product prerequisite not met')));
     } finally { store.close(); }
     runFeature(config, 'prepare-task', producer); runFeature(config, 'start', producer);
+    const callsBefore = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    assert.throws(() => runFeature(config, 'prepare-task', consumer), /review the producer first/);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), callsBefore);
+    assert.equal(existsSync(join(config.runDirectory, 'tasks', consumer, 'prepare-task.started')), false);
     const producerReview = runFeature(config, 'review', producer) as any;
     assert.equal(producerReview.review.outcome, 'incomplete');
     assert.equal(producerReview.taskOutcome, 'passed');

@@ -59,7 +59,7 @@ function setup(code = goodCode, edit?: (records: FactoryRecord[]) => void) {
     qualityReads++; return parseRoborevResult(qualityRaw(sha), sha, observedAt);
   };
   const run = (verdict: ProductVerdict, options: { record?: string; result?: string; exit?: string; sleep?: string } = {}) =>
-    reviewProduct(store, input, fakeJudgeOptions({ result: JSON.stringify(verdict), ...options }), reader);
+    reviewProduct(store, input, fakeJudgeOptions({ result: JSON.stringify(verdict), ...options }), reader, directory);
   return { directory, db, records, store, input, reader, run, git, commit, qualityReads: () => qualityReads,
     close: () => { store.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
@@ -82,7 +82,8 @@ test('decisive case: perfect compliance with the ERPNext brief and green technic
     assert.equal(input.candidateInstructions, 'Implement feature X only for ERPNext.');
     assert.deepEqual(input.acceptanceCases, ['ERPNext case', 'Second-system case']);
     assert.equal(input.deliveredArtifact.revision, flow.commit);
-    assert.equal(input.deliveredFiles[0].text, badCode);
+    assert.equal(input.deliveredFiles[0].text, undefined);
+    assert.equal(readFileSync(input.deliveredFiles[0].snapshotPath, 'utf8'), badCode);
     assert.equal(input.workerReturns.length, 2);
     assert.equal(input.technicalReviews[0].commit, flow.commit);
     assert.notEqual(input.agentPid, process.pid); assert.deepEqual(input.inheritedSessionMarkers, []);
@@ -584,18 +585,19 @@ test('quality cache isolates repositories and artifacts even at the same commit'
   } finally { flow.close(); rmSync(other, { recursive: true, force: true }); }
 });
 
-test('large source within both limits is serialized once and reaches the reviewer', () => {
-  const code = goodCode + '// ' + 'x'.repeat(800_000);
+test('large committed source is read through the manifest without appearing in the review JSON', () => {
+  const code = goodCode + '// ' + 'x'.repeat(1_600_000);
   const flow = setup(code);
   try {
     const calls = join(flow.directory, 'large-review.jsonl');
-    const result = reviewProduct(flow.store, { ...flow.input, maxSourceChars: 1_000_000 },
-      fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) }), flow.reader);
+    const result = reviewProduct(flow.store, flow.input,
+      fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) }), flow.reader, flow.directory);
     assert.equal(result.review.outcome, 'passed');
     const serialized = readFileSync(calls, 'utf8');
-    assert.equal(serialized.split('x'.repeat(800_000)).length - 1, 1);
+    assert.equal(serialized.includes('x'.repeat(512)), false);
     const snapshot = JSON.parse(serialized);
-    assert.equal(snapshot.deliveredFiles[0].text, code);
+    assert.equal(readFileSync(snapshot.deliveredFiles[0].snapshotPath, 'utf8'), code);
+    assert.equal(result.review.conformance?.deliveredFiles[0]?.text, code);
   } finally { flow.close(); }
 });
 
