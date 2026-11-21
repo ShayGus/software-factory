@@ -32,10 +32,12 @@ export const PAYLOAD_IGNORE = `INSERT INTO dolt_ignore(pattern,ignored) VALUES (
   ON DUPLICATE KEY UPDATE ignored=true`;
 
 /** One CALL is one transaction, including multi-record logical prune. */
-export const APPLY_ROUTINE = `CREATE PROCEDURE tasks_axi_apply_v2(IN payload JSON)
+export const APPLY_NAME = "tasks_axi_apply_v3";
+export const APPLY_ROUTINE = `CREATE PROCEDURE ${APPLY_NAME}(IN payload JSON)
 BEGIN
   DECLARE entry_index INT DEFAULT 0;
   DECLARE entry_count INT;
+  DECLARE labels_changed BOOLEAN DEFAULT FALSE;
   DECLARE EXIT HANDLER FOR SQLEXCEPTION
   BEGIN
     ROLLBACK;
@@ -83,6 +85,11 @@ BEGIN
         COALESCE(JSON_EXTRACT(@tasks_axi_ns,'$.task.priority'),2),'task','tasks-axi',
         JSON_OBJECT('tasks_axi',@tasks_axi_ns),
         IF(JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_entry,'$.status'))='closed',CURRENT_TIMESTAMP,NULL));
+      IF JSON_EXTRACT(@tasks_axi_entry,'$.projectLabel') IS NOT NULL THEN
+        INSERT INTO labels (issue_id,label)
+          VALUES (@tasks_axi_id,JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_entry,'$.projectLabel')));
+        SET labels_changed=TRUE;
+      END IF;
     ELSE
       IF NOT EXISTS(SELECT 1 FROM issues i WHERE i.id=@tasks_axi_id
         AND ${TOKEN}=JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_entry,'$.token'))) THEN
@@ -108,6 +115,10 @@ BEGIN
         SELECT UUID(),i.id,@tasks_axi_mode,JSON_OBJECT('title',i.title,'body',i.description,
           'status',i.status,'metadata',i.metadata,'edges',${EDGES}) FROM issues i WHERE i.id=@tasks_axi_id;
       IF @tasks_axi_mode='remove' THEN
+        IF EXISTS(SELECT 1 FROM labels WHERE issue_id=@tasks_axi_id) THEN
+          DELETE FROM labels WHERE issue_id=@tasks_axi_id;
+          SET labels_changed=TRUE;
+        END IF;
         DELETE FROM issues WHERE id=@tasks_axi_id;
       ELSE
         UPDATE issues SET title=JSON_UNQUOTE(JSON_EXTRACT(@tasks_axi_ns,'$.task.title')),
@@ -156,6 +167,9 @@ BEGIN
     DELETE FROM tasks_axi_payload_v1 WHERE request_id=@tasks_axi_request;
   END IF;
   CALL DOLT_ADD('issues','dependencies','events','tasks_axi_history_v1');
+  IF labels_changed THEN
+    CALL DOLT_ADD('labels');
+  END IF;
   CALL DOLT_COMMIT('-m',CONCAT('tasks-axi ',@tasks_axi_mode),'--author','tasks-axi <tasks-axi@localhost>');
   COMMIT;
 END`;

@@ -26,6 +26,7 @@ import type {
 import { deriveLinks, extractTags, leadingKind } from "./markdown-grammar.js";
 import { BeadsTransport } from "./beads-transport.js";
 import {
+  APPLY_NAME,
   APPLY_ROUTINE,
   HISTORY_TABLE,
   PAYLOAD_TABLE,
@@ -383,7 +384,7 @@ export class BeadsStore implements Store {
     const inspect = () =>
       this.transport.json([
         "sql",
-        "SELECT create_stmt FROM dolt_procedures WHERE name='tasks_axi_apply_v2'",
+        `SELECT create_stmt FROM dolt_procedures WHERE name='${APPLY_NAME}'`,
       ]);
     const rows = await inspect();
     if (!Array.isArray(rows)) fail("Unsupported Dolt procedure schema");
@@ -401,7 +402,7 @@ export class BeadsStore implements Store {
       installed[0]?.create_stmt !== APPLY_ROUTINE
     ) {
       throw unsupported(
-        "installed tasks_axi_apply_v2 routine revision; provision a matching scratch-verified schema",
+        `installed ${APPLY_NAME} routine revision; provision a matching scratch-verified schema`,
         "beads",
       );
     }
@@ -435,6 +436,8 @@ export class BeadsStore implements Store {
       token: record?.row.token,
       namespace,
       expectedTask: task,
+      projectLabel:
+        mode === "create" && task.repo ? `project:${task.repo}` : undefined,
       status:
         record && mode !== "transition"
           ? record.row.status
@@ -471,7 +474,7 @@ export class BeadsStore implements Store {
         }
         await this.transport.json([
           "sql",
-          `CALL tasks_axi_apply_v2(${sqlString(JSON.stringify({ request_id: request }))})`,
+          `CALL ${APPLY_NAME}(${sqlString(JSON.stringify({ request_id: request }))})`,
         ]);
       } catch (error) {
         try {
@@ -487,7 +490,7 @@ export class BeadsStore implements Store {
     } else
       await this.transport.json([
         "sql",
-        `CALL tasks_axi_apply_v2(${sqlString(payload.toString("utf8"))})`,
+        `CALL ${APPLY_NAME}(${sqlString(payload.toString("utf8"))})`,
       ]);
     // A lost/conflicting response is never inferred successful from an exit code alone.
     for (const entry of entries) {
@@ -497,7 +500,11 @@ export class BeadsStore implements Store {
           ? found !== undefined
           : !found ||
             found.namespace.revision !== entry.namespace.revision ||
-            !same(found.task, entry.expectedTask)
+            !same(found.task, entry.expectedTask) ||
+            (entry.projectLabel !== undefined &&
+              !(jsonValue(found.row.labels) as string[]).includes(
+                entry.projectLabel,
+              ))
       ) {
         throw new AxiError(
           "Beads changed during mutation; inspect task state before retrying",
