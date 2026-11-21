@@ -70,6 +70,66 @@ test('chat request materializes immutable sources, bootstraps, builds and review
   } finally { flow.close(); }
 });
 
+test('plan, code and product reviews read the current backlog ticket, including edits after delivery', () => {
+  const id = 'current-review-ticket';
+  const original = 'Build feature X for every connected system. ERPNext is an example.\n\n' +
+    '## Definition of done (confirmed)\n1. Use the common interface.\n2. Show planning-time device proof.\n';
+  const { flow, config } = intake(false, false, false, id, original);
+  config.maxRevisionRounds = 0;
+  config.firstMate.mode = 'no-mistakes';
+  config.firstMate.briefExecutable = join(factory, '../bin/fm-brief.sh');
+  const proofRequirement = 'Show browser proof on all target devices.';
+  const oldDone = `1. Use the common interface.\n2. ${proofRequirement}`;
+  const oldTicket = { id, text: `Build feature X for every connected system.\n\n## Definition of done (confirmed)\n${oldDone}\n` };
+  const newDone = '1. Use the common interface.';
+  const removed = 'The additional browser proof has been withdrawn.';
+  const newTicket = { id, text: `Build feature X for every connected system. ${removed}\n\nDefinition of done:\n${newDone}\n` };
+  try {
+    flow.wrapper.edit((native) => { native.tasks[id] = fakeTask(id, { kind: 'feature', body: original }); });
+    flow.mode({ ticketAtPlanReview: oldTicket, confirmedDone: oldDone });
+    const plan = runFeature(config, 'plan') as any;
+    const taskId = plan.tasks[0].taskId;
+    runFeature(config, 'prepare-task', taskId);
+    runFeature(config, 'start', taskId);
+    const returnPath = join(config.runDirectory, 'tasks', taskId, 'worker-return.json');
+    const returned = JSON.parse(readFileSync(returnPath, 'utf8'));
+    execFileSync('git', ['-C', config.repository, 'update-ref', `refs/heads/fm/ticket/${id}`, returned.deliveredArtifact.revision]);
+    returned.results.find((result: any) => result.criterion.id === 'criterion-second-system').result = 'untested';
+    flow.save(returnPath, returned);
+    flow.mode({ ticketAtProductReview: oldTicket, confirmedDone: oldDone, reviewQuote: proofRequirement });
+    assert.throws(() => runFeature(config, 'review-all'), /review-product_failed/);
+    const readReviews = () => {
+      const store = new ProjectStore(config.database, { readOnly: true });
+      try { return store.history('project-1').filter((record) => record.kind === 'product_review'); }
+      finally { store.close(); }
+    };
+    const [failed] = readReviews();
+    assert.equal(failed?.outcome, 'failed');
+    assert.deepEqual(failed.conformance?.currentTicket, oldTicket);
+    flow.wrapper.edit((native) => { native.tasks[id]!.body = newTicket.text; });
+    flow.mode({ ticketAtProductReview: newTicket, confirmedDone: newDone, reviewQuote: removed, withdrawnProof: true });
+    const { review, replayed, ticketDelivery } = runFeature(config, 'review-all') as any;
+    assert.equal(replayed, false);
+    assert.equal(review.outcome, 'passed');
+    assert.equal(review.revision, 2);
+    assert.deepEqual(review.conformance.currentTicket, newTicket);
+    assert.equal(readFileSync(ticketDelivery.intentFile, 'utf8'), newTicket.text);
+    assert.deepEqual(review.reviewedArtifacts, failed.reviewedArtifacts);
+    assert.deepEqual(review.results, failed.results);
+    assert.deepEqual(review.plan, failed.plan);
+    assert.notEqual(review.conformance.technicalReviews[1].scopeDigest, failed.conformance?.technicalReviews[1]?.scopeDigest);
+    assert.equal((runFeature(config, 'review-all') as any).replayed, true);
+    assert.equal(readReviews().length, 2);
+    const manual = join(config.runDirectory, 'manual-review-input.json');
+    const oldInput = JSON.parse(readFileSync(join(config.runDirectory, 'review-all-input.json'), 'utf8'));
+    flow.save(manual, { ...oldInput, expectedRevision: 2, idempotencyKey: 'manual-current-review', issuedAt: new Date().toISOString() });
+    const fresh = JSON.parse(execFileSync(process.execPath, [join(factory, 'dist/src/cli.js'), 'review-product',
+      '--db', config.database, '--input', manual, '--agent-config', config.agentConfig,
+      '--adapter-config', join(config.runDirectory, 'task-adapter.json')], { encoding: 'utf8' }));
+    assert.deepEqual(fresh.review.conformance.currentTicket, newTicket);
+  } finally { flow.close(); }
+});
+
 test('two dependent tasks stay held until producer evidence, then both receive original-request review', () => {
   const { flow, config } = intake(true);
   try {

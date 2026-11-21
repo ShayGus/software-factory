@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ArtifactSchema, RefSchema, TextSchema, TimestampSchema, type Ref } from './primitives.js';
+import { ArtifactSchema, IdSchema, RefSchema, TextSchema, TimestampSchema, type Ref } from './primitives.js';
 import { WorkflowAgentProfileSchema } from './agent-profiles.js';
 
 export const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
@@ -14,11 +14,15 @@ export const ReviewQuoteSchema = z.strictObject({
   source: z.enum(['original_request', 'design', 'plan', 'task', 'instructions', 'delivery', 'worker_return']),
   text: TextSchema,
 });
+export const ReviewTicketSchema = z.strictObject({
+  id: IdSchema, text: z.string().refine((text) => text.trim().length > 0),
+});
+export type ReviewTicket = z.infer<typeof ReviewTicketSchema>;
 const checkState = z.enum(['passed', 'failed', 'uncertain']);
 export const ProductVerdictSchema = z.strictObject({
   sourceComparison: checkState, instructionFidelity: checkState, planConformance: checkState,
   criteria: z.array(z.strictObject({
-    criterion: RefSchema.nullable(), state: z.enum(['accomplished', 'failed', 'uncertain']),
+    criterion: RefSchema.nullable(), state: z.enum(['accomplished', 'failed', 'uncertain', 'out_of_scope']),
     behavior: TextSchema, quotes: z.array(ReviewQuoteSchema).min(1), limitations: z.array(TextSchema),
   })).min(1),
   findings: z.array(z.strictObject({
@@ -35,6 +39,7 @@ export type ProductVerdict = z.infer<typeof ProductVerdictSchema>;
 export const DeliveredFileSchema = z.strictObject({ path: TextSchema, text: z.string(), artifact: ArtifactSchema });
 export const ProductConformanceSchema = z.strictObject({
   inputDigest: TextSchema, profile: WorkflowAgentProfileSchema, sessionId: TextSchema,
+  currentTicket: ReviewTicketSchema.optional(),
   verdict: ProductVerdictSchema.nullable(), error: TextSchema.optional(),
   deliveredFiles: z.array(DeliveredFileSchema).min(1), technicalReviews: z.array(QualityResultSchema),
   qualityError: TextSchema.optional(),

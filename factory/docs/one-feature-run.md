@@ -121,7 +121,7 @@ The phases call the existing CLI and FirstMate commands in this order:
 | Prepare | Validate the bootstrapped database; verify hook/registry and time budgets; `capture`; `understand` agent generates a full-request `map` and the `understand` input; `design`; `plan`; `detail`; independent `plan_check` agent; `check-plan`; verify hook/registry again; `queue-task` with a pending preparation condition; `reconcile-task` creates a held native task through real `fm-tasks-axi.sh`; real `fm-brief.sh`; `prepare-brief`; independent preparation `check-brief`; verify hook/registry again; `manage-task` records the passing evidence and releases the hold |
 | Start | Verify the operator-installed hook and project registry; `deliver` through real `fm-inbox.sh` to announce the captured request; real `fm-spawn.sh` with the `build` profile; FirstMate invokes a fresh `worker.start.before` instruction check before starting its worker |
 | Worker return | Worker commits code, verifies acceptance and writes `worker-return.json` at the assignment's return location, preserving the scaffold's delivery contract; FirstMate owns worker supervision, task state and delivery |
-| Review | `review-product` imports worker results, reads the actual committed code and existing exact-commit technical evidence, then calls a separate `product_review` agent against the original request, design and detailed plan |
+| Review | `review-product` imports worker results, reads the actual committed code and exact-commit technical evidence, then calls a separate `product_review` agent with the current scope |
 
 Stage agents return the existing `RecordStageInputSchema`.
 Understand also returns `MapRequestInputSchema`.
@@ -197,7 +197,7 @@ an ambiguous FirstMate effect. Inspect the saved output and use the existing
 `outbox`/`reconcile-task` for backlog changes, or repeat start for a worker-start operation.
 For a start check refusal, the [recovery runbook](recovery.md#unknown-outcomes) explains how to re-prepare the existing assignment and repeat start.
 After incomplete product review, inspect its saved input and receipt,
-then use `review-product` directly with a new review key if fresh evidence is needed.
+then use `review-product` with a new review key and the saved `task-adapter.json` as `--adapter-config` to read the fresh ticket.
 
 ## Plans with several tasks
 
@@ -249,18 +249,21 @@ The final aggregate review must pass before the feature is reported complete.
 `review-all` captures the available return bytes once at its start and saves `review-all-snapshot.json` with exact deliveries and `pendingTasks`.
 When any task is pending, it returns `state: awaiting_worker_returns` without an agent call or a single-use review marker, so a later aggregate attempt can include later arrivals.
 For publishing runs, it reports `state: awaiting_ticket_branch` until the branch contains every exact returned commit and its tip is one of those commits.
-With all returns present, it calls the existing `review-product` operation using only that snapshot and exact assignment and commit identities, preserving the original request as the authority across slices.
+With all returns present, it calls the existing `review-product` operation with that snapshot, exact assignment and commit identities, and the current review scope.
 After a passing aggregate review, it saves and returns `ticketDelivery` with the ticket ID, branch, reviewed head, and configured FirstMate delivery posture.
 The [factory skill](../skills/software-factory/SKILL.md) owns publishing the ticket from this handoff.
 Whole-feature completeness is separate from any single task's delivery eligibility.
 A per-task pass does not replace this final integration review.
 No phase polls workers, changes native completion state, installs hooks or adds a scheduling service.
 Review phases run the [Factory scope review](../README.md#plan-based-product-review---build-10) alongside the existing technical review evidence.
+Each plan, code and product scope review reads the current Beads ticket body when it contains owner scope.
+The next delivery review uses changes to that body even when the plan, commit and worker return are unchanged.
+For a chat-originated ticket that still has only its Factory marker, the captured request supplies the scope.
 
 ## Publishing a reviewed ticket
 
 For no-mistakes delivery, `ticket-delivery.json` identifies a private `intentFile` containing the full reviewed ticket text and any additional recorded owner answers, and records its digest.
-An existing backlog ticket's body must be present in the reviewed request before the handoff can proceed.
+The handoff uses the same backlog ticket body as the passing review.
 From the isolated checkout at the reviewed ticket head, use `node /absolute/software-factory/factory/scripts/ticket-validation.mjs start /absolute/ticket-delivery.json` for a new run.
 The helper passes the complete captured ticket to no-mistakes through `--intent-file`, and the pipeline owns opening the PR.
 Reattach to an active run through the ordinary driver and keep its original intent.

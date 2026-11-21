@@ -312,11 +312,18 @@ function checkReview(ctx: Context, review: ProductReview) {
 }
 
 function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' | 'task' = 'feature') {
+  const outsideTicket = (criterion: Ref | null) => {
+    const proof = review.conformance;
+    const ticket = proof?.currentTicket;
+    return !!criterion && !!ticket && proof?.verdict?.criteria.some((outcome) =>
+      outcome.state === 'out_of_scope' && sameRef(criterion, outcome.criterion) &&
+      outcome.quotes.some((quote) => quote.source === 'original_request' && ticket.text.includes(quote.text)));
+  };
   if (review.conformance) {
     const proof = review.conformance;
     if (!proof.verdict || proof.error || proof.qualityError ||
       !proof.technicalReviews.length || proof.technicalReviews.some((result) => result.verdict !== 'passed') ||
-      proof.verdict.criteria.some((criterion) => criterion.state !== 'accomplished') ||
+      proof.verdict.criteria.some((criterion) => criterion.state !== 'accomplished' && !outsideTicket(criterion.criterion)) ||
       [proof.verdict.sourceComparison, proof.verdict.instructionFidelity, proof.verdict.planConformance].some((result) => result !== 'passed')) {
       ctx.add(review, 'unresolved_conformance', 'conformance', 'A fresh product review with accomplished behavior and passing existing quality evidence is required');
     }
@@ -325,6 +332,7 @@ function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' |
       const assignment = ctx.index.get(key(assignmentRef));
       if (assignment?.kind !== 'assignment') continue;
       for (const criterion of assignment.criteria.length ? assignment.criteria : [null]) {
+        if (outsideTicket(criterion)) continue;
         if (!review.results.some((resultRef) => {
           const result = ctx.index.get(key(resultRef));
           return result?.kind === 'criterion_result' && sameRef(result.assignment, assignmentRef) && sameRef(result.criterion, criterion);
@@ -405,7 +413,8 @@ function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' |
   });
   for (const ref of criteria) {
     const criterion = ctx.get(review, ref, 'criterion', 'criteria');
-    if (!criterion || criterion.disposition.state !== 'active' || (scope === 'feature' && criterion.requirement !== 'required')) continue;
+    if (!criterion || criterion.disposition.state !== 'active' || outsideTicket(ref) ||
+      (scope === 'feature' && criterion.requirement !== 'required')) continue;
     const results = review.results.flatMap((resultRef) => {
       const record = ctx.index.get(key(resultRef));
       return record?.kind === 'criterion_result' && sameRef(record.criterion, ref) ? [record] : [];
