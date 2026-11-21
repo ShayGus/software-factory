@@ -241,7 +241,7 @@ describe.skipIf(!enabled)(
         },
       };
       await addCommand(
-        [parent, "Existing feature", "--kind", "feature"],
+        [parent, "Existing feature", "--kind", "feature", "--repo", "tachles"],
         context,
       );
       const receipt = JSON.parse(
@@ -251,6 +251,8 @@ describe.skipIf(!enabled)(
             "Planned slice",
             "--parent",
             parent,
+            "--repo",
+            "tachles",
             "--hold-reason",
             "Instruction check pending",
             "--json",
@@ -260,6 +262,16 @@ describe.skipIf(!enabled)(
       );
       expect(receipt.task.deps).toEqual([{ type: "parent", id: parent }]);
       expect(receipt.task.blocked).toBe(false);
+      expect(
+        await sql(
+          `SELECT issue_id,label FROM labels WHERE issue_id IN (${sqlString(`fm-${parent}`)},${sqlString(`fm-${child}`)}) ORDER BY issue_id`,
+        ),
+      ).toEqual(
+        [parent, child].sort().map((task) => ({
+          issue_id: `fm-${task}`,
+          label: "project:tachles",
+        })),
+      );
       const edges = await sql(
         `SELECT issue_id,depends_on_issue_id,type FROM dependencies WHERE issue_id=${sqlString(`fm-${child}`)}`,
       );
@@ -375,6 +387,26 @@ describe.skipIf(!enabled)(
       expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
       expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
       expect(["writer a", "writer b"]).toContain((await a.get(logical))?.title);
+    }, 20000);
+
+    it("labels tickets for project names added by callers and preserves the label on an idempotent add", async () => {
+      const store = make();
+      const logical = id("project-task");
+      const project = id("new-project");
+      const ctx = {
+        store,
+        config: { backend: "beads" as const, path: config.path, beads: config, doneKeep: 10 },
+      };
+      const args = [logical, "A task for the new project", "--repo", project, "--json"];
+      await addCommand(args, ctx);
+      await addCommand(args, ctx);
+      await store.update(logical, { title: "Edited description of work" });
+      const labels = () => sql(
+        `SELECT label FROM labels WHERE issue_id=${sqlString(`fm-${logical}`)}`,
+      );
+      expect(await labels()).toEqual([{ label: `project:${project}` }]);
+      await store.remove(logical);
+      expect(await labels()).toEqual([]);
     }, 20000);
 
     it("creates held captain work atomically and preserves evidence/holds across lifecycle replay", async () => {

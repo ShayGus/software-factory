@@ -120,8 +120,8 @@ Both the pinned bd build and Dolt 2.7.2 server version are checked before use.
 Use a database-scoped SQL account and appropriate socket/network permissions.
 The adapter installs its versioned tables and routine on first mutation; it
 requires table/routine creation rights.
-The native-ticket integration uses `tasks_axi_apply_v2`, leaving an installed v1 routine intact.
-An existing v2 routine with different source is refused.
+The native-ticket integration uses `tasks_axi_apply_v3` and preserves earlier installed routines.
+An existing v3 routine with different source is refused.
 Schema upgrades require deliberate provisioning and tests.
 
 Example configuration (illustrative paths only):
@@ -180,6 +180,7 @@ accepts the existing local-date gate. Holds remain metadata and do not change
 native base state or invent due dates. Explicit due-required environment policy
 is refused because this release has no due-date input. Start refuses active
 holds/blockers both before the mutation and inside the server transaction.
+A new ticket with a project name (`--repo`) receives the native Beads label `project:<name>` in the same creation transaction.
 
 Each mutation checks a snapshot of native fields, all metadata and native
 dependencies. Stale snapshots and competing writes produce a structured error.
