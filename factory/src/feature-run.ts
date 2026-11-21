@@ -1,4 +1,4 @@
-import { startManagedWorker } from './runtime.js';
+import { startManagedWorker, workerStartCheckRefused, workerStartOperationId } from './runtime.js';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
@@ -224,12 +224,20 @@ export function runFeature(configInput: unknown, phase: FeatureRunPhase, selecte
   const workerMode = workerTicket ? 'local-only' : fm.mode;
   const workerBaseArgs = workerTicket ? ['--base-branch', workerTicket.branch] : [];
   const taskReturnPath = (taskId: string) => join(planDirectory, 'tasks', taskId, 'worker-return.json');
+  const deliveredAssignment = (taskId: string, prepared: Ref) => {
+    const store = new ProjectStore(config.database, { readOnly: true });
+    try {
+      const start = store.get(project.id, workerStartOperationId(project.id, `${taskId}-start`));
+      return start?.kind === 'operation' && start.state === 'succeeded' ?
+        start.externalAttempt?.assignment ?? prepared : prepared;
+    } finally { store.close(); }
+  };
   const plannedDelivery = (taskId: string, returned: z.infer<typeof FeatureWorkerReturnSchema>) => {
     const taskDirectory = join(planDirectory, 'tasks', taskId);
     const prepared = PreparedSchema.parse(json(join(taskDirectory, 'prepared.json')));
     const taskConfig = { ...baseConfig, taskId, runDirectory: taskDirectory };
     if (prepared.configDigest !== digestText(JSON.stringify(taskConfig))) throw new Error('prepared_run_config_changed');
-    return { ...returned, assignment: prepared.assignment };
+    return { ...returned, assignment: deliveredAssignment(taskId, prepared.assignment) };
   };
   const issuedAt = () => new Date().toISOString();
   let selectedPlan: FactoryRecord | undefined; let selectedDetailedTask: FactoryRecord | undefined; let selectedMappingId: string; let selectedRequestId: string;
@@ -476,6 +484,9 @@ Each detailed task must require its worker to commit code, verify each assigned 
           '--harness', build.harness, ...(build.model ? ['--model', build.model] : []), ...(build.effort ? ['--effort', build.effort] : [])] },
         { fmHome: fm.home, ...(fm.snapshotExecutable ? { snapshotExecutable: fm.snapshotExecutable } : {}), timeoutMs: fm.timeoutMs });
       save('worker-start-operation', operation);
+      if (workerStartCheckRefused(operation)) {
+        throw new Error('firstmate-spawn_failed: start check refused; inspect worker-start-operation.json, re-prepare the brief, and repeat start');
+      }
       if (operation.state !== 'succeeded') throw new Error(`firstmate-spawn_failed: ${operation.state}; reconcile recorded operation before retry`);
       return { state: operation.state === 'succeeded' ? 'awaiting_worker_return' : operation.state,
         operation, returnLocation: join(directory, 'worker-return.json') };
@@ -485,7 +496,7 @@ Each detailed task must require its worker to commit code, verify each assigned 
   begin();
   const result = command('review-product', ['--input', save('review-input', { ...returned, projectId: project.id,
     reviewId: `${config.taskId}-review`, expectedRevision: 0, idempotencyKey: `${config.taskId}-review`,
-    issuedAt: issuedAt(), assignment: prepared.assignment, baselineEvidence: config.baselineEvidence }),
+    issuedAt: issuedAt(), assignment: deliveredAssignment(config.taskId, prepared.assignment), baselineEvidence: config.baselineEvidence }),
     '--agent-config', config.agentConfig, '--run-directory', directory], !!planned);
   const review = ProductReviewSchema.parse(result.review);
   if (planned) {
