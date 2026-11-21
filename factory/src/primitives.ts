@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
 
 export const TextSchema = z.string().refine((value) => value.trim().length > 0, 'Must not be blank');
+export const ProjectRuleFilesSchema = z.array(TextSchema.refine(isAbsolute, 'Project rule file paths must be absolute'));
 export const BriefSpecEditsSchema = z.array(z.strictObject({ find: z.string().min(1), replace: z.string() }));
 // IDs, including FirstMate IDs, are opaque. Never infer identity from a title or prefix.
 export const IdSchema = TextSchema;

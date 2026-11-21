@@ -84,6 +84,9 @@ Set `agentConfig` using `fixtures/workflow-agents.json`, with the matching proje
 ID and absolute installed harness executables. `understand`, `design`, `plan`,
 `detail`, `plan_check`, `instruction_check`, `build` and `product_review` each select
 their own harness, provider, model and effort. The run path requires all eight.
+Set the optional `ruleFiles` array in the project's `agents.json` to absolute paths such as `["/absolute/project/CLAUDE.md"]`.
+Each Factory prompt and generated builder brief directs the agent to open those files before doing task work.
+Prepare a fresh brief after changing the configured paths so it records the current list.
 The shared configuration also requires BUILD-11's `learning_consolidation` profile;
 this feature run does not execute it. Individual commands retain the seven base
 profile entries, with `plan_check` and `build` added for the connected run path.

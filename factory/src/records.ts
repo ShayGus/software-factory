@@ -5,7 +5,7 @@ import {
   ArtifactSchema, BriefSpecEditsSchema, ClaimStateSchema, CommandNameSchema, ComparisonSchema, ConsolidationStateSchema,
   CorrectionActionSchema, CorrectionDeliveryFactSchema, CriterionResultStateSchema,
   DecisionDispositionSchema, DispositionSchema, EvidenceSchema, ExecutionStrategySchema,
-  FeatureStateSchema, IdSchema, MethodStageSchema, OperationStateSchema, RefSchema,
+  FeatureStateSchema, IdSchema, MethodStageSchema, OperationStateSchema, ProjectRuleFilesSchema, RefSchema,
   RequestDispositionSchema, ReviewOutcomeSchema, RevisionSchema, SourceRefSchema,
   TextSchema, TimestampSchema,
 } from './primitives.js';
@@ -219,6 +219,7 @@ export const AssignmentSchema = record('assignment', {
   brief: z.strictObject({
     path: TextSchema, sidecarPath: TextSchema, scaffold: TextSchema,
     specEdits: BriefSpecEditsSchema.optional(),
+    ruleFiles: ProjectRuleFilesSchema.optional(),
     contextLayout: z.literal('sidecar').optional(),
     sidecarDigest: TextSchema,
     materialized: z.strictObject({ brief: TextSchema, sidecar: TextSchema }).optional(),

@@ -526,7 +526,8 @@ Each detailed task must require its worker to commit code, verify each assigned 
         attemptId: previousPreparation?.attemptId ?? `${config.taskId}-attempt`,
         expectedRevision: previousPreparation?.revision ?? 0, idempotencyKey: `${config.taskId}-prepare${revisionSuffix}`, issuedAt: issuedAt(),
         detailedPlanTask: ref(task), plan: ref(plan), firstMateTaskId: config.taskId,
-        returnLocation: join(directory, 'worker-return.json'), briefPath, sourceFiles, contextLayout: 'sidecar', specEdits,
+        returnLocation: join(directory, 'worker-return.json'), briefPath, sourceFiles, contextLayout: 'sidecar',
+        specEdits, ruleFiles: agents.ruleFiles,
         ...(scaffoldDirectory ? { scaffoldPath: join(scaffoldDirectory, config.taskId, 'brief.md'), unstartedOperationId: startId } : {}),
       })], true, `prepare-brief${revisionSuffix}`);
       const checked = prepared.ok ? command('check-brief', ['--project', project.id, '--assignment', prepared.assignment.id, '--revision', String(prepared.assignment.revision),
