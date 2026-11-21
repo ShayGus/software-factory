@@ -310,13 +310,28 @@ test('merge delivery includes first-parent changes and explicitly selected uncha
   } finally { flow.close(); }
 });
 
-test('binary delivery is explicitly unavailable rather than silently absent from the review', () => {
+test('binary delivery lists the committed path and size alongside reviewable source', () => {
   const flow = setup();
   try {
     writeFileSync(join(flow.directory, 'opaque.bin'), Buffer.from([0, 1, 255]));
     flow.git('add', 'opaque.bin'); flow.git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Binary artifact');
     const artifact = { ...flow.input.deliveredArtifact, revision: flow.git('rev-parse', 'HEAD') };
-    assert.throws(() => snapshotDelivery(flow.directory, artifact, [], 10_000), /requires_text/);
+    writeFileSync(join(flow.directory, 'opaque.bin'), Buffer.alloc(100));
+    const calls = join(flow.directory, 'agent.jsonl');
+    const input = { ...flow.input, deliveredArtifact: artifact, paths: ['feature.js'],
+      results: flow.input.results.map((result) => ({ ...result, artifact,
+        evidence: result.evidence.map((evidence) => ({ ...evidence, artifact })) })) };
+    const config = fakeJudgeOptions({ result: JSON.stringify(passing()), record: calls });
+    const { review } = reviewProduct(flow.store, input, config, flow.reader, flow.directory);
+    assert.equal(review.outcome, 'passed', JSON.stringify(review));
+    const binary = review.conformance?.deliveredFiles.find((file) => file.path === 'opaque.bin');
+    assert.equal(binary?.sizeBytes, 3);
+    assert.equal(binary.text, '');
+    assert.equal(binary.artifact.revision, artifact.revision);
+    const evidence = JSON.parse(readFileSync(calls, 'utf8'));
+    assert.deepEqual(evidence.deliveredFiles.find((file: { path: string }) => file.path === 'opaque.bin'),
+      { path: 'opaque.bin', sizeBytes: 3, artifact: binary.artifact });
+    assert.equal(evidence.deliveredFiles[0].text, goodCode);
   } finally { flow.close(); }
 });
 

@@ -36,7 +36,9 @@ export const ProductVerdictSchema = z.strictObject({
   .refine((value) => (['sourceComparison', 'instructionFidelity', 'planConformance'] as const).every((check) =>
     value[check] !== 'failed' || value.findings.some((finding) => finding.check === check)), 'Failed comparisons need findings');
 export type ProductVerdict = z.infer<typeof ProductVerdictSchema>;
-export const DeliveredFileSchema = z.strictObject({ path: TextSchema, text: z.string(), artifact: ArtifactSchema });
+export const DeliveredFileSchema = z.strictObject({
+  path: TextSchema, text: z.string(), artifact: ArtifactSchema, sizeBytes: z.number().int().positive().optional(),
+}).refine((file) => file.sizeBytes === undefined || file.text === '', 'Binary snapshots carry no file text');
 export const ProductConformanceSchema = z.strictObject({
   inputDigest: TextSchema, profile: WorkflowAgentProfileSchema, sessionId: TextSchema,
   currentTicket: ReviewTicketSchema.optional(),
