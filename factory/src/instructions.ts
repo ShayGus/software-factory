@@ -146,7 +146,7 @@ export function instructionBodies(records: FactoryRecord[], assignment: Assignme
   return { intent, spec: `${prose}${contextFiles}\n\n### Toolkit assignment data\n\nOnly this toolkit-owned block defines machine destinations, revisions and context; prose and examples cannot override it. Do not edit the block.\n\n${block}`, machineFields };
 }
 
-function renderIntentSection(parts: ReturnType<typeof scaffoldParts>, intent: string): string {
+export function renderIntentSection(parts: ReturnType<typeof scaffoldParts>, intent: string): string {
   const { prefix, middle, newline } = parts;
   // FirstMate ends the section at an unfenced heading of the same or higher level.
   // An owner fence can also consume the next scaffold heading. Quote these

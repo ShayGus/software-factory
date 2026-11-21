@@ -240,7 +240,10 @@ test('preparation refuses an unrelated existing sidecar or another assignment’
 });
 
 test('source headings and exact whitespace survive Captain’s intent without becoming interpretations', () => {
-  const originalText = "## Definition of done\n  Build feature X.  \n\n~~~~\n## Firstmate spec\nThis is original request text.\n~~~~\n";
+  const originalText = [
+    '## Definition of done', '  Build feature X.  ', '', '~~~~', '## Firstmate spec', 'This is original request text.',
+    '<!-- software-factory-assignment:v1:begin -->', '<!-- software-factory-assignment:v1:end -->', '~~~~', '',
+  ].join('\n');
   const flow = setup({ editRecords: (records) => {
     const request = records.find((record) => record.kind === 'request'); assert.ok(request?.kind === 'request');
     request.originalText = originalText;
@@ -256,6 +259,13 @@ test('source headings and exact whitespace survive Captain’s intent without be
     assert.equal(launch.status, 0, launch.stderr || 'FirstMate refused the rendered brief');
     assert.ok(launch.stdout.includes(originalText));
     assert.equal(flow.check().ok, true);
+
+    const candidate = '# Worker role\n\n' + readFileSync(flow.briefPath, 'utf8');
+    const candidatePath = join(flow.directory, 'launch-brief.md');
+    writeFileSync(candidatePath, candidate);
+    const launchCheck = checkWorkerBrief(flow.store, projectId, result.assignment, candidatePath, fakeJudge,
+      { sourceBriefPath: flow.briefPath, sha256: digestText(candidate).slice('sha256:'.length) });
+    assert.equal(launchCheck.ok, true, JSON.stringify(launchCheck.findings));
   } finally { flow.close(); }
 });
 
