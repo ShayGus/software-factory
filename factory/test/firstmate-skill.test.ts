@@ -234,6 +234,31 @@ test('a review finding revises only task detail in the existing planner session'
   } finally { flow.close(); }
 });
 
+test('plan review blocks vague feature and worker titles and queues the revised titles', () => {
+  const { flow, config } = intake();
+  try {
+    const records = flow.outputs.detail.records as Array<{ kind: string }>;
+    const plan = records.find((record) => record.kind === 'implementation_plan_revision');
+    const task = records.find((record) => record.kind === 'detailed_plan_task');
+    assert.ok(plan && task);
+    Object.assign(plan, { ticketTitle: '  Project Leap  ' });
+    Object.assign(task, { expectedBehavior: 'Phase\n1' });
+    flow.save(join(flow.root, 'outputs.json'), flow.outputs);
+    flow.mode({ reviseTitles: true });
+    runFeature(config, 'plan');
+    const turns = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const planner = turns.find((turn) => turn.step === 'plan');
+    assert.match(planner.prompt, /Plan one implementation task by default/);
+    assert.match(planner.prompt, /only when the ticket is too big for one task.*strategyReason/);
+    const failed = JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent.json'), 'utf8'));
+    assert.equal(failed.verdict.verdict, 'fail');
+    assert.deepEqual(failed.verdict.findings.map((finding: { title: string }) => finding.title), ['Project Leap', 'Phase 1']);
+    const tickets = Object.values(flow.wrapper.read().tasks);
+    assert.equal(tickets.find((ticket) => ticket.kind === 'feature')?.title, 'Export invoices from all connected systems');
+    assert.equal(tickets.find((ticket) => ticket.kind === 'ship')?.title, 'Export invoice records using the shared report');
+  } finally { flow.close(); }
+});
+
 test('failed preparation instruction check retains the native hold and never starts a worker', () => {
   const { flow, config } = intake();
   config.maxRevisionRounds = 0;
