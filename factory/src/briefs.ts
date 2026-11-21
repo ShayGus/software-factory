@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { outstandingTaskCorrections, unresolvedTaskCorrections } from './correction-state.js';
 import { PrepareAssignmentCommandSchema } from './commands.js';
 import { ref } from './intake.js';
-import { ArtifactSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
+import { ArtifactSchema, BriefSpecEditsSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema } from './primitives.js';
 import { AssignmentSchema, DetailedPlanTaskSchema, type Assignment, type FactoryRecord } from './records.js';
 import { planningRecord } from './planning-checks.js';
 import { assignmentCriteria, digestText, recordSource, requiredAssignmentContext,
@@ -28,6 +28,7 @@ export const PrepareWorkerBriefInputSchema = z.strictObject({
   detailedPlanTask: RefSchema, plan: RefSchema, firstMateTaskId: IdSchema,
   returnLocation: TextSchema, briefPath: TextSchema, sidecarPath: TextSchema.optional(), scaffoldPath: TextSchema.optional(),
   contextLayout: z.literal('sidecar').optional(),
+  specEdits: BriefSpecEditsSchema.optional(),
   unstartedOperationId: IdSchema.optional(),
   maxSourceChars: z.number().int().positive().default(16_000),
   // Local snapshots of sources whose original URI cannot be read offline. Range
@@ -124,6 +125,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
       generation: { ...original.payload.generation, attemptId: data.attemptId, briefPath: path, sidecarPath,
         scaffoldPath: data.scaffoldPath === undefined ? undefined : resolve(data.scaffoldPath),
         contextLayout: data.contextLayout,
+        specEdits: data.specEdits,
         unstartedOperationId: data.unstartedOperationId,
         maxSourceChars: data.maxSourceChars, sourceFiles: data.sourceFiles.map((entry) => ({ ...entry, path: resolve(entry.path) })) } } };
     if (commandDigest(replay) !== commandDigest(original)) throw new StoreError('conflict', 'idempotency_conflict');
@@ -182,7 +184,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
     } : {}),
     instructionText: 'Preparation in progress', instructionFidelity: { result: 'untested', sourceRefs: [recordSource(task)],
       findings: [], reviewerSession: 'factory:structural-instruction-checks', comparedAt: data.issuedAt },
-    brief: { path: briefPath, sidecarPath, scaffold, contextLayout: data.contextLayout, sidecarDigest: 'pending' },
+    brief: { path: briefPath, sidecarPath, scaffold, contextLayout: data.contextLayout, specEdits: data.specEdits, sidecarDigest: 'pending' },
   });
   const selection = selectAssignmentContext(records, assignment, (source, artifact) => {
     const file = artifact ? sourceFiles.find((entry) => sameSource(entry.source, source) && entry.artifact &&
@@ -225,6 +227,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
       selectedContext: assignment.selectedContext, returnLocation: assignment.returnLocation,
       generation: { attemptId: assignment.attemptId, briefPath, sidecarPath, scaffold, ...(scaffoldPath ? { scaffoldPath } : {}),
         contextLayout: data.contextLayout,
+        specEdits: data.specEdits,
         unstartedOperationId: data.unstartedOperationId,
         maxSourceChars: data.maxSourceChars, sourceFiles } },
   });
@@ -240,7 +243,7 @@ function prepareLockedWorkerBrief(store: ProjectStore, data: z.output<typeof Pre
 export const briefPreparationGateId = (taskId: string) => `factory:brief-preparation/${taskId}`;
 
 export function checkWorkerBrief(store: ProjectStore, projectId: string, assignmentRef: { id: string; revision: number }, briefPath: string,
-  agentConfig?: unknown, launchCandidate?: { sourceBriefPath: string; sha256: string }, preparationGate?: string) {
+  agentConfig?: unknown, launchCandidate?: { sourceBriefPath: string; sha256: string }, preparationGate?: string, maxRevisionRounds = 0) {
   const records = store.history(projectId);
   const assignment = planningRecord(records, assignmentRef);
   if (assignment?.kind !== 'assignment') throw new StoreError('not_found', 'assignment_not_found');
@@ -310,7 +313,7 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
     issue.code === 'instruction_fidelity' && issue.path === 'instructionFidelity'))
     .map((issue) => ({ code: issue.code, path: issue.path, message: issue.message })));
   if (findings.length) return { ok: false, findings, judgment: null };
-  const judgment = judgeWorkerInstructions(records, assignment, candidate, agentConfig);
+  const judgment = judgeWorkerInstructions(records, assignment, candidate, agentConfig, undefined, maxRevisionRounds);
   if (!judgment.ok) findings.push({ code: 'instruction_judge_unavailable', path: 'judge', message: judgment.error });
   else for (const finding of judgment.verdict.findings) findings.push({
     code: finding.type === 'narrowing' ? 'narrowed_generality' : finding.type === 'omission' ? 'omitted_behavior' : 'invented_scope',

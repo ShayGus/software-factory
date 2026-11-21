@@ -65,7 +65,7 @@ export function stepAgentCommand(input: unknown, projectId: string, step: Execut
     ...(session?.id ? ['resume'] : []), '--ignore-user-config', ...(!session ? ['--ephemeral'] : []),
     '--skip-git-repo-check',
     ...(['instruction_check', 'product_review', 'plan_check', 'learning_consolidation'].includes(step) ? ['--output-schema',
-      fileURLToPath(new URL(`../../fixtures/${step === 'learning_consolidation' ? 'learning-consolidation' : step === 'product_review' ? 'product-review' : 'instruction-judge'}.schema.json`, import.meta.url))] : []),
+      fileURLToPath(new URL(`../../fixtures/${step === 'learning_consolidation' ? 'learning-consolidation' : step === 'product_review' ? 'product-review' : step === 'plan_check' ? 'plan-review' : 'instruction-judge'}.schema.json`, import.meta.url))] : []),
     ...(model ? ['--model', model] : []), ...(effort ? ['-c', `model_reasoning_effort="${effort}"`] : []),
     ...(session ? ['--json', '--output-last-message', session.outputPath] : []),
     ...(session?.id ? ['-c', 'sandbox_mode="read-only"', session.id] : []), '-'] :

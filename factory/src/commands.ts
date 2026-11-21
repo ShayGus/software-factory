@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import {
-  ArtifactSchema, CorrectionActionSchema, EvidenceSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema,
+  ArtifactSchema, BriefSpecEditsSchema, CorrectionActionSchema, EvidenceSchema, IdSchema, RefSchema, SourceRefSchema, TextSchema, TimestampSchema,
 } from './primitives.js';
 import {
   CriterionResultSchema, DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema,
@@ -79,6 +79,7 @@ export const PrepareAssignmentCommandSchema = z.strictObject({
     generation: z.strictObject({
       attemptId: IdSchema, briefPath: TextSchema, sidecarPath: TextSchema,
       scaffold: TextSchema, scaffoldPath: TextSchema.optional(), contextLayout: z.literal('sidecar').optional(),
+      specEdits: BriefSpecEditsSchema.optional(),
       unstartedOperationId: IdSchema.optional(),
       maxSourceChars: z.number().int().positive(),
       sourceFiles: z.array(z.strictObject({ source: SourceRefSchema, path: TextSchema,

@@ -147,17 +147,16 @@ test('a publishing run gives both sub-tasks a local handoff and one ticket deliv
       const briefPath = join(flow.data, taskId, 'brief.md');
       if (taskId === producer) {
         writeFileSync(briefPath, 'Old or damaged instructions');
-        assert.throws(() => runFeature(config, 'start', taskId), /start check refused/);
-        const retry = runFeature(config, 'prepare-task', taskId) as any;
-        assert.deepEqual(retry.assignment, { id: prepared.assignment.id, revision: prepared.assignment.revision + 1 });
       }
+      runFeature(config, 'start', taskId);
+      const retried = JSON.parse(readFileSync(join(config.runDirectory, 'tasks', taskId, 'prepared.json'), 'utf8'));
+      assert.deepEqual(retried.assignment, { id: prepared.assignment.id, revision: prepared.assignment.revision + (taskId === producer ? 1 : 0) });
       const brief = readFileSync(briefPath, 'utf8');
       assert.ok(brief.includes(`Base branch: ${branch}`));
       assert.match(brief, /Delivery contract: mode=local-only/);
       assert.match(brief, /Do not push, open a PR, or merge/);
       assert.match(brief, /### Context files/);
       assert.ok(!brief.includes('"selectedContext":'));
-      runFeature(config, 'start', taskId);
       const args = JSON.parse(readFileSync(join(flow.root, 'spawn-args.json'), 'utf8'));
       assert.deepEqual(args.slice(2, 8), ['--mode', 'local-only', '--yolo', 'off', '--base-branch', branch]);
       assert.equal((runFeature(config, 'review', taskId) as any).taskOutcome, 'passed');
@@ -184,18 +183,21 @@ test('one author session produces four stages before an independent review can b
   const { flow, config } = intake(true);
   try {
     flow.mode({ planFailure: true });
-    assert.throws(() => runFeature(config, 'plan'), /plan_review_failed/);
+    assert.throws(() => runFeature({ ...config, maxRevisionRounds: 1 }, 'plan'), /plan_review_failed: exhausted 1 revision rounds/);
     assert.equal(flow.wrapper.read().calls.length, 0);
     assert.equal(existsSync(join(config.runDirectory, 'planned.json')), false);
     const failure = JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent.json'), 'utf8'));
     assert.equal(failure.verdict.findings[0].type, 'narrowing');
     const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    const [understand, design, plan, detail, review] = calls;
-    assert.deepEqual(calls.map(call => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check']);
+    const [understand, design, plan, detail, review, correction, recheck] = calls;
+    assert.deepEqual(calls.map(call => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check', 'detail', 'plan_check']);
     assert.ok(understand.sessionId);
     assert.ok(!understand.args.includes('resume'));
-    assert.ok(review.args.includes('--ephemeral'));
-    assert.equal(review.sessionId, undefined);
+    assert.equal(correction.sessionId, understand.sessionId);
+    assert.ok(correction.args.includes('resume'));
+    assert.notEqual(review.sessionId, understand.sessionId);
+    assert.notEqual(recheck.sessionId, review.sessionId);
+    assert.ok(!recheck.args.includes('resume'));
     const snapshot = (turn: typeof understand) => {
       const { evidence } = JSON.parse(turn.prompt.trimEnd().split('\n').at(-1));
       return JSON.parse(readFileSync(evidence, 'utf8'));
@@ -214,8 +216,27 @@ test('one author session produces four stages before an independent review can b
   } finally { flow.close(); }
 });
 
+test('a review finding revises only task detail in the existing planner session', () => {
+  const { flow, config } = intake(true);
+  try {
+    flow.mode({ reviseOnce: true });
+    runFeature(config, 'plan');
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(calls.map((turn) => turn.step), ['understand', 'design', 'plan', 'detail', 'plan_check', 'detail', 'plan_check']);
+    assert.equal(calls[5].sessionId, calls[0].sessionId);
+    assert.notEqual(calls[6].sessionId, calls[4].sessionId);
+    const first = JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent.json'), 'utf8'));
+    assert.deepEqual(first.notes, ['A reviewer suggested extra cleanup']);
+    assert.equal(first.verdict.findings.length, 1);
+    const input = JSON.parse(readFileSync(join(config.runDirectory, 'detail-revision-1-input.json'), 'utf8'));
+    assert.deepEqual(input.records.filter((record: any) => record.kind === 'detailed_plan_task').map((record: any) => record.id), ['task-1']);
+    assert.equal(JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent-r1.json'), 'utf8')).verdict.verdict, 'pass');
+  } finally { flow.close(); }
+});
+
 test('failed preparation instruction check retains the native hold and never starts a worker', () => {
   const { flow, config } = intake();
+  config.maxRevisionRounds = 0;
   try {
     const planned = runFeature(config, 'plan') as any;
     const taskId = planned.tasks[0].taskId;

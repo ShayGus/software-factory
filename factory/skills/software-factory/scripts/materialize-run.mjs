@@ -77,10 +77,12 @@ const capturedRequestPath = join(directory, 'request.txt');
 const sourceFiles = files.map((file, index) => ({ source: file.source, path: join(directory, 'sources', `${index}.txt`) }));
 const config = FeatureRunConfigSchema.parse({ version: 1, project, database, runDirectory: directory,
   agentConfig, hookRegistry: settings.hookRegistry, requestFile: capturedRequestPath, clientRequestId: runId,
+  maxRevisionRounds: settings.maxRevisionRounds,
   taskId: runId, ...(selection.featureTaskId ? { featureTaskId: selection.featureTaskId } : {}), repository, requestChannel: 'chat', sourceFiles,
   firstMate: { home, dataDirectory: join(home, 'data'), mode: selection.mode ?? settings.mode, yolo: settings.yolo,
     ...Object.fromEntries(['brief', 'spawn', 'inbox', 'tasks'].map((name) => [`${name}Executable`, join(settings.fork, 'bin', `fm-${name === 'tasks' ? 'tasks-axi' : name}.sh`)])),
     snapshotExecutable: join(settings.fork, 'bin/fm-fleet-snapshot.sh'),
+    ...(existsSync(join(settings.fork, 'bin/fm-send.sh')) ? { sendExecutable: join(settings.fork, 'bin/fm-send.sh') } : {}),
     ...(settings.guardTaskId ? { guardTaskId: settings.guardTaskId } : {}) },
   baselineEvidence: [{ artifact: { uri: `git:${repository}`, revision: baseline },
     description: selection.baselineDescription, observedAt: now }] });

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const TextSchema = z.string().refine((value) => value.trim().length > 0, 'Must not be blank');
+export const BriefSpecEditsSchema = z.array(z.strictObject({ find: z.string().min(1), replace: z.string() }));
 // IDs, including FirstMate IDs, are opaque. Never infer identity from a title or prefix.
 export const IdSchema = TextSchema;
 export const RevisionSchema = z.number().int().positive();

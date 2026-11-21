@@ -113,8 +113,15 @@ if(step===mode.failStep) {
 }
 let out=JSON.parse(readFileSync(root+'/outputs.json','utf8'))[step];
 // This scenario authors records after capture; other tests' fixed fixtures stay unchanged.
-if(out) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()).replaceAll(${JSON.stringify(request.id)},snapshot.request.id).replaceAll(${JSON.stringify(requestFile)},snapshot.request.source.uri));
-if(step==='plan_check') out=mode.planFailure ? {verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} : {verdict:'pass',findings:[]};
+if(out && snapshot.request) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()).replaceAll(${JSON.stringify(request.id)},snapshot.request.id).replaceAll(${JSON.stringify(requestFile)},snapshot.request.source.uri));
+if(step==='detail' && snapshot.findings) out=snapshot.instructionText ? mode.specEdits ?? [] :
+ {plan:{},tasks:[{id:snapshot.tasks[0].id,changes:{expectedBehavior:'Correct scope for all connected systems, revision '+snapshot.plan.revision}}]};
+if(step==='plan_check') out=mode.planFailure || (mode.reviseOnce && snapshot.plan.revision===2) ?
+ {verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} :
+ {verdict:'pass',findings:[]};
+if(step==='plan_check' && mode.reviseOnce && snapshot.plan.revision===2) out.findings.push({
+ type:'omission',message:'A reviewer suggested extra cleanup',quotes:[{source:'design',text:'Extra cleanup'}]
+});
 if(step==='instruction_check') {
  assert.ok(snapshot.originalRequests[0].text===${JSON.stringify(original)});
  if(mode.requirePreparationHold) {
@@ -123,6 +130,9 @@ if(step==='instruction_check') {
  }
  if(mode.removeHookDuringCheck) { const fs=await import('node:fs'); fs.rmSync(${JSON.stringify(join(home, 'config', 'hooks.json'))}); }
  out={verdict:'pass',findings:[]};
+ if(mode.instructionOmission && !snapshot.candidateInstructions.includes(mode.instructionOmission)) out={verdict:'fail',findings:[
+   {type:'omission',message:'Connected systems verification is missing',quotes:[{source:'original_request',text:snapshot.originalRequests[0].text}]}
+ ]};
  if(mode.narrow && snapshot.candidateInstructions.includes('Implement feature X for ERPNext only.')) { out={verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'instructions',text:'Implement feature X for ERPNext only.'}]}]}; }
 }
 
@@ -145,7 +155,7 @@ if (sessionId) {
   const wrapper = fakeTaskWrapper(root, true, database);
   const brief = executable('brief.mjs', `import {mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 import assert from 'node:assert/strict'; assert.equal(process.env.FM_HOME,${JSON.stringify(home)});
-const path=${JSON.stringify(data)}+'/'+process.argv[2]; mkdirSync(path,{recursive:true});
+const path=(process.env.FM_DATA_OVERRIDE??${JSON.stringify(data)})+'/'+process.argv[2]; mkdirSync(path,{recursive:true});
 writeFileSync(path+'/brief.md',readFileSync(${JSON.stringify(fileURLToPath(new URL('../../fixtures/firstmate-brief.md', import.meta.url)))},'utf8'));`);
   const inbox = executable('inbox.mjs', `import {readFileSync} from 'node:fs'; import assert from 'node:assert/strict';
 assert.equal(readFileSync(0,'utf8'),${JSON.stringify(original)});
@@ -162,7 +172,7 @@ writeFileSync(repository+'/feature.mjs',mode.badDelivery?${JSON.stringify(badCod
 const git=(...a)=>execFileSync('git',['-C',repository,...a],{encoding:'utf8'}).trim();git('add','feature.mjs');git('-c','core.hooksPath=/dev/null','commit','--allow-empty','-qm','Fake worker delivery '+taskId);
 const artifact={uri:'git:'+repository,revision:git('rev-parse','HEAD')};
 writeFileSync(run+'/worker-return.json',JSON.stringify({repository,deliveredArtifact:artifact,paths:['feature.mjs'],results:assignment.criteria.map((criterion,i)=>({
-kind:'criterion_result',id:taskId+'-result-'+i,projectId:'project-1',schemaVersion:1,revision:1,createdAt:${JSON.stringify(at)},updatedAt:${JSON.stringify(at)},
+kind:'criterion_result',id:taskId+'-result-'+i,projectId:'project-1',schemaVersion:1,revision:mode.returnRevision??1,createdAt:${JSON.stringify(at)},updatedAt:${JSON.stringify(at)},
 assignment:prepared.assignment,criterion,result:'passed',accomplishedBehavior:'Synthetic worker claims both systems work',artifact,
 evidence:[{artifact,description:'Synthetic acceptance evidence',observedAt:${JSON.stringify(at)}}],limitations:[],suggestions:[]}))}));`);
   const hookRegistry = join(root, 'hook-projects.json');
@@ -179,6 +189,11 @@ const checked=spawnSync(${JSON.stringify(script)},[${JSON.stringify(hookRegistry
 writeFileSync(${JSON.stringify(join(root, 'hook-result.json'))},checked.stdout||checked.stderr);
 if(checked.status!==0) process.exit(1);
 writeFileSync(${JSON.stringify(join(root, 'worker-started'))},'started');
+if(mode.exposeWorkerGeneration) writeFileSync(${JSON.stringify(join(home, 'runtime.json'))},JSON.stringify([{
+ id:process.argv[2],spawn_gen:'generation-1',project:process.argv[3],
+ endpoint:{exists:true,agent_alive:'alive',freshness:'fresh',observed_at:''},
+ current_state:{state:'active',freshness:'fresh',observed_at:''}
+}]));
 const worker=spawnSync(${JSON.stringify(returnWorker)},[process.argv[2]],{encoding:'utf8'});process.stderr.write(worker.stderr);process.exit(worker.status??1);`);
   executable('roborev', `import {readFileSync} from 'node:fs';
 const mode=JSON.parse(readFileSync(${JSON.stringify(join(root, 'mode.json'))},'utf8'));
