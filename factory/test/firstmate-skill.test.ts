@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { FeatureRunConfigSchema, ProjectStore, runFeature, taskReadinessReasons, type ImplementationPlanRevision } from '../src/index.js';
+import { FeatureRunConfigSchema, ProjectStore, captureRequest, digestText, ref, runFeature, taskReadinessReasons, type ImplementationPlanRevision } from '../src/index.js';
 import { scenario } from './milestone-helper.js';
 import { fakeTask } from './task-wrapper-helper.js';
 
@@ -13,8 +13,8 @@ const materializer = join(factory, 'skills/software-factory/scripts/materialize-
 
 // The fake FirstMate interprets its home registry and selects sources, as the
 // skill instructs. The owner supplies only plain request text, never run.json.
-function intake(twoTasks = false, independentBranch = false, existingCode = false, featureTaskId?: string) {
-  const request = 'Build feature X for every connected system, ERPNext is only an example.\nPreserve "quotes", $values and Unicode: שלום.\n';
+function intake(twoTasks = false, independentBranch = false, existingCode = false, featureTaskId?: string,
+  request = 'Build feature X for every connected system, ERPNext is only an example.\nPreserve "quotes", $values and Unicode: שלום.\n') {
   const flow = scenario({ bootstrap: false, factoryLayout: true, twoTasks, independentBranch, existingCode, originalRequest: request });
   const registration = `| project-1 | ${flow.config.repository} | local-only |`;
   writeFileSync(join(flow.data, 'projects.md'), registration + '\n');
@@ -129,12 +129,40 @@ test('two dependent tasks stay held until producer evidence, then both receive o
   } finally { flow.close(); }
 });
 
-test('a publishing run gives both sub-tasks a local handoff and one ticket delivery', () => {
-  const { flow, config } = intake(true);
+for (const existingTicket of [false, true]) test(`a publishing run gives both sub-tasks a local handoff and one ticket delivery (${existingTicket ? 'backlog' : 'chat'})`, () => {
+  const ticket = 'Build feature X for every connected system, ERPNext is only an example.\n' +
+    '\n## Owner’s answers\nAnswer: "Use the common interface. Preserve $values, `examples`, and שלום."\n' +
+    '\n## Definition of done (confirmed)\nEvery connected system can use feature X.\n';
+  const parentId = existingTicket ? 'existing-publishing-ticket' : undefined;
+  const { flow, config } = intake(true, false, false, parentId, ticket);
+  const clarification = 'Use the existing interface for every connection. Preserve `opaque IDs`.\n';
+  const expectedIntent = existingTicket ? `${ticket}\n\n## Recorded owner answers\n\n${clarification}` : ticket;
   config.firstMate.mode = 'no-mistakes';
   config.firstMate.briefExecutable = join(factory, '../bin/fm-brief.sh');
   const git = (...args: string[]) => execFileSync('git', ['-C', config.repository, ...args], { encoding: 'utf8' }).trim();
   try {
+    if (parentId) {
+      flow.wrapper.edit(state => { state.tasks[parentId] = fakeTask(parentId, { kind: 'feature', body: ticket }); });
+      const store = new ProjectStore(config.database);
+      let captured;
+      try { captured = captureRequest(store, { projectId: 'project-1', clientRequestId: 'publishing-clarification',
+        channel: 'chat', originalText: clarification, source: { uri: 'factory:publishing-clarification' }, attachments: [] }).request; }
+      finally { store.close(); }
+      const snapshot = join(flow.root, 'publishing-clarification.txt');
+      writeFileSync(snapshot, clarification);
+      config.sourceFiles.push({ source: captured.source, path: snapshot });
+      const outputsPath = join(flow.root, 'outputs.json');
+      const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+      const understanding = outputs.understand.input.records[0];
+      const decision = { kind: 'decision_change', id: 'publishing-answer', projectId: 'project-1', schemaVersion: 1,
+        revision: 1, createdAt: understanding.createdAt, updatedAt: understanding.updatedAt,
+        questionOrChange: 'Which interface applies?', affectedRecords: [understanding.feature], rationale: clarification,
+        disposition: 'selected', choice: { kind: 'product', state: 'resolved' },
+        sourceRefs: [{ uri: captured.source.uri, record: ref(captured) }], scopeChanges: [] };
+      outputs.design.records[0].decisions = [ref(decision)];
+      outputs.design.records.push(decision);
+      flow.save(outputsPath, outputs);
+    }
     const planned = runFeature(config, 'plan') as any;
     const [producer, consumer] = planned.tasks.map((task: any) => task.taskId);
     assert.equal(planned.tasks.length, 2);
@@ -171,11 +199,46 @@ test('a publishing run gives both sub-tasks a local handoff and one ticket deliv
     assert.equal((runFeature(config, 'review-all') as any).state, 'awaiting_ticket_branch');
     assert.equal(existsSync(join(config.runDirectory, 'ticket-delivery.json')), false);
     git('update-ref', localRef, finalCommit, firstCommit);
+    writeFileSync(config.requestFile, 'A mutable replacement cannot become the published ticket.');
     const result = runFeature(config, 'review-all') as any;
     assert.equal(result.review.outcome, 'passed');
+    const deliveryPath = join(config.runDirectory, 'ticket-delivery.json');
+    const intentFile = join(config.runDirectory, 'ticket-intent.md');
     assert.deepEqual(result.ticketDelivery, { taskId: parent.id, branch, mode: 'no-mistakes', yolo: 'off',
-      repository: config.repository, commit: finalCommit });
-    assert.deepEqual(JSON.parse(readFileSync(join(config.runDirectory, 'ticket-delivery.json'), 'utf8')), result.ticketDelivery);
+      repository: config.repository, commit: finalCommit, intentFile, intentDigest: digestText(expectedIntent) });
+    assert.deepEqual(JSON.parse(readFileSync(deliveryPath, 'utf8')), result.ticketDelivery);
+    assert.equal(readFileSync(intentFile, 'utf8'), expectedIntent);
+
+    const prBody = join(flow.root, 'pipeline-pr.md');
+    writeFileSync(join(flow.root, 'no-mistakes'), `#!${process.execPath}
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+assert.deepEqual(process.argv.slice(2), ['axi', 'run', '--intent-file', ${JSON.stringify(intentFile)}]);
+const intent = fs.readFileSync(process.argv[5], 'utf8');
+assert.equal(intent, ${JSON.stringify(expectedIntent)});
+fs.writeFileSync(${JSON.stringify(prBody)}, '## What Changed\\n\\nSynthetic pipeline description.\\n\\n## Intent\\n\\n' + intent.trim() + '\\n');
+`, { mode: 0o700 });
+    const helper = join(factory, 'scripts/ticket-validation.mjs');
+    const validate = (action: string, input?: string) => spawnSync(process.execPath, [helper, action, deliveryPath],
+      { cwd: config.repository, encoding: 'utf8', ...(input === undefined ? {} : { input }) });
+    assert.match(validate('start').stderr, /reviewed ticket repository, branch and commit/);
+    assert.equal(existsSync(prBody), false);
+    git('switch', branch);
+    const started = validate('start');
+    assert.equal(started.status, 0, started.stderr);
+    const pr = readFileSync(prBody, 'utf8');
+    const checked = validate('check-pr', pr);
+    assert.equal(checked.status, 0, checked.stderr);
+    assert.equal(validate('check-pr', pr.split('## Definition of done (confirmed)')[0]).status, 1);
+    writeFileSync(intentFile, 'Changed after review.');
+    assert.match(validate('start').stderr, /ticket intent is empty or changed/);
+
+    execFileSync(config.firstMate.briefExecutable, ['ordinary-ticket', 'unregistered-project', '--mode', 'no-mistakes'], {
+      env: { ...process.env, FM_HOME: flow.home, FM_DATA_OVERRIDE: flow.data }, encoding: 'utf8',
+    });
+    const ordinaryBrief = readFileSync(join(flow.data, 'ordinary-ticket', 'brief.md'), 'utf8');
+    assert.match(ordinaryBrief, /pass `--intent` as only this brief's `## Captain's intent` subsection/);
+    assert.doesNotMatch(ordinaryBrief, /ticket-validation\.mjs|--intent-file/);
   } finally { flow.close(); }
 });
 
