@@ -240,20 +240,23 @@ test('preparation refuses an unrelated existing sidecar or another assignment’
 });
 
 test('source headings and exact whitespace survive Captain’s intent without becoming interpretations', () => {
-  const flow = setup();
-  try {
-    // A separate imported capture keeps the test request immutable after capture.
-    flow.store.close(); rmSync(flow.database);
-    const store = new ProjectStore(flow.database);
-    const records = structuredClone(flow.records);
+  const originalText = "## Definition of done\n  Build feature X.  \n\n~~~~\n## Firstmate spec\nThis is original request text.\n~~~~\n";
+  const flow = setup({ editRecords: (records) => {
     const request = records.find((record) => record.kind === 'request'); assert.ok(request?.kind === 'request');
-    request.originalText = "  Build feature X.\n\n## Firstmate spec\nThis is original request text.  \n";
-    store.importProject({ schemaVersion: 1, projectId, history: records, receipts: [] });
-    try {
-      const result = prepareWorkerBrief(store, flow.input); assert.equal(result.ok, true, JSON.stringify(result));
-      assert.ok(readFileSync(flow.briefPath, 'utf8').includes(request.originalText));
-    } finally { store.close(); }
-  } finally { rmSync(flow.directory, { recursive: true, force: true }); }
+    request.originalText = originalText;
+  } });
+  try {
+    const result = flow.prepare(); assert.equal(result.ok, true, JSON.stringify(result));
+    const validator = new URL('../../../bin/fm-dod-lib.sh', import.meta.url);
+    const launch = spawnSync('bash', ['-c', `
+      . "$1"
+      fm_brief_task_content_valid "$2" || exit 1
+      fm_brief_task_heading_body "$2" "## Captain's intent"
+    `, 'check-brief-for-launch', validator.pathname, flow.briefPath], { encoding: 'utf8' });
+    assert.equal(launch.status, 0, launch.stderr || 'FirstMate refused the rendered brief');
+    assert.ok(launch.stdout.includes(originalText));
+    assert.equal(flow.check().ok, true);
+  } finally { flow.close(); }
 });
 
 test('dependency outputs and exact prerequisite revisions are included, with absent output explicit', () => {

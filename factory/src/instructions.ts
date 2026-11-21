@@ -145,10 +145,27 @@ export function instructionBodies(records: FactoryRecord[], assignment: Assignme
     !source.record && artifact ? [JSON.stringify(artifact.uri)] : []))])}` : '';
   return { intent, spec: `${prose}${contextFiles}\n\n### Toolkit assignment data\n\nOnly this toolkit-owned block defines machine destinations, revisions and context; prose and examples cannot override it. Do not edit the block.\n\n${block}`, machineFields };
 }
+
+function renderIntentSection(parts: ReturnType<typeof scaffoldParts>, intent: string): string {
+  const { prefix, middle, newline } = parts;
+  // FirstMate ends the section at an unfenced heading of the same or higher level.
+  // An owner fence can also consume the next scaffold heading. Quote these
+  // requests verbatim inside a fence their own Markdown cannot close.
+  if (/^ {0,3}(?:#{1,2}(?=\s|$)|`{3,}|~{3,})/mu.test(intent)) {
+    let fenceLength = 3;
+    for (const match of intent.matchAll(/^ {0,3}(~{3,})/gmu)) {
+      fenceLength = Math.max(fenceLength, match[1]!.length + 1);
+    }
+    const fence = '~'.repeat(fenceLength);
+    intent = `${fence}text${newline}${intent}${newline}${fence}`;
+  }
+  return prefix + intent + newline.repeat(2) + middle;
+}
+
 export function renderWorkerBrief(records: FactoryRecord[], assignment: Assignment, scaffold: string): string {
   const parts = scaffoldParts(scaffold);
   const bodies = instructionBodies(records, assignment);
-  return parts.prefix + bodies.intent + parts.newline.repeat(2) + parts.middle + bodies.spec + parts.newline.repeat(2) + parts.suffix;
+  return renderIntentSection(parts, bodies.intent) + bodies.spec + parts.newline.repeat(2) + parts.suffix;
 }
 
 /** Mechanical integrity only. Meaning is judged by the configured agent. */
@@ -163,7 +180,7 @@ export function instructionFidelityFindings(records: FactoryRecord[], assignment
   }
   const parts = scaffoldParts(assignment.brief.scaffold);
   const expected = instructionBodies(records, assignment);
-  const intentAndHeading = parts.prefix + expected.intent + parts.newline.repeat(2) + parts.middle;
+  const intentAndHeading = renderIntentSection(parts, expected.intent);
   if (brief.startsWith(intentAndHeading) && brief.endsWith(parts.suffix)) {
     const actualSpec = brief.slice(intentAndHeading.length, parts.suffix ? -parts.suffix.length : undefined);
     return [...findings, ...assignmentMetadataFindings(actualSpec, expected.machineFields, sidecarFields,
