@@ -23,6 +23,7 @@ import { readRoborevResult, reviewRoborevScope, roborevScopePrompt } from './qua
 import { parseStrictJson } from './strict-json.js';
 import { currentTaskMappings } from './task-readiness.js';
 import { readFeatureReviewTicket, type TaskAdapterOptions } from './tasks.js';
+import { assertFactoryReviewHeads } from './factory-locks.js';
 
 const DeliveryInputSchema = ReviewDeliveryTargetSchema.extend({
   repository: z.string().refine(isAbsolute, 'Repository must be absolute'),
@@ -183,6 +184,7 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
   const currentTicket = taskAdapter ?
     readFeatureReviewTicket(taskAdapter, data.projectId, assignment.feature?.id, mapping?.featureTaskId) : data.currentTicket;
   const deliveryInputs = [data, ...data.additionalDeliveries];
+  assertFactoryReviewHeads(history, deliveryInputs);
   const assignments = deliveryInputs.map((delivery) => {
     const target = planningRecord(history, delivery.assignment);
     if (target?.kind !== 'assignment') throw new StoreError('not_found', 'review_assignment_not_found');
@@ -345,6 +347,7 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
       ...(error ? { error } : {}), ...(qualityError ? { qualityError } : {}) },
   });
   const result = store.mutate(command, (current) => {
+    assertFactoryReviewHeads(current, deliveryInputs);
     const writes = pendingReturns(current);
     const superseded = assignments.some((target) => current.some((record) => record.id === target.id && record.revision > target.revision));
     if (superseded) review = { ...review, unresolvedQuestions: [...review.unresolvedQuestions, 'review_assignment_superseded_during_review'] };

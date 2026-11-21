@@ -194,7 +194,7 @@ if (sessionId) {
   const brief = executable('brief.mjs', `import {mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 import assert from 'node:assert/strict'; assert.equal(process.env.FM_HOME,${JSON.stringify(home)});
 const path=(process.env.FM_DATA_OVERRIDE??${JSON.stringify(data)})+'/'+process.argv[2]; mkdirSync(path,{recursive:true});
-writeFileSync(path+'/brief.md',readFileSync(${JSON.stringify(fileURLToPath(new URL('../../fixtures/firstmate-brief.md', import.meta.url)))},'utf8'));`);
+writeFileSync(path+'/brief.md',readFileSync(${JSON.stringify(fileURLToPath(new URL('../../fixtures/firstmate-brief.md', import.meta.url)))},'utf8')+'\\nShip branch: fm/'+process.argv[2]+'\\n');`);
   const inbox = executable('inbox.mjs', `import {readFileSync} from 'node:fs'; import assert from 'node:assert/strict';
 assert.equal(readFileSync(0,'utf8'),${JSON.stringify(original)});
 process.stdout.write(JSON.stringify({schema:'fm-inbox-note.v1',outcome:'created',id:'note-1',request_id:process.argv[4],saved:true,announced:true,acknowledged:false,path:${JSON.stringify(join(data, 'note.md'))}}));`);
@@ -211,6 +211,7 @@ writeFileSync(repository+'/feature.mjs',code+(mode.extraScope?${JSON.stringify(`
 const git=(...a)=>execFileSync('git',['-C',repository,...a],{encoding:'utf8'}).trim();git('add','feature.mjs');git('-c','core.hooksPath=/dev/null','commit','--allow-empty','-qm','Fake worker delivery '+taskId);
 if(mode.extraScope) git('-c','core.hooksPath=/dev/null','commit','--allow-empty','-qm','Finalize multi-commit delivery');
 const artifact={uri:'git:'+repository,revision:git('rev-parse','HEAD')};
+git('update-ref','refs/heads/fm/'+taskId,artifact.revision);
 writeFileSync(run+'/worker-return.json',JSON.stringify({repository,deliveredArtifact:artifact,paths:['feature.mjs'],results:assignment.criteria.map((criterion,i)=>({
 kind:'criterion_result',id:taskId+'-result-'+i,projectId:'project-1',schemaVersion:1,revision:mode.returnRevision??1,createdAt:${JSON.stringify(at)},updatedAt:${JSON.stringify(at)},
 assignment:prepared.assignment,criterion,result:'passed',accomplishedBehavior:'Synthetic worker claims both systems work',artifact,

@@ -24,6 +24,7 @@ import { parseStrictJson } from './strict-json.js';
 import { validateTaskReviewForDelivery } from './rules.js';
 import { readFeatureReviewTicket, TaskAdapterOptionsSchema } from './tasks.js';
 import { WorkerHookConfigSchema } from './worker-start-hook.js';
+import { assertFactoryReviewHeads } from './factory-locks.js';
 
 const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
 const safeId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
@@ -567,6 +568,7 @@ Each detailed task must require its worker to commit code, verify each assigned 
   const reviewDelivery = (deliveries: Array<z.infer<typeof FeatureWorkerReturnSchema> & { assignment: Ref }>,
     taskIds: string[], reviewId: string, label: string) => {
     const records = history();
+    assertFactoryReviewHeads(records, deliveries);
     const assignment = planningRecord(records, deliveries[0]!.assignment);
     const currentTicket = readReviewTicket(assignment?.kind === 'assignment' ? assignment.feature?.id : undefined);
     const previousReviews = records.filter((record): record is ProductReview => record.kind === 'product_review' && record.id === reviewId);
@@ -658,6 +660,7 @@ Each detailed task must require its worker to commit code, verify each assigned 
     save('review-all-snapshot', { capturedAt: issuedAt(), pendingTasks, deliveries });
     if (pendingTasks.length) return { state: 'awaiting_worker_returns' as const, pendingTasks,
       deliveredTasks: snapshot.filter((entry) => entry.text !== undefined).map((entry) => entry.taskId) };
+    assertFactoryReviewHeads(history(), deliveries);
     const ticket = ticketDelivery(manifest.plan);
     const head = ticket && ticketHead(config.repository, ticket.branch);
     if (ticket) {
