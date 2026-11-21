@@ -17,7 +17,7 @@ import { RecordStageInputSchema } from './planning.js';
 import { planReviewAuthority, planReviewDirections, PlanRevisionSchema, planRevisionDirections, reviseReviewedPlan } from './plan-review.js';
 import { BriefSpecEditsSchema, EvidenceSchema, RefSchema, type Ref } from './primitives.js';
 import { ProjectSchema, ProductReviewSchema, type Assignment, type FactoryRecord, type StageRevision } from './records.js';
-import { ReviewProductInputSchema, snapshotDelivery } from './product-review.js';
+import { ReviewProductInputSchema } from './product-review.js';
 import { CommitSchema } from './review-contracts.js';
 import { ProjectStore, StoreError } from './store.js';
 import { parseStrictJson } from './strict-json.js';
@@ -468,7 +468,6 @@ Each detailed task must require its worker to commit code, verify each assigned 
     }
     const start = records.filter((record) => record.id === startId).at(-1);
     if (start && (start.kind !== 'operation' || start.externalAttempt || start.state === 'succeeded')) throw new Error('worker_start_already_attempted');
-    begin(previousPreparation ? `prepare-task-r${previousPreparation.revision + 1}` : phase);
   }
   const prepareSelected = (startFindings?: unknown, revisionRounds = maxRevisionRounds) => {
     const plan = selectedPlan; const task = selectedDetailedTask;
@@ -477,24 +476,32 @@ Each detailed task must require its worker to commit code, verify each assigned 
     if (!request || request.kind !== 'request') throw new Error('captured_request_missing');
     const requestSnapshot = join(directory, 'captured-request.txt'); writeFileSync(requestSnapshot, request.originalText);
     const sourceFiles: z.input<typeof PrepareWorkerBriefInputSchema>['sourceFiles'] = [{ source: { uri: config.requestFile }, path: requestSnapshot }, ...config.sourceFiles];
+    const context = requiredAssignmentContext(history(), { projectId: project.id, feature: plan.feature,
+      design: plan.design, plan: ref(plan), detailedPlanTask: ref(task), criteria: task.criteria });
     if (planned) {
       for (const edge of plan.dependencies.filter((edge) => edge.consumerTaskId === task.id)) {
         const producer = planned.tasks.find((entry) => entry.task.id === edge.prerequisiteTaskId);
         if (!producer) throw new Error('planned_producer_missing');
+        const records = history();
+        const review = records.filter((record) => record.kind === 'product_review' && record.id === `${producer.taskId}-review`).at(-1);
+        if (review?.kind !== 'product_review' || !review.conformance || !validateTaskReviewForDelivery(records, ref(review)).ok) {
+          throw new Error(`review the producer first: ${producer.taskId}`);
+        }
         const returnPath = join(planDirectory, 'tasks', producer.taskId, 'worker-return.json');
-        if (!existsSync(returnPath)) throw new Error('prerequisite_worker_return_missing');
+        if (!existsSync(returnPath)) throw new Error(`review the producer first: ${producer.taskId}`);
         const returned = FeatureWorkerReturnSchema.parse(json(returnPath));
-        const required = requiredAssignmentContext(history(), { projectId: project.id, feature: plan.feature,
-          design: plan.design, plan: ref(plan), detailedPlanTask: ref(task), criteria: task.criteria });
-        const artifacts = required.artifacts.filter((artifact) => artifact.uri === returned.deliveredArtifact.uri &&
+        if (!review.reviewedArtifacts.some((artifact) => isDeepStrictEqual(artifact, returned.deliveredArtifact))) {
+          throw new Error(`review the producer first: ${producer.taskId} has a revised delivery`);
+        }
+        const artifacts = context.artifacts.filter((artifact) => artifact.uri === returned.deliveredArtifact.uri &&
           artifact.revision === returned.deliveredArtifact.revision && artifact.digest === returned.deliveredArtifact.digest);
         for (const artifact of artifacts) {
-          const path = save(`prerequisite-${producer.taskId}`, snapshotDelivery(returned.repository,
-            returned.deliveredArtifact, returned.paths, 256_000));
+          const path = save(`prerequisite-${producer.taskId}`, review.conformance.deliveredFiles);
           sourceFiles.push({ source: { uri: artifact.uri }, artifact, path });
         }
       }
     }
+    if (phase === 'prepare-task') begin(previousPreparation ? `prepare-task-r${previousPreparation.revision + 1}` : phase);
     const preparationGate = briefPreparationGateId(config.taskId);
     const briefPath = join(fm.dataDirectory, config.taskId, 'brief.md');
     let feedback: unknown = startFindings;

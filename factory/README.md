@@ -1263,13 +1263,14 @@ Each entry retains its own task, commit, file snapshots, quality evidence and ex
 A maintenance delivery with no criteria contributes one null-criterion outcome alongside the distinct criterion outcomes, including when the deliveries belong to a feature.
 The feature-wide completion rule still requires all active required criteria, so a delivered partial slice stays incomplete until the aggregate supplies the remaining evidence.
 `paths` optionally adds unchanged dependency files to the review snapshot; every path changed by the commit is included automatically.
-`maxSourceChars` bounds the delivered snapshot, defaulting to 256,000 characters and limited to 1,000,000.
-The snapshot accepts at most 1,000 text files and the complete package is limited to 1,500,000 characters.
+The snapshot accepts at most 1,000 text files and defaults to 16,000,000 characters per delivery.
+An explicit `maxSourceChars` sets a lower limit of up to 1,000,000 characters.
+The review manifest and accompanying metadata are limited to 1,500,000 characters.
 Binary files, unreadable commits, missing requested paths and exceeded limits return explicit errors rather than silently truncating evidence.
 Files come from the pinned commit, including first-parent merge changes, regardless of local worktree edits.
 Supply relevant unchanged dependencies in `paths`; the reviewer must report uncertainty when the supplied evidence cannot establish behavior.
 
-The package includes exact original request text, the design and plan revisions, detailed task and acceptance cases, canonical assignment metadata, actual delivered code, per-criterion worker returns, selected decisions, baseline evidence and existing technical-review results.
+The package includes exact original request text, the design and plan revisions, detailed task and acceptance cases, canonical assignment metadata, paths to frozen delivered files, per-criterion worker returns, selected decisions, baseline evidence and existing technical-review results.
 The reviewer checks the plan independently against the original request and reports original-request omissions even when no listed criterion mentions them.
 A brief that incorrectly narrows a general design to ERPNext cannot redefine correctness.
 Suggestions remain separate from required findings and criterion outcomes.
