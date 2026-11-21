@@ -70,7 +70,7 @@ For wrappers without atomic `add --hold-reason`, set `guardTaskId` to an existin
 The registry starts empty, so the enabled hook has no unavailable databases to inspect.
 FirstMate bootstraps each selected project's database before adding its registry entry, and preserves existing entries.
 Keep every registered database available while its managed tasks can launch or relaunch.
-The 300-second hook budget covers the installed template's 280-second agent deadline; the runner validates the total hook and spawn budgets before releasing work.
+The configured instruction-hook budget covers the installed template's instruction-check deadline; the runner validates the total hook and spawn budgets before releasing work.
 For larger deadlines or additional hooks, follow the [runbook budget rules](docs/one-feature-run.md#worker-start-hook).
 
 Start a fresh FirstMate session in this home so its harness discovers the skill.
@@ -1034,9 +1034,19 @@ Missing entries and cross-project configuration are refused.
   },
   "executables": { "codex": "/absolute/path/to/codex", "claude": "/absolute/path/to/claude" },
   "cwd": "/absolute/review-directory",
-  "timeoutMs": 120000
+  "timeoutMs": 120000,
+  "planningTimeoutMs": 21600000,
+  "planningIdleTimeoutMs": 1800000
 }
 ```
+
+`planningIdleTimeoutMs` stops understand, design, plan, detail and semantic plan-review calls after prolonged inactivity, defaulting to 1,800,000 ms.
+Stdout, stderr and CPU/process activity in the owned agent process group reset that window, so active planning can take longer for larger features.
+If CPU activity cannot be observed, missing output alone does not prove inactivity.
+`planningTimeoutMs` is the separate overall safety budget, defaulting to 21,600,000 ms and configurable up to the platform timer range; there is no fixed fifteen-minute ceiling.
+Attempt progress and final timing records retain observed activity, elapsed time and the stop reason.
+`timeoutMs` remains the separate deadline for instruction checks, product review and learning consolidation, defaulting to 120,000 ms with a 600,000 ms cap.
+Planning does not run inside the worker-start instruction hook.
 
 `resolveStepAgentProfile` is the shared resolver for understand/design/plan/detail,
 independent `plan_check`, `instruction_check`, `build`, `product_review` and
@@ -1263,14 +1273,15 @@ Each entry retains its own task, commit, file snapshots, quality evidence and ex
 A maintenance delivery with no criteria contributes one null-criterion outcome alongside the distinct criterion outcomes, including when the deliveries belong to a feature.
 The feature-wide completion rule still requires all active required criteria, so a delivered partial slice stays incomplete until the aggregate supplies the remaining evidence.
 `paths` optionally adds unchanged dependency files to the review snapshot; every path changed by the commit is included automatically.
-`maxSourceChars` bounds the delivered snapshot, defaulting to 256,000 characters and limited to 1,000,000.
-The snapshot accepts at most 1,000 paths and the complete package is limited to 1,500,000 characters.
+The snapshot accepts at most 1,000 paths and defaults to 16,000,000 characters per delivery.
+An explicit `maxSourceChars` sets a lower limit of up to 1,000,000 characters.
+The review manifest and accompanying metadata are limited to 1,500,000 characters.
 Binary files are listed by committed path and byte size without supplying their contents to the reviewer.
 Unreadable commits, missing requested paths and exceeded limits return explicit errors rather than silently truncating evidence.
 Files come from the pinned commit, including first-parent merge changes, regardless of local worktree edits.
 Supply relevant unchanged dependencies in `paths`; the reviewer must report uncertainty when the supplied evidence cannot establish behavior.
 
-The package includes exact original request text, the design and plan revisions, detailed task and acceptance cases, canonical assignment metadata, actual delivered code, per-criterion worker returns, selected decisions, baseline evidence and existing technical-review results.
+The package includes exact original request text, the design and plan revisions, detailed task and acceptance cases, canonical assignment metadata, paths to frozen delivered files, per-criterion worker returns, selected decisions, baseline evidence and existing technical-review results.
 The reviewer checks the plan independently against the original request and reports original-request omissions even when no listed criterion mentions them.
 It also checks the pinned changes and names each addition that neither the confirmed ticket nor the assigned plan requires.
 A brief that incorrectly narrows a general design to ERPNext cannot redefine correctness.
@@ -1292,6 +1303,8 @@ The structured technical verdict is retained; a missing verdict is uncertain, an
 The Factory review also submits the pinned diff and confirmed definition of done as a read-only RoboRev scope review.
 That result must name each unrequested addition and fails the delivery when any are found.
 Factory binds the returned job to the exact submitted prompt and reuses a definitive scoped result only for that same prompt.
+An explicit advisory acceptance can satisfy a failed code or scope job when it covers every finding for the exact delivery.
+The original job verdict and evidence remain in the review record.
 The ordinary result reader still only reads the existing commit review.
 A definitive exact-commit quality result already retained by an earlier product review is reused, including when that product review failed.
 An uncertain cached quality result is refreshed on a new review operation, preserving the original uncertain review and receipt replay.

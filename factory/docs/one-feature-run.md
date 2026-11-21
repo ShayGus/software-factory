@@ -77,6 +77,8 @@ Every `sourceFiles[].path` must be absolute; relative snapshot paths are
 rejected before capture so planning and brief preparation read the same file.
 Planning agents receive paths to the captured request, selected snapshots, repository and records for the current attempt.
 They read these inputs and can inspect additional repository files read-only.
+The planner starts with one implementation task and records the reason in `strategyReason` when the ticket is large enough to need several.
+The independent plan review also checks that each new feature and worker ticket title describes what will be built in plain words before any tickets are queued.
 External references in generated designs and tasks must resolve through the operator-provided mappings or the captured request.
 Unlisted paths and file URIs are refused before brief preparation.
 
@@ -84,6 +86,9 @@ Set `agentConfig` using `fixtures/workflow-agents.json`, with the matching proje
 ID and absolute installed harness executables. `understand`, `design`, `plan`,
 `detail`, `plan_check`, `instruction_check`, `build` and `product_review` each select
 their own harness, provider, model and effort. The run path requires all eight.
+Set the optional `ruleFiles` array in the project's `agents.json` to absolute paths such as `["/absolute/project/CLAUDE.md"]`.
+Each Factory prompt and generated builder brief directs the agent to open those files before doing task work.
+Prepare a fresh brief after changing the configured paths so it records the current list.
 The shared configuration also requires BUILD-11's `learning_consolidation` profile;
 this feature run does not execute it. Individual commands retain the seven base
 profile entries, with `plan_check` and `build` added for the connected run path.
@@ -91,6 +96,8 @@ Supported native harnesses are Codex and Claude, with the existing effort/provid
 The four authoring profiles must use the same harness so understand, design, plan and detail can share a read-only session.
 Each turn returns a separate output for validation and storage before the next turn.
 Continuations receive the current stored records and carry forward the planner's earlier reading of the request and repository.
+Recovery of an interrupted plan continues its saved authoring session when one is available.
+If the completed detail is still current, a resumed plan reuses it and starts with independent review.
 Build flags go to real `fm-spawn.sh`.
 The independent plan check and other reviews use fresh sessions, separate from planning and the build worker.
 There are no agent calls for mechanical capture, mapping, rendering or transport.
@@ -143,6 +150,8 @@ A start precheck refusal can reprepare the brief and retry the same start operat
 An ambiguous launch still requires runtime reconciliation.
 A failed product review with attributable findings sends them to the original worker through its verified FirstMate inbox.
 Review reports `awaiting_worker_revision` while it waits for a new commit or revised criterion evidence, then checks the new delivery on the next return wake.
+Product reviewers open frozen commit snapshots by path from the evidence manifest.
+Preparing a dependent task requires current review evidence for the exact producer delivery before brief preparation or repair starts.
 
 Bootstrap does not read agent settings or require hook installation. It retains
 `bootstrap-project-input.json`, `bootstrap.stdout` and `bootstrap.stderr` under
@@ -225,8 +234,6 @@ The existing task mappings derive product requirements and native dependency edg
 `planned.json` binds the request, checked plan, detailed tasks and operation IDs to the unchanged run configuration; it is not a scheduler or a second source of task state.
 After partial task reconciliation, use its operation IDs with `outbox`/`reconcile-task` rather than repeating planning.
 `requestChannel` selects capture provenance and defaults to `cli`; the chat skill sets `chat`.
-Bare public HTTPS citations stay in the planning records as links without a fetch or a claim that the page was verified.
-External excerpts and versioned artifacts still require configured source snapshots.
 
 FirstMate selects the next eligible task through its normal supervision.
 `prepare-task` scaffolds and checks its brief, then reconciles its preparation-hold release through `manage-task`.
@@ -241,6 +248,11 @@ For publishing runs, each sub-task receives a native local-only brief and starts
 FirstMate initializes that branch on the first start.
 After the sub-task passes review, the guarded local landing fast-forwards the ticket branch to its reviewed commit.
 Preparation and reviews are single-use; recover failures using saved inputs and existing individual commands with deliberate new keys, rather than deleting markers and blindly replaying effects.
+Planning recovery preserves its mapped feature and recorded task operations; [run-feature.mjs](../scripts/run-feature.mjs) owns the resume command and guards.
+New repository citations are copied from the run's recorded Git baseline and pinned for task preparation.
+Bare public HTTPS citations stay in the planning records as links without a fetch or a claim that the page was verified.
+For external excerpts or immutable artifacts required by a checked run, provide approved HTTPS snapshots through the runner's resume command.
+Owner clarifications linked by decisions are materialized from their immutable captured text, preserving source context without reading their source URIs.
 
 Review each producer before completing its normal FirstMate delivery and releasing consumers.
 Code and product review require the returned commit to match the current head of the builder branch recorded in the assignment.
@@ -268,6 +280,9 @@ For a chat-originated ticket that still has only its Factory marker, the capture
 
 For no-mistakes delivery, `ticket-delivery.json` identifies a private `intentFile` containing the full reviewed ticket text and any additional recorded owner answers, and records its digest.
 The handoff uses the same backlog ticket body as the passing review.
+To prepare a delivery worker, render its brief with `ticket-validation.mjs brief /absolute/ticket-delivery.json` and save it as the parent ticket's brief.
+Spawn the parent ticket in `no-mistakes` mode with `--branch-prefix fm/ticket/` and no base-branch override so the pull request targets the project default.
+The start hook verifies the parent ticket's aggregate review, handoff, intent digest, and exact branch head before admitting that worker.
 From the isolated checkout at the reviewed ticket head, use `node /absolute/software-factory/factory/scripts/ticket-validation.mjs start /absolute/ticket-delivery.json` for a new run.
 The helper passes the complete captured ticket to no-mistakes through `--intent-file`, and the pipeline owns opening the PR.
 Reattach to an active run through the ordinary driver and keep its original intent.

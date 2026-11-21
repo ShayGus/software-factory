@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
 
 export const TextSchema = z.string().refine((value) => value.trim().length > 0, 'Must not be blank');
+export const ProjectRuleFilesSchema = z.array(TextSchema.refine(isAbsolute, 'Project rule file paths must be absolute'));
 export const BriefSpecEditsSchema = z.array(z.strictObject({ find: z.string().min(1), replace: z.string() }));
 // IDs, including FirstMate IDs, are opaque. Never infer identity from a title or prefix.
 export const IdSchema = TextSchema;
@@ -12,12 +14,13 @@ export const SourceRefSchema = z.strictObject({
   record: RefSchema.optional(),
   excerpt: z.string().min(1).optional(),
 });
-export const ArtifactSchema = z.strictObject({
-  uri: TextSchema,
-  revision: TextSchema.optional(),
-  digest: TextSchema.optional(),
-}).refine((value) => value.revision !== undefined || value.digest !== undefined,
-  'Artifact needs a stable revision or digest');
+// Express identity structurally so generated agent JSON schemas require it too.
+const ArtifactFieldsSchema = z.strictObject({ uri: TextSchema, revision: TextSchema.optional(), digest: TextSchema.optional() });
+type ArtifactFields = z.infer<typeof ArtifactFieldsSchema>;
+export const ArtifactSchema: z.ZodType<ArtifactFields, ArtifactFields> = z.union([
+  ArtifactFieldsSchema.extend({ revision: TextSchema }),
+  ArtifactFieldsSchema.extend({ digest: TextSchema }),
+]);
 export const EvidenceSchema = z.strictObject({
   artifact: ArtifactSchema,
   description: TextSchema,

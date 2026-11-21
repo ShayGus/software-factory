@@ -216,7 +216,8 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   if (understanding.openUnknowns.length) add('stage_gap', understanding, 'openUnknowns', 'Material understanding unknowns remain open');
   const decisions = design.decisions.map((ref) => planningRecord(records, ref));
   const isSettled = (decision: FactoryRecord | undefined) => decision?.kind === 'decision_change' &&
-    (decision.choice?.state === 'resolved' || (artifactReuse(designStage) && !decision.choice &&
+    (decision.choice?.state === 'resolved' || (decision.requestMapping && decision.disposition === 'selected') ||
+      (artifactReuse(designStage) && !decision.choice &&
       ['selected', 'rejected'].includes(decision.disposition)));
   for (const question of design.unresolvedQuestions) {
     const matches = decisions.filter((decision) => decision?.kind === 'decision_change' && decision.questionOrChange === question);

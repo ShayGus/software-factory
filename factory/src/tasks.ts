@@ -1,7 +1,7 @@
-import { readFleetSnapshot, runtimeTask, observedAgentStopped, recordOperationObservation } from './runtime.js';
+import { firstMateEnv, readFleetSnapshot, runtimeTask, observedAgentStopped, recordOperationObservation } from './runtime.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { isAbsolute, resolve } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { MapManageExecutionTaskCommandSchema } from './commands.js';
 import { FirstMateTaskMutationSchema, parseFirstMateTaskDetail, type FirstMateTask } from './firstmate.js';
@@ -183,8 +183,7 @@ export class TaskWrapper {
       if (!isAbsolute(path)) throw new StoreError('validation', 'absolute_task_adapter_paths_required');
     }
     if (options.guardTaskId !== undefined && !validId(options.guardTaskId)) throw new StoreError('validation', 'invalid_guard_id');
-    this.env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('FM_') && !key.startsWith('TASKS_AXI_')));
-    this.env.FM_HOME = resolve(options.fmHome);
+    this.env = firstMateEnv(options.fmHome);
   }
   run(args: string[], executable = this.options.tasksExecutable): string {
     try {

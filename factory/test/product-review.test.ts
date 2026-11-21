@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { RecordsSchema, ProjectStore, reviewProduct, parseRoborevResult, readRoborevResult, snapshotDelivery,
-  stepAgentCommand, validateRecords, validateReviewForCompletion, type Assignment, type CriterionResult, type FactoryRecord,
-  checkFactoryMerge, ref, recordSource, planReadinessFindings, type StageRevision, type ProductVerdict, type QualityResult } from '../src/index.js';
+  stepAgentCommand, validateRecords, validateReviewForCompletion, digestText, QualityResultSchema, type Assignment, type CriterionResult, type FactoryRecord,
+  checkFactoryMerge, ref, recordSource, planReadinessFindings, technicalReviewSatisfied, type StageRevision, type ProductVerdict, type QualityResult } from '../src/index.js';
 import { fakeJudgeOptions } from './judge-helper.js';
 
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
@@ -21,6 +21,46 @@ function qualityRaw(commit: string, verdict = 'pass') {
     structured_output: { schema_version: 2, verdict, summary: 'Existing result', findings: [] },
     job: { id: 42, git_ref: commit, status: 'done', job_type: 'review' } });
 }
+
+test('technical advisories preserve the failed raw verdict and require exact acceptance of every finding', () => {
+  const commit = 'a'.repeat(40);
+  const finding = { severity: 'low', location: 'test/review.test.ts:42', problem: 'A test omits a corner case', fix: 'Extend the test' };
+  const other = { ...finding, location: 'test/review.test.ts:54' };
+  const raw = JSON.parse(qualityRaw(commit, 'fail'));
+  raw.structured_output.findings = [finding];
+  const result = parseRoborevResult(JSON.stringify(raw), commit, at);
+  const approval = { artifact: { uri: 'fixture:owner-approval', revision: commit, digest: 'sha256:approved' },
+    description: 'Owner accepted this exact finding', observedAt: at };
+  assert.equal(result.verdict, 'failed');
+  assert.equal(technicalReviewSatisfied(result), false);
+  assert.equal(technicalReviewSatisfied({ ...result, advisoryAcceptance: { approval, findings: [finding] } }), true);
+  assert.equal(technicalReviewSatisfied({ ...result, advisoryAcceptance: { approval, findings: [other] } }), false);
+  raw.structured_output.findings.push(other);
+  const second = parseRoborevResult(JSON.stringify(raw), commit, at);
+  assert.equal(technicalReviewSatisfied({ ...second, advisoryAcceptance: { approval, findings: [finding] } }), false);
+});
+
+test('scope advisories must match the complete recorded findings, prompt and commit', () => {
+  const commit = 'a'.repeat(40);
+  const scopeDigest = digestText('Scope prompt for ' + commit);
+  const findings = ['A timing test covers an extra case.', 'An additional notice is displayed.'];
+  const raw = JSON.stringify({ job_id: 42, job: { id: 42, git_ref: 'factory-scope-' + scopeDigest.slice(-16),
+    status: 'done', job_type: 'task' }, prompt_digest: scopeDigest,
+    output: JSON.stringify({ verdict: 'fail', findings }) });
+  const result = QualityResultSchema.parse({ tool: 'roborev', commit, jobId: 42, verdict: 'failed',
+    artifact: { uri: 'roborev:job/42', revision: commit, digest: digestText(raw) }, observedAt: at, raw, scopeDigest });
+  const approval = { artifact: { uri: 'fixture:owner-approval', revision: commit, digest: digestText('Accepted scope findings') },
+    description: 'Owner accepted these exact findings', observedAt: at };
+  const accepted = QualityResultSchema.parse({ ...result, advisoryAcceptance: { approval, findings: [...findings].reverse() } });
+  assert.equal(technicalReviewSatisfied(result), false);
+  assert.equal(technicalReviewSatisfied(accepted), true);
+  assert.equal(accepted.verdict, 'failed');
+  assert.equal(accepted.raw, raw);
+  assert.equal(technicalReviewSatisfied({ ...accepted, scopeDigest: digestText('Another scope prompt') }), false);
+  assert.equal(technicalReviewSatisfied({ ...accepted, commit: 'b'.repeat(40) }), false);
+  assert.equal(technicalReviewSatisfied({ ...accepted, jobId: 43 }), false);
+  assert.equal(technicalReviewSatisfied({ ...accepted, advisoryAcceptance: { approval, findings: findings.slice(1) } }), false);
+});
 function passing(code = goodCode): ProductVerdict {
   return { sourceComparison: 'passed', instructionFidelity: 'passed', planConformance: 'passed',
     criteria: [general, second].map((criterion) => ({ criterion, state: 'accomplished',
@@ -59,7 +99,7 @@ function setup(code = goodCode, edit?: (records: FactoryRecord[]) => void) {
     qualityReads++; return parseRoborevResult(qualityRaw(sha), sha, observedAt);
   };
   const run = (verdict: ProductVerdict, options: { record?: string; result?: string; exit?: string; sleep?: string } = {}) =>
-    reviewProduct(store, input, fakeJudgeOptions({ result: JSON.stringify(verdict), ...options }), reader);
+    reviewProduct(store, input, fakeJudgeOptions({ result: JSON.stringify(verdict), ...options }), reader, directory);
   return { directory, db, records, store, input, reader, run, git, commit, qualityReads: () => qualityReads,
     close: () => { store.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
@@ -82,7 +122,8 @@ test('decisive case: perfect compliance with the ERPNext brief and green technic
     assert.equal(input.candidateInstructions, 'Implement feature X only for ERPNext.');
     assert.deepEqual(input.acceptanceCases, ['ERPNext case', 'Second-system case']);
     assert.equal(input.deliveredArtifact.revision, flow.commit);
-    assert.equal(input.deliveredFiles[0].text, badCode);
+    assert.equal(input.deliveredFiles[0].text, undefined);
+    assert.equal(readFileSync(input.deliveredFiles[0].snapshotPath, 'utf8'), badCode);
     assert.equal(input.workerReturns.length, 2);
     assert.equal(input.technicalReviews[0].commit, flow.commit);
     assert.notEqual(input.agentPid, process.pid); assert.deepEqual(input.inheritedSessionMarkers, []);
@@ -331,7 +372,7 @@ test('binary delivery lists the committed path and size alongside reviewable sou
     const evidence = JSON.parse(readFileSync(calls, 'utf8'));
     assert.deepEqual(evidence.deliveredFiles.find((file: { path: string }) => file.path === 'opaque.bin'),
       { path: 'opaque.bin', sizeBytes: 3, artifact: binary.artifact });
-    assert.equal(evidence.deliveredFiles[0].text, goodCode);
+    assert.equal(readFileSync(evidence.deliveredFiles[0].snapshotPath, 'utf8'), goodCode);
   } finally { flow.close(); }
 });
 
@@ -599,18 +640,19 @@ test('quality cache isolates repositories and artifacts even at the same commit'
   } finally { flow.close(); rmSync(other, { recursive: true, force: true }); }
 });
 
-test('large source within both limits is serialized once and reaches the reviewer', () => {
-  const code = goodCode + '// ' + 'x'.repeat(800_000);
+test('large committed source is read through the manifest without appearing in the review JSON', () => {
+  const code = goodCode + '// ' + 'x'.repeat(1_600_000);
   const flow = setup(code);
   try {
     const calls = join(flow.directory, 'large-review.jsonl');
-    const result = reviewProduct(flow.store, { ...flow.input, maxSourceChars: 1_000_000 },
-      fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) }), flow.reader);
+    const result = reviewProduct(flow.store, flow.input,
+      fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) }), flow.reader, flow.directory);
     assert.equal(result.review.outcome, 'passed');
     const serialized = readFileSync(calls, 'utf8');
-    assert.equal(serialized.split('x'.repeat(800_000)).length - 1, 1);
+    assert.equal(serialized.includes('x'.repeat(512)), false);
     const snapshot = JSON.parse(serialized);
-    assert.equal(snapshot.deliveredFiles[0].text, code);
+    assert.equal(readFileSync(snapshot.deliveredFiles[0].snapshotPath, 'utf8'), code);
+    assert.equal(result.review.conformance?.deliveredFiles[0]?.text, code);
   } finally { flow.close(); }
 });
 

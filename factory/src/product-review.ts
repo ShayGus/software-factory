@@ -9,7 +9,7 @@ import { RecordReviewResultCommandSchema, ReviewDeliveryTargetSchema } from './c
 import { ArtifactSchema, EvidenceSchema, IdSchema, RefSchema, TimestampSchema, type Comparison, type Ref } from './primitives.js';
 import { CriterionResultSchema, ProductReviewSchema, type FactoryRecord, type ProductReview } from './records.js';
 import { CommitSchema, DeliveredFileSchema, ProductVerdictSchema, QualityResultSchema, ReviewTicketSchema,
-  expectedReviewCriteria, type ProductVerdict, type QualityResult, type ReviewTicket } from './review-contracts.js';
+  expectedReviewCriteria, technicalReviewSatisfied, type ProductVerdict, type QualityResult, type ReviewTicket } from './review-contracts.js';
 import { ProjectAgentConfigSchema, resolveStepAgentProfile } from './agent-profiles.js';
 import { runJudgmentAgent } from './agent-runner.js';
 import { instructionJudgeSnapshot } from './instruction-judge.js';
@@ -86,7 +86,7 @@ Review every supplied delivery and its assignment, detailed task, instructions, 
 Every finding needs a check (sourceComparison, instructionFidelity or planConformance), type (missing_behavior, wrong_implementation, original_request_omission, narrowed_generality, instruction_mismatch or unrequested_addition), message and quotes. Each quote is {source,text}; quote exact evidence strings. Sources are original_request, design, plan, task, instructions, delivery or worker_return. Quote the absent authoritative requirement for omissions and the actual implementation for wrong behavior where possible. A check with a finding cannot pass; failed checks need findings. Use uncertain for unsupported claims.
 Use out_of_scope only for a named criterion that the current ticket excludes or whose requirement has been removed from its confirmed definition of done. Explain the removal and quote the relevant current ticket wording or definition of done as original_request. For a currentTicket, quotes with source original_request must come from its text.
 Output exactly: {"sourceComparison":"passed|failed|uncertain","instructionFidelity":"passed|failed|uncertain","planConformance":"passed|failed|uncertain","criteria":[{"criterion":{"id":"...","revision":1},"state":"accomplished|failed|uncertain|out_of_scope","behavior":"...","quotes":[{"source":"delivery","text":"exact code"}],"limitations":[]}],"findings":[],"suggestions":[],"unresolvedQuestions":[]}.
-The referenced JSON snapshot is the complete evidence. An entry in deliveredFiles with sizeBytes identifies a binary file by committed path and byte size. It supplies no contents to inspect or quote.`;
+The JSON evidence names the frozen committed files in deliveredFiles. Open each needed snapshotPath with read-only tools and quote its contents. An entry with sizeBytes identifies a binary file by committed path and byte size. It supplies no contents to inspect or quote. Use the file paths and artifacts in the manifest for provenance. Do not substitute mutable repository files for the snapshots.`;
 
 function leaves(value: unknown): string[] {
   if (typeof value === 'string') return [value];
@@ -177,6 +177,10 @@ export type QualityReader = (repository: string, commit: string, at: string) => 
 export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: unknown, readQuality?: QualityReader,
   runDirectory?: string, maxRevisionRounds = 0, taskAdapter?: TaskAdapterOptions) {
   const data = ReviewProductInputSchema.parse(input);
+  // Retain the persisted command's historical default for receipt replay.
+  // Apply an explicitly supplied source limit while allowing larger on-disk snapshots by default.
+  const sourceBudget = typeof input === 'object' && input !== null && 'maxSourceChars' in input && input.maxSourceChars !== undefined ?
+    data.maxSourceChars : 16_000_000;
   const config = ProjectAgentConfigSchema.parse(agentConfig);
   const { profile } = resolveStepAgentProfile(config, data.projectId, 'product_review');
   const history = store.history(data.projectId);
@@ -260,7 +264,7 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
   });
   const operationQuality = new Map<string, QualityResult>();
   const deliveryEvidence: DeliveryEvidence[] = deliveryInputs.map((delivery, index) => {
-    const deliveredFiles = snapshotDelivery(delivery.repository, delivery.deliveredArtifact, delivery.paths, data.maxSourceChars, baselineCommit);
+    const deliveredFiles = snapshotDelivery(delivery.repository, delivery.deliveredArtifact, delivery.paths, sourceBudget, baselineCommit);
     const cached = history.flatMap((record) => record.kind === 'product_review' ?
       (record.conformance?.deliveries ?? []).filter((saved) => saved.repository === resolve(delivery.repository) &&
         sameArtifact(saved.artifact, delivery.deliveredArtifact)).flatMap((saved) =>
@@ -298,30 +302,30 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
   const primary = deliveryEvidence[0]!;
   const snapshot = productReviewPackage(history, data.assignment, data.deliveredArtifact, primary.deliveredFiles,
     data.results, primary.technicalReviews, data.baselineEvidence, deliveryEvidence.slice(1), currentTicket);
-  const manifest = { ...snapshot,
-    deliveredFiles: deliveredFiles.map(({ text, ...file }) => file.sizeBytes === undefined ? { ...file, text } : file),
-    deliveries: snapshot.deliveries.map((delivery, index) => {
-      const { confirmedDefinitionOfDone, patch } = changes[index]!;
-      return { ...delivery, confirmedDefinitionOfDone, diffDigest: digestText(patch) };
-    }) };
-  const serialized = JSON.stringify(manifest);
-  if (serialized.length > 1_500_000) throw new StoreError('validation', 'review_package_too_large');
+  const manifest = { ...snapshot, deliveredFiles: deliveredFiles.map(({ text: _text, ...file }) => file) };
+  if (JSON.stringify(manifest).length > 1_500_000) throw new StoreError('validation', 'review_package_too_large');
   const session = `factory:product-review:${randomUUID()}`;
   let verdict: ProductVerdict | null = null;
   let error: string | undefined;
-  const diffDirectory = mkdtempSync(join(runDirectory ?? tmpdir(), 'product-review-diff-'));
+  const sourceDirectory = mkdtempSync(join(runDirectory ?? tmpdir(), 'product-review-snapshot-'));
   try {
     const evidence = { ...manifest, deliveries: manifest.deliveries.map((delivery, index) => {
-      const diffPath = join(diffDirectory, `change-${index}.diff`);
-      writeFileSync(diffPath, changes[index]!.patch, { flag: 'wx', mode: 0o400 });
-      return { ...delivery, diffPath };
+      const { confirmedDefinitionOfDone, patch } = changes[index]!;
+      const diffPath = join(sourceDirectory, `change-${index}.diff`);
+      writeFileSync(diffPath, patch, { flag: 'wx', mode: 0o400 });
+      return { ...delivery, confirmedDefinitionOfDone, diffPath };
+    }), deliveredFiles: manifest.deliveredFiles.map((file, index) => {
+      if (file.sizeBytes !== undefined) return file;
+      const snapshotPath = join(sourceDirectory, `${index}.txt`);
+      writeFileSync(snapshotPath, deliveredFiles[index]!.text, { flag: 'wx', mode: 0o400 });
+      return { ...file, snapshotPath };
     }) };
     const result = runJudgmentAgent(config, data.projectId, 'product_review', productReviewDirections, {
       evidence, runDirectory, repositories: [...new Set(deliveryInputs.map((delivery) => delivery.repository))],
     }, maxRevisionRounds, (stdout) => groundedVerdict(parseStrictJson(stdout), snapshot));
     verdict = result.output;
   } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
-  finally { if (!runDirectory) rmSync(diffDirectory, { recursive: true, force: true }); }
+  finally { if (!runDirectory) rmSync(sourceDirectory, { recursive: true, force: true }); }
   const sources = [...snapshot.originalRequests.map((request) => request.record), assignment.design, ...snapshot.plans.map(ref), ...assignments.map((target) => target.detailedPlanTask)].map(recordSource);
   const improvementEvidence = verdict?.criteria.filter((criterion) => criterion.state === 'accomplished').flatMap((criterion) =>
     criterion.quotes.filter((quote) => quote.source === 'delivery').flatMap((quote) => snapshot.deliveries.filter((delivery) =>
@@ -329,7 +333,8 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
       filesForDelivery(snapshot, delivery).some((file) => file.text.includes(quote.text))).map((delivery) => ({ artifact: delivery.deliveredArtifact,
         description: `${criterion.behavior}\n${quote.text}`, observedAt: data.issuedAt })))) ?? [];
   const failed = verdict && ([verdict.sourceComparison, verdict.instructionFidelity, verdict.planConformance].includes('failed') ||
-    verdict.criteria.some((criterion) => criterion.state === 'failed')) || technicalReviews.some((result) => result.verdict === 'failed');
+    verdict.criteria.some((criterion) => criterion.state === 'failed')) ||
+    technicalReviews.some((result) => result.verdict === 'failed' && !technicalReviewSatisfied(result));
   let review = ProductReviewSchema.parse({ kind: 'product_review', id: data.reviewId, projectId: data.projectId,
     schemaVersion: 1, revision: data.expectedRevision + 1, createdAt: previous?.createdAt ?? data.issuedAt, updatedAt: data.issuedAt,
     originalRequests: snapshot.originalRequests.map((request) => request.record), sourceRefs: sources,
@@ -342,7 +347,7 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
     baselineEvidence: data.baselineEvidence, improvementEvidence,
     unresolvedQuestions: [...(verdict?.unresolvedQuestions ?? []), ...(error ? [error] : []), ...(qualityError ? [qualityError] : [])],
     outcome: failed ? 'failed' : 'incomplete', reviewerSession: session, reviewedAt: data.issuedAt,
-    conformance: { inputDigest: digestText(serialized), profile, sessionId: session, verdict,
+    conformance: { inputDigest: digestText(JSON.stringify({ snapshot, changes })), profile, sessionId: session, verdict,
       ...(currentTicket ? { currentTicket } : {}),
       deliveredFiles, technicalReviews,
       deliveries: snapshot.deliveries.map((delivery, index) => ({ repository: resolve(deliveryInputs[index]!.repository),

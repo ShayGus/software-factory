@@ -118,6 +118,12 @@ let out=JSON.parse(readFileSync(root+'/outputs.json','utf8'))[step];
 if(out && snapshot.request) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()).replaceAll(${JSON.stringify(request.id)},snapshot.request.id).replaceAll(${JSON.stringify(requestFile)},snapshot.request.source.uri));
 if(step==='detail' && snapshot.findings) out=snapshot.instructionText ? mode.specEdits ?? [] :
  {plan:{},tasks:[{id:snapshot.tasks[0].id,changes:{expectedBehavior:'Correct scope for all connected systems, revision '+snapshot.plan.revision}}]};
+if(step==='detail' && mode.reviseTitles && snapshot.findings && !snapshot.instructionText) {
+ assert.deepEqual(JSON.parse(readFileSync(root+'/fake-state.json','utf8')).calls,[]);
+ assert.deepEqual(snapshot.findings.map(finding=>finding.title),['Project Leap','Phase 1']);
+ out={plan:{ticketTitle:'Export invoices from all connected systems'},
+  tasks:[{id:snapshot.tasks[0].id,changes:{expectedBehavior:'Export invoice records using the shared report'}}]};
+}
 if(step==='detail' && mode.ticketAtPlanReview && !snapshot.findings) {
  const path=root+'/fake-state.json';
  const native=JSON.parse(readFileSync(path,'utf8'));
@@ -127,6 +133,9 @@ if(step==='detail' && mode.ticketAtPlanReview && !snapshot.findings) {
 if(step==='plan_check') out=mode.planFailure || (mode.reviseOnce && snapshot.plan.revision===2) ?
  {verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} :
  {verdict:'pass',findings:[]};
+if(step==='plan_check') out.titleFindings=mode.reviseTitles ? snapshot.ticketTitles
+ .filter(ticket=>['Project Leap','Phase 1'].includes(ticket.title))
+ .map(ticket=>({id:ticket.id,reason:'The title omits invoice export'})) : [];
 if(step==='plan_check' && mode.ticketAtPlanReview) {
  assert.deepEqual(snapshot.currentTicket,mode.ticketAtPlanReview);
  assert.deepEqual(snapshot.authority,[mode.confirmedDone]);
@@ -153,7 +162,7 @@ if(step==='product_review') {
  assert.equal(snapshot.originalRequests[0].text,${JSON.stringify(original)});
  const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};
  const extra=mode.extraScope?${JSON.stringify([unrequestedOption, unrequestedTest])}:[];
- assert.equal(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').text,code+extra.map(x=>x+'\\n').join(''));
+ assert.equal(readFileSync(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').snapshotPath,'utf8'),code+extra.map(x=>x+'\\n').join(''));
  out={sourceComparison:'passed',instructionFidelity:mode.badDelivery?'failed':'passed',planConformance:mode.badDelivery?'failed':'passed',
  criteria:snapshot.assignedCriteria.map((criterion,i)=>({criterion,state:mode.badDelivery&&i===1?'failed':'accomplished',behavior:'Common interface behavior',quotes:[{source:'delivery',text:code.trim()}],limitations:[]})),
  findings:mode.badDelivery?['instructionFidelity','planConformance'].map(check=>({check,type:'narrowed_generality',message:'ERPNext only violates original generality',quotes:[{source:'original_request',text:${JSON.stringify(original)}},{source:'delivery',text:code.trim()}]})):[],suggestions:[],unresolvedQuestions:[]};

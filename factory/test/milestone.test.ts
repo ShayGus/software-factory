@@ -135,7 +135,15 @@ for (const field of ['goal', 'exclusions'] as const) {
 test('one captured feature reaches product completion through the existing CLI and fake FirstMate', () => {
   const flow = scenario();
   try {
-    runFeature(flow.config, 'prepare');
+    const ruleFiles = [join(flow.root, 'Project Rules.md'), join(flow.root, 'Verification.md')];
+    const ruleText = 'Representative project rule that should only be read by the agent.';
+    writeFileSync(ruleFiles[0]!, ruleText);
+    flow.save(flow.config.agentConfig, { ...JSON.parse(readFileSync(flow.config.agentConfig, 'utf8')), ruleFiles });
+    const prepared = runFeature(flow.config, 'prepare') as { briefPath: string };
+    const brief = readFileSync(prepared.briefPath, 'utf8');
+    assert.ok(brief.indexOf('Before doing any task work') < brief.indexOf('### Goal and task behavior'));
+    for (const path of ruleFiles) assert.ok(brief.includes(JSON.stringify(path)));
+    assert.ok(!brief.includes(ruleText));
     assert.ok(flow.wrapper.read().trace.every((entry) => entry.mappingSaved));
     runFeature(flow.config, 'start');
     const result = runFeature(flow.config, 'review') as any;
@@ -148,6 +156,9 @@ test('one captured feature reaches product completion through the existing CLI a
     for (const call of calls) {
       const original = readFileSync(flow.config.requestFile, 'utf8');
       assert.equal(call.prompt.includes(original), false, call.step);
+      assert.ok(call.prompt.startsWith('Before doing any task work'), call.step);
+      for (const path of ruleFiles) assert.ok(call.prompt.includes(JSON.stringify(path)), call.step);
+      assert.ok(!call.prompt.includes(ruleText), call.step);
       assert.ok(call.prompt.length < 10_000, call.step);
       const files = JSON.parse(call.prompt.trimEnd().split('\n').at(-1));
       assert.equal(files.runDirectory, flow.config.runDirectory);
@@ -176,7 +187,7 @@ test('a new planning attempt reads its own request and source paths, and saves a
     flow.mode({ failStep: 'understand' });
     assert.throws(() => runFeature(config, 'plan'), (error: unknown) => {
       assert.ok(error instanceof Error);
-      const failure = /^understand_agent_failed: 17; inspect (.+\/agent\.stderr)$/u.exec(error.message);
+      const failure = /^understand_agent_failed: 17; inspect (.+\/agent\.stderr)$/u.exec(error.message.split('\n')[0]!);
       assert.ok(failure?.[1], error.message);
       assert.equal(readFileSync(failure[1], 'utf8'), 'Agent diagnostic before exit.\n');
       const call = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trimEnd().split('\n').at(-1)!;

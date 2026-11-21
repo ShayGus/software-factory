@@ -1,15 +1,54 @@
 import { z } from 'zod';
-import { ArtifactSchema, IdSchema, RefSchema, TextSchema, TimestampSchema, type Ref } from './primitives.js';
+import { createHash } from 'node:crypto';
+import { ArtifactSchema, EvidenceSchema, IdSchema, RefSchema, TextSchema, TimestampSchema, type Ref } from './primitives.js';
 import { WorkflowAgentProfileSchema } from './agent-profiles.js';
+import { parseStrictJson } from './strict-json.js';
 
 export const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
+const TechnicalFindingSchema = z.strictObject({
+  severity: TextSchema, location: TextSchema, problem: TextSchema, fix: TextSchema,
+});
+const TechnicalFindingsSchema = z.array(TechnicalFindingSchema).min(1);
+const ScopeFindingsSchema = z.array(TextSchema).min(1);
 export const QualityResultSchema = z.strictObject({
   tool: z.literal('roborev'), commit: CommitSchema, jobId: z.number().int().positive(),
   verdict: z.enum(['passed', 'failed', 'uncertain']), artifact: ArtifactSchema,
   observedAt: TimestampSchema, raw: TextSchema,
   scopeDigest: TextSchema.optional(),
+  advisoryAcceptance: z.strictObject({
+    approval: EvidenceSchema, findings: z.union([TechnicalFindingsSchema, ScopeFindingsSchema]),
+  }).optional(),
 });
 export type QualityResult = z.infer<typeof QualityResultSchema>;
+
+/** A failed tool verdict remains intact. An exact, recorded acceptance can
+ * make all its findings advisory for the reviewed commit. */
+export function technicalReviewSatisfied(result: QualityResult): boolean {
+  if (result.verdict === 'passed') return true;
+  const accepted = result.advisoryAcceptance;
+  if (result.verdict !== 'failed' || !accepted || !accepted.approval.artifact.digest ||
+    accepted.approval.artifact.revision !== result.commit ||
+    result.artifact.digest !== `sha256:${createHash('sha256').update(result.raw).digest('hex')}`) return false;
+  try {
+    const receipt = parseStrictJson(result.raw);
+    if (result.scopeDigest !== undefined) {
+      const scope = z.object({ job_id: z.literal(result.jobId), prompt_digest: z.literal(result.scopeDigest), output: z.string(),
+        job: z.object({ id: z.literal(result.jobId), git_ref: z.literal(`factory-scope-${result.scopeDigest.slice(-16)}`),
+          status: z.literal('done'), job_type: z.literal('task') }) }).parse(receipt);
+      const output = z.object({ verdict: z.literal('fail'), findings: ScopeFindingsSchema }).parse(parseStrictJson(scope.output));
+      return result.artifact.revision === result.commit &&
+        JSON.stringify(output.findings.sort()) === JSON.stringify(ScopeFindingsSchema.parse(accepted.findings).sort());
+    }
+    const raw = z.object({ job_id: z.number(), job: z.object({ id: z.number(), git_ref: CommitSchema,
+      status: z.literal('done'), job_type: z.literal('review') }),
+      structured_output: z.object({ verdict: z.literal('fail'), findings: TechnicalFindingsSchema }),
+    }).parse(receipt);
+    const findings = (items: z.infer<typeof TechnicalFindingsSchema>) => items.map(({ severity, location, problem, fix }) =>
+      JSON.stringify([severity, location, problem, fix])).sort();
+    return raw.job_id === result.jobId && raw.job.id === result.jobId && raw.job.git_ref === result.commit &&
+      JSON.stringify(findings(raw.structured_output.findings)) === JSON.stringify(findings(TechnicalFindingsSchema.parse(accepted.findings)));
+  } catch { return false; }
+}
 export const ReviewQuoteSchema = z.strictObject({
   source: z.enum(['original_request', 'design', 'plan', 'task', 'instructions', 'delivery', 'worker_return']),
   text: TextSchema,
@@ -43,6 +82,7 @@ export const ProductConformanceSchema = z.strictObject({
   inputDigest: TextSchema, profile: WorkflowAgentProfileSchema, sessionId: TextSchema,
   currentTicket: ReviewTicketSchema.optional(),
   verdict: ProductVerdictSchema.nullable(), error: TextSchema.optional(),
+  reusedProductReview: RefSchema.optional(),
   deliveredFiles: z.array(DeliveredFileSchema).min(1), technicalReviews: z.array(QualityResultSchema),
   qualityError: TextSchema.optional(),
   deliveries: z.array(z.strictObject({

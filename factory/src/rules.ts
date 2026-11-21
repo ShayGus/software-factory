@@ -4,7 +4,7 @@ import { activeGuidance, learningKey } from './learning-context.js';
 import { reusableAnswer } from './decision-context.js';
 import { planReadinessFindings, sliceCriterionProvenance, stageCriteria, stageDependencies, stageSliceCriteria } from './planning-checks.js';
 import { createHash } from 'node:crypto';
-import { expectedReviewCriteria } from './review-contracts.js';
+import { expectedReviewCriteria, technicalReviewSatisfied } from './review-contracts.js';
 import { missingAssignmentContext, sameSource } from './instruction-context.js';
 import { assertTaskDependencyAcyclic, taskReadinessReasons } from './task-readiness.js';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
@@ -322,12 +322,23 @@ function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' |
   if (review.conformance) {
     const proof = review.conformance;
     if (!proof.verdict || proof.error || proof.qualityError ||
-      !proof.technicalReviews.length || proof.technicalReviews.some((result) => result.verdict !== 'passed') ||
+      !proof.technicalReviews.length || proof.technicalReviews.some((result) => !technicalReviewSatisfied(result)) ||
       proof.verdict.criteria.some((criterion) => criterion.state !== 'accomplished' && !outsideTicket(criterion.criterion)) ||
       [proof.verdict.sourceComparison, proof.verdict.instructionFidelity, proof.verdict.planConformance].some((result) => result !== 'passed')) {
       ctx.add(review, 'unresolved_conformance', 'conformance', 'A fresh product review with accomplished behavior and passing existing quality evidence is required');
     }
     if (proof.sessionId !== review.reviewerSession) ctx.add(review, 'review_session_mismatch', 'conformance.sessionId', 'Product reviewer session must match');
+    if (proof.reusedProductReview) {
+      const original = ctx.get(review, proof.reusedProductReview, 'product_review', 'conformance.reusedProductReview');
+      if (!original?.conformance || original.id !== review.id || original.revision >= review.revision ||
+        original.reviewerSession !== review.reviewerSession ||
+        !sameRef(original.plan, review.plan) || !sameRef(original.design, review.design) ||
+        canonical(original.assignments) !== canonical(review.assignments) ||
+        canonical(original.conformance.currentTicket ?? null) !== canonical(proof.currentTicket ?? null) ||
+        canonical(original.conformance.verdict) !== canonical(proof.verdict)) {
+        ctx.add(review, 'reused_review_mismatch', 'conformance.reusedProductReview', 'Reused product judgment must retain its exact earlier scope and verdict');
+      }
+    }
     for (const assignmentRef of review.assignments) {
       const assignment = ctx.index.get(key(assignmentRef));
       if (assignment?.kind !== 'assignment') continue;

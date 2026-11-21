@@ -1,7 +1,7 @@
 import { checkConfiguredWorkerStart } from './worker-start-hook.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
-import { isAbsolute, join, resolve } from 'node:path';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { TimestampSchema } from './primitives.js';
 import { type Assignment, type Operation } from './records.js';
@@ -34,7 +34,9 @@ export const FleetSnapshotSchema = z.object({
 export type FleetSnapshot = z.infer<typeof FleetSnapshotSchema>;
 export function firstMateEnv(home: string) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('FM_') && !key.startsWith('TASKS_AXI_')));
-  env.FM_HOME = resolve(home); return env;
+  env.FM_HOME = resolve(home);
+  env.PATH = `${join(env.FM_HOME, '.tools', 'bin')}${delimiter}${process.env.PATH ?? ''}`;
+  return env;
 }
 export function readFleetSnapshot(input: RuntimeAdapter): FleetSnapshot {
   const options = RuntimeAdapterSchema.parse(input);

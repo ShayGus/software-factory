@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { IdSchema, TextSchema } from './primitives.js';
+import { IdSchema, ProjectRuleFilesSchema, TextSchema } from './primitives.js';
 
 export const WorkflowAgentStepSchema = z.enum(['understand', 'design', 'plan', 'detail', 'plan_check', 'instruction_check', 'build', 'product_review', 'learning_consolidation']);
 export type WorkflowAgentStep = z.infer<typeof WorkflowAgentStepSchema>;
@@ -17,6 +17,7 @@ export const WorkflowAgentProfileSchema = z.strictObject({
 const executablePath = TextSchema.refine(isAbsolute, 'Agent executable must be absolute');
 export const ProjectAgentConfigSchema = z.strictObject({
   schemaVersion: z.literal(1), projectId: IdSchema,
+  ruleFiles: ProjectRuleFilesSchema.optional(),
   steps: z.strictObject({
     understand: WorkflowAgentProfileSchema, design: WorkflowAgentProfileSchema,
     plan: WorkflowAgentProfileSchema, detail: WorkflowAgentProfileSchema,
@@ -26,6 +27,8 @@ export const ProjectAgentConfigSchema = z.strictObject({
   }),
   executables: z.strictObject({ codex: executablePath.optional(), claude: executablePath.optional() }),
   timeoutMs: z.number().int().positive().max(600_000).default(120_000),
+  planningTimeoutMs: z.number().int().positive().max(2_147_000_000).default(21_600_000),
+  planningIdleTimeoutMs: z.number().int().positive().max(2_147_000_000).default(1_800_000),
   cwd: TextSchema.refine(isAbsolute, 'Agent cwd must be absolute').optional(),
 });
 export type WorkflowAgentProfile = z.infer<typeof WorkflowAgentProfileSchema>;
@@ -73,7 +76,16 @@ export function stepAgentCommand(input: unknown, projectId: string, step: Execut
       '--permission-mode', 'dontAsk', '--allowedTools', 'Read,Glob,Grep', '--disable-slash-commands',
       ...(session ? [session.id ? '--resume' : '--session-id', sessionId!] : ['--no-session-persistence']),
       ...(model ? ['--model', model] : []), ...(effort ? ['--effort', effort] : [])];
-  return { executable, args, timeoutMs: config.timeoutMs, ...(config.cwd ? { cwd: config.cwd } : {}), profile, sessionId };
+  const planning = ['understand', 'design', 'plan', 'detail', 'plan_check'].includes(step);
+  return { executable, args, timeoutMs: planning ? config.planningTimeoutMs : config.timeoutMs,
+    ...(planning ? { idleTimeoutMs: config.planningIdleTimeoutMs } : {}),
+    ...(config.cwd ? { cwd: config.cwd } : {}), ruleFiles: config.ruleFiles, profile, sessionId };
+}
+
+export function projectRuleDirections(ruleFiles?: string[]): string {
+  if (!ruleFiles?.length) return '';
+  const paths = ruleFiles.map((path) => `- ${JSON.stringify(path)}`).join('\n');
+  return `Before doing any task work, open and read each project rule file at these absolute paths.\n${paths}\n\n`;
 }
 
 export function instructionAgentCommand(input: unknown, projectId: string) {

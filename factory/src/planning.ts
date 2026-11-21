@@ -73,6 +73,11 @@ export function recordStage(store: ProjectStore, input: unknown) {
       } else for (const item of Object.values(value)) visit(item);
     };
     visit(stage);
+    // Decisions name their affected records, so their participation link points
+    // into the stage rather than out of it. Shared sources alone are not enough.
+    for (const record of data.records) if (record.kind === 'decision_change' &&
+      record.affectedRecords.some((affected) => samePlanningRef(affected, stage.feature) ||
+        samePlanningRef(affected, stage.artifact))) visit(ref(record));
     for (const record of data.records) if (!connected.has(JSON.stringify(ref(record)))) {
       throw new StoreError('validation', `unrelated_stage_record: ${record.id}`);
     }

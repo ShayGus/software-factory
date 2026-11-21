@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { FeatureRunConfigSchema, ProjectStore, captureRequest, digestText, ref, runFeature, taskReadinessReasons, type ImplementationPlanRevision } from '../src/index.js';
+import { FeatureRunConfigSchema, ProjectStore, captureRequest, checkStartingWorker, digestText, mapRequest, ref, runFeature, stableId, taskReadinessReasons, type ImplementationPlanRevision } from '../src/index.js';
 import { scenario } from './milestone-helper.js';
 import { fakeTask } from './task-wrapper-helper.js';
 
@@ -188,6 +188,10 @@ test('two dependent tasks stay held until producer evidence, then both receive o
       assert.ok(taskReadinessReasons(records, mapping).some((reason) => reason.includes('Product prerequisite not met')));
     } finally { store.close(); }
     runFeature(config, 'prepare-task', producer); runFeature(config, 'start', producer);
+    const callsBefore = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    assert.throws(() => runFeature(config, 'prepare-task', consumer), /review the producer first/);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), callsBefore);
+    assert.equal(existsSync(join(config.runDirectory, 'tasks', consumer, 'prepare-task.started')), false);
     const producerReview = runFeature(config, 'review', producer) as any;
     assert.equal(producerReview.review.outcome, 'incomplete');
     assert.equal(producerReview.taskOutcome, 'passed');
@@ -246,9 +250,6 @@ for (const existingTicket of [false, true]) test(`a publishing run gives both su
       try { captured = captureRequest(store, { projectId: 'project-1', clientRequestId: 'publishing-clarification',
         channel: 'chat', originalText: clarification, source: { uri: 'factory:publishing-clarification' }, attachments: [] }).request; }
       finally { store.close(); }
-      const snapshot = join(flow.root, 'publishing-clarification.txt');
-      writeFileSync(snapshot, clarification);
-      config.sourceFiles.push({ source: captured.source, path: snapshot });
       const outputsPath = join(flow.root, 'outputs.json');
       const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
       const understanding = outputs.understand.input.records[0];
@@ -257,8 +258,8 @@ for (const existingTicket of [false, true]) test(`a publishing run gives both su
         questionOrChange: 'Which interface applies?', affectedRecords: [understanding.feature], rationale: clarification,
         disposition: 'selected', choice: { kind: 'product', state: 'resolved' },
         sourceRefs: [{ uri: captured.source.uri, record: ref(captured) }], scopeChanges: [] };
+      outputs.understand.input.records.push(decision);
       outputs.design.records[0].decisions = [ref(decision)];
-      outputs.design.records.push(decision);
       flow.save(outputsPath, outputs);
     }
     const planned = runFeature(config, 'plan') as any;
@@ -319,6 +320,25 @@ fs.writeFileSync(${JSON.stringify(prBody)}, '## What Changed\\n\\nSynthetic pipe
     const helper = join(factory, 'scripts/ticket-validation.mjs');
     const validate = (action: string, input?: string) => spawnSync(process.execPath, [helper, action, deliveryPath],
       { cwd: config.repository, encoding: 'utf8', ...(input === undefined ? {} : { input }) });
+    flow.save(join(config.runDirectory, 'run.json'), config);
+    const deliveryBrief = validate('brief');
+    assert.equal(deliveryBrief.status, 0, deliveryBrief.stderr);
+    assert.ok(deliveryBrief.stdout.includes(`git switch --no-guess ${branch}`));
+    assert.match(deliveryBrief.stdout, /ticket-validation\.mjs' start '/u);
+    assert.doesNotMatch(deliveryBrief.stdout, /^Base branch: /mu);
+    const launch = join(flow.data, 'ticket-delivery-brief.md');
+    writeFileSync(launch, deliveryBrief.stdout);
+    const registry = JSON.parse(readFileSync(config.hookRegistry, 'utf8'));
+    const event = { version: 1, event: 'worker.start.before', kind: 'ship', mode: 'no-mistakes',
+      home: flow.home, project: config.repository, task_id: parent.id, branch, base_branch: null,
+      source_brief_path: launch, brief_path: launch, brief_sha256: digestText(deliveryBrief.stdout).slice(7) };
+    assert.deepEqual(checkStartingWorker(registry, event), { ok: true, managed: true });
+    assert.throws(() => checkStartingWorker(registry, { ...event, task_id: 'another-delivery' }), /ticket_delivery_not_verified/);
+    assert.throws(() => checkStartingWorker(registry, { ...event, branch: 'fm/another-branch' }), /ticket_delivery_not_verified/);
+    assert.throws(() => checkStartingWorker(registry, { ...event, raw_command: 'true' }), /ticket_delivery_not_verified/);
+    git('update-ref', localRef, firstCommit, finalCommit);
+    assert.throws(() => checkStartingWorker(registry, event), /ticket branch moved after review/);
+    git('update-ref', localRef, finalCommit, firstCommit);
     assert.match(validate('start').stderr, /reviewed ticket repository, branch and commit/);
     assert.equal(existsSync(prBody), false);
     git('switch', branch);
@@ -328,7 +348,16 @@ fs.writeFileSync(${JSON.stringify(prBody)}, '## What Changed\\n\\nSynthetic pipe
     const checked = validate('check-pr', pr);
     assert.equal(checked.status, 0, checked.stderr);
     assert.equal(validate('check-pr', pr.split('## Definition of done (confirmed)')[0]).status, 1);
+    const changedIntent = expectedIntent + '\nAppended outside the review.';
+    writeFileSync(intentFile, changedIntent);
+    flow.save(deliveryPath, { ...result.ticketDelivery, intentDigest: digestText(changedIntent) });
+    assert.throws(() => checkStartingWorker(registry, event), /ticket_delivery_not_verified/);
+    const pinnedStart = spawnSync(process.execPath, [helper, 'start', deliveryPath,
+      finalCommit, result.ticketDelivery.intentDigest], { cwd: config.repository, encoding: 'utf8' });
+    assert.match(pinnedStart.stderr, /handoff changed after worker admission/);
+    flow.save(deliveryPath, result.ticketDelivery);
     writeFileSync(intentFile, 'Changed after review.');
+    assert.throws(() => checkStartingWorker(registry, event), /ticket intent is empty or changed/);
     assert.match(validate('start').stderr, /ticket intent is empty or changed/);
 
     execFileSync(config.firstMate.briefExecutable, ['ordinary-ticket', 'unregistered-project', '--mode', 'no-mistakes'], {
@@ -340,7 +369,7 @@ fs.writeFileSync(${JSON.stringify(prBody)}, '## What Changed\\n\\nSynthetic pipe
   } finally { flow.close(); }
 });
 
-test('one author session produces four stages before an independent review can block queueing', () => {
+test('independent plan review blocks narrowing before any task is queued', () => {
   const { flow, config } = intake(true);
   try {
     flow.mode({ planFailure: true });
@@ -349,31 +378,6 @@ test('one author session produces four stages before an independent review can b
     assert.equal(existsSync(join(config.runDirectory, 'planned.json')), false);
     const failure = JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent.json'), 'utf8'));
     assert.equal(failure.verdict.findings[0].type, 'narrowing');
-    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
-    const [understand, design, plan, detail, review, correction, recheck] = calls;
-    assert.deepEqual(calls.map(call => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check', 'detail', 'plan_check']);
-    assert.ok(understand.sessionId);
-    assert.ok(!understand.args.includes('resume'));
-    assert.equal(correction.sessionId, understand.sessionId);
-    assert.ok(correction.args.includes('resume'));
-    assert.notEqual(review.sessionId, understand.sessionId);
-    assert.notEqual(recheck.sessionId, review.sessionId);
-    assert.ok(!recheck.args.includes('resume'));
-    const snapshot = (turn: typeof understand) => {
-      const { evidence } = JSON.parse(turn.prompt.trimEnd().split('\n').at(-1));
-      return JSON.parse(readFileSync(evidence, 'utf8'));
-    };
-    const originalText = readFileSync(config.requestFile, 'utf8');
-    assert.equal(snapshot(understand).request.originalText, originalText);
-    for (const turn of [design, plan, detail]) {
-      assert.ok(turn.args.includes('resume'));
-      assert.equal(turn.sessionId, understand.sessionId);
-      assert.equal(turn.cwd, understand.cwd);
-      const evidence = snapshot(turn);
-      assert.equal(evidence.request.originalText, undefined);
-      assert.equal(evidence.records.find((record: any) => record.kind === 'request').originalText, undefined);
-    }
-    assert.equal(snapshot(review).records.find((record: any) => record.kind === 'request').originalText, originalText);
   } finally { flow.close(); }
 });
 
@@ -392,6 +396,31 @@ test('a review finding revises only task detail in the existing planner session'
     const input = JSON.parse(readFileSync(join(config.runDirectory, 'detail-revision-1-input.json'), 'utf8'));
     assert.deepEqual(input.records.filter((record: any) => record.kind === 'detailed_plan_task').map((record: any) => record.id), ['task-1']);
     assert.equal(JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent-r1.json'), 'utf8')).verdict.verdict, 'pass');
+  } finally { flow.close(); }
+});
+
+test('plan review blocks vague feature and worker titles and queues the revised titles', () => {
+  const { flow, config } = intake();
+  try {
+    const records = flow.outputs.detail.records as Array<{ kind: string }>;
+    const plan = records.find((record) => record.kind === 'implementation_plan_revision');
+    const task = records.find((record) => record.kind === 'detailed_plan_task');
+    assert.ok(plan && task);
+    Object.assign(plan, { ticketTitle: '  Project Leap  ' });
+    Object.assign(task, { expectedBehavior: 'Phase\n1' });
+    flow.save(join(flow.root, 'outputs.json'), flow.outputs);
+    flow.mode({ reviseTitles: true });
+    runFeature(config, 'plan');
+    const turns = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const planner = turns.find((turn) => turn.step === 'plan');
+    assert.match(planner.prompt, /Plan one implementation task by default/);
+    assert.match(planner.prompt, /only when the ticket is too big for one task.*strategyReason/);
+    const failed = JSON.parse(readFileSync(join(config.runDirectory, 'plan-check-agent.json'), 'utf8'));
+    assert.equal(failed.verdict.verdict, 'fail');
+    assert.deepEqual(failed.verdict.findings.map((finding: { title: string }) => finding.title), ['Project Leap', 'Phase 1']);
+    const tickets = Object.values(flow.wrapper.read().tasks);
+    assert.equal(tickets.find((ticket) => ticket.kind === 'feature')?.title, 'Export invoices from all connected systems');
+    assert.equal(tickets.find((ticket) => ticket.kind === 'ship')?.title, 'Export invoice records using the shared report');
   } finally { flow.close(); }
 });
 
@@ -596,7 +625,6 @@ test('planning records the exact stored excerpt for an authored request range', 
       schemaVersion: 1, revision: 1, createdAt: understanding.createdAt, updatedAt: understanding.updatedAt,
       questionOrChange: 'Preserve the Unicode request text', affectedRecords: [sourceRequest, understanding.feature],
       rationale: 'Keep the captured source', disposition: 'selected', scopeChanges: [],
-      choice: { kind: 'technical', state: 'resolved' },
       sourceRefs: [{ uri: config.requestFile, record: sourceRequest }],
       requestMapping: { request: sourceRequest, start, end: start + excerpt.length, disposition: 'work',
         feature: understanding.feature, criteria: [], replaces: [] },
@@ -617,20 +645,366 @@ test('planning records the exact stored excerpt for an authored request range', 
   } finally { flow.close(); }
 });
 
-for (const quoted of [false, true]) test(`HTTPS citations without snapshots ${quoted ? 'reject excerpts' : 'stay as plain references'}`, () => {
+for (const state of ['resolved', 'open-product', 'open-technical']) test(`understanding decisions survive planning with ${state}`, () => {
+  const open = state !== 'resolved';
+  const product = state === 'open-product';
   const { flow, config } = intake();
   try {
     const outputsPath = join(flow.root, 'outputs.json');
     const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
-    const uri = 'https://example.invalid/background';
-    outputs.design.records[0].sourceRefs.push(quoted ? { uri, excerpt: 'Text requiring a snapshot' } : { uri });
+    const understanding = outputs.understand.input.records[0];
+    const decision = { kind: 'decision_change', id: 'understanding-decision', projectId: understanding.projectId,
+      schemaVersion: 1, revision: 1, createdAt: understanding.createdAt, updatedAt: understanding.updatedAt,
+      questionOrChange: 'How should the common behavior be delivered?', affectedRecords: [understanding.feature],
+      rationale: 'Preserve the original request', disposition: open ? 'proposed' : 'selected',
+      choice: { kind: product ? 'product' : 'technical', state: open ? 'open' : 'resolved' },
+      sourceRefs: [{ uri: config.requestFile }], scopeChanges: [] };
+    outputs.understand.input.records.push(decision);
+    outputs.design.records[0].decisions = [{ id: decision.id, revision: 1 }];
+    if (open) outputs.design.records[0].unresolvedQuestions = [decision.questionOrChange];
     flow.save(outputsPath, outputs);
-    if (quoted) {
-      assert.throws(() => runFeature(config, 'plan'), /unauthorized_run_source/);
+    if (product) {
+      assert.throws(() => runFeature(config, 'plan'), /check-plan_failed/);
+      const check = JSON.parse(readFileSync(join(config.runDirectory, 'check-plan.stdout'), 'utf8'));
+      assert.ok(check.check.findings.some((finding: any) => finding.code === 'unresolved_product_decision'));
       assert.equal(flow.wrapper.read().calls.length, 0);
-      return;
+    } else {
+      const planned = runFeature(config, 'plan') as any;
+      assert.equal(planned.tasks.length, 1);
+      assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
     }
+    assert.ok(existsSync(join(config.runDirectory, 'understand.stdout')));
+    assert.ok(existsSync(join(config.runDirectory, 'detail.stdout')));
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    for (const step of ['understand', 'design', 'plan', 'detail']) {
+      const files = JSON.parse(calls.find((call) => call.step === step).prompt.trimEnd().split('\n').at(-1));
+      const snapshot = JSON.parse(readFileSync(files.evidence, 'utf8'));
+      assert.deepEqual(snapshot.baselineEvidence, config.baselineEvidence, 'Planners receive the captured commit identity and baseline facts');
+    }
+  } finally { flow.close(); }
+});
+
+test('understand rejects a preliminary design carrier before mapping or recording it', () => {
+  const { flow, config } = intake();
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    outputs.understand.input.records.push(outputs.design.records[0]);
+    flow.save(outputsPath, outputs);
+    assert.throws(() => runFeature(config, 'plan'), /Invalid input/);
+    assert.equal(existsSync(join(config.runDirectory, 'map-input.json')), false);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+  } finally { flow.close(); }
+});
+
+
+test('explicit plan resume preserves the mapped feature and saved failure before queueing held tasks', () => {
+  const { flow, config } = intake();
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const originalDesign = structuredClone(outputs.design);
+    outputs.understand.input.records[0].openUnknowns = ['Owner scope needs clarification'];
+    outputs.design.records[0].workflow.understanding.id = 'missing-understanding';
+    flow.save(outputsPath, outputs);
+    assert.throws(() => runFeature(config, 'plan'), /design_failed/);
+    assert.throws(() => runFeature({ ...config, repository: flow.root }, 'plan', '--resume'), /planned_run_config_changed/);
+    const failedEvidence = readFileSync(join(config.runDirectory, 'design-agent.json'), 'utf8');
+    const originalMap = readFileSync(join(config.runDirectory, 'map-input.json'), 'utf8');
+    const understood = outputs.understand.input;
+    understood.expectedRevision = 1;
+    understood.stage.previousStage = { id: understood.stage.id, revision: 1 };
+    understood.stage.revision = 2;
+    understood.stage.artifact.revision = 2;
+    understood.records[0].revision = 2;
+    understood.records[0].openUnknowns = [];
+    outputs.understand = understood;
+    outputs.design = originalDesign;
+    outputs.design.stage.previousStage.revision = 2;
+    outputs.design.records[0].workflow.understanding.revision = 2;
+    flow.save(outputsPath, outputs);
+    const planned = runFeature(config, 'plan', '--resume') as any;
+    assert.equal(planned.tasks.length, 1);
+    assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
+    assert.equal(readFileSync(join(config.runDirectory, 'map-input.json'), 'utf8'), originalMap);
+    assert.equal(readFileSync(join(config.runDirectory, 'design-agent.json'), 'utf8'), failedEvidence);
+    const authorTurns = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n')
+      .map(line => JSON.parse(line)).filter(turn => turn.step !== 'plan_check');
+    assert.ok(authorTurns[0].sessionId);
+    assert.ok(authorTurns.slice(1).every(turn => turn.sessionId === authorTurns[0].sessionId && turn.args.includes('resume')));
+    const store = new ProjectStore(config.database, { readOnly: true });
+    try { assert.equal(store.records('project-1').filter((record) => record.kind === 'feature_revision').length, 1); }
+    finally { store.close(); }
+    const calls = flow.wrapper.read().calls.length;
+    assert.deepEqual(runFeature(config, 'plan', '--resume'), planned);
+    assert.equal(flow.wrapper.read().calls.length, calls, 'Never repeat completed queue/reconcile effects');
+  } finally { flow.close(); }
+});
+
+test('plan resume refuses a missing original run and an active plan attempt', () => {
+  const { flow, config } = intake();
+  try {
+    assert.throws(() => runFeature(config, 'plan', '--resume'), /resume_plan_requires_unqueued_started_run/);
+    mkdirSync(join(config.runDirectory, 'plan-attempt.lock'));
+    assert.throws(() => runFeature(config, 'plan'), /plan_attempt_in_progress/);
+    assert.equal(existsSync(join(config.runDirectory, 'plan.started')), false);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+  } finally { flow.close(); }
+});
+
+
+test('planning materializes an owner clarification from its captured text without reading its source path', () => {
+  const { flow, config } = intake();
+  try {
+    const text = 'Keep all systems in scope and use the common interface.';
+    const source = { uri: join(flow.root, 'never-written-owner-message.txt') };
+    const store = new ProjectStore(config.database);
+    let request;
+    try { request = captureRequest(store, { projectId: 'project-1', clientRequestId: 'owner-clarification',
+      channel: 'chat', originalText: text, source, attachments: [] }).request; }
+    finally { store.close(); }
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const understanding = outputs.understand.input.records[0];
+    const decision = { kind: 'decision_change', id: 'owner-scope-answer', projectId: 'project-1', schemaVersion: 1,
+      revision: 1, createdAt: understanding.createdAt, updatedAt: understanding.updatedAt,
+      questionOrChange: 'Preserve all systems?', affectedRecords: [understanding.feature], rationale: text,
+      disposition: 'selected', choice: { kind: 'product', state: 'resolved' },
+      sourceRefs: [{ uri: 'factory:owner-clarification', record: ref(request), excerpt: text }], scopeChanges: [] };
+    outputs.understand.input.records.push(decision);
+    outputs.design.records[0].decisions = [{ id: decision.id, revision: 1 }];
+    flow.save(outputsPath, outputs);
     const planned = runFeature(config, 'plan') as any;
+    assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
+    assert.equal(existsSync(source.uri), false);
+    assert.equal(readFileSync(join(config.runDirectory, `captured-${request.id}-1.txt`), 'utf8'), text);
+    runFeature(config, 'prepare-task', planned.tasks[0].taskId);
+    assert.equal(existsSync(source.uri), false, 'Preparation also uses stored capture text');
+  } finally { flow.close(); }
+});
+
+
+test('resume retains a complete understanding instead of authoring another revision', () => {
+  const { flow, config } = intake();
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const design = structuredClone(outputs.design);
+    outputs.design.records[0].workflow.understanding.id = 'missing-understanding';
+    flow.save(outputsPath, outputs);
+    assert.throws(() => runFeature(config, 'plan'), /design_failed/);
+    outputs.design = design;
+    flow.save(outputsPath, outputs);
+    const planned = runFeature(config, 'plan', '--resume') as any;
+    assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    assert.equal(calls.filter((call) => call.step === 'understand').length, 1);
+  } finally { flow.close(); }
+});
+
+test('stage authoring rejects reserved answer fields on technical decisions before storage', () => {
+  const { flow, config } = intake();
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const understanding = outputs.understand.input.records[0];
+    outputs.design.records.push({ kind: 'decision_change', id: 'technical-selection', projectId: 'project-1',
+      schemaVersion: 1, revision: 1, createdAt: understanding.createdAt, updatedAt: understanding.updatedAt,
+      questionOrChange: 'Select the existing common interface', affectedRecords: [understanding.feature],
+      rationale: 'Preserve existing behavior', disposition: 'selected', choice: { kind: 'technical', state: 'resolved' },
+      sourceRefs: [{ uri: config.requestFile }], scopeChanges: [], answer: { text: 'Use the common interface' } });
+    flow.save(outputsPath, outputs);
+    assert.throws(() => runFeature(config, 'plan'), /Invalid input/);
+    assert.equal(existsSync(join(config.runDirectory, 'design-input.json')), false);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+  } finally { flow.close(); }
+});
+
+
+test('a selected request mapping is settled intake provenance in design decisions', () => {
+  const { flow, config } = intake();
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    outputs.design.records[0].decisions.push({ id: stableId('mapping', 'project-1', 'map-feature'), revision: 1 });
+    flow.save(outputsPath, outputs);
+    const planned = runFeature(config, 'plan') as any;
+    assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
+  } finally { flow.close(); }
+});
+
+
+test('resume retains a completed design when only plan authoring failed', () => {
+  const { flow, config } = intake();
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const plan = structuredClone(outputs.plan);
+    outputs.plan.records[0].design.id = 'missing-design';
+    flow.save(outputsPath, outputs);
+    assert.throws(() => runFeature(config, 'plan'), /plan_failed/);
+    outputs.plan = plan;
+    flow.save(outputsPath, outputs);
+    const planned = runFeature(config, 'plan', '--resume') as any;
+    assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    for (const step of ['understand', 'design']) assert.equal(calls.filter((call) => call.step === step).length, 1);
+  } finally { flow.close(); }
+});
+
+test('planning shares the author session and reviews the original request independently', () => {
+  const { flow, config } = intake();
+  try {
+    const store = new ProjectStore(config.database);
+    const text = 'An unrelated request with no shared source. '.repeat(1000);
+    let request;
+    try {
+      request = captureRequest(store, { projectId: 'project-1', clientRequestId: 'unrelated', channel: 'chat',
+        originalText: text, source: { uri: 'fixture:unrelated' }, attachments: [] }).request;
+      mapRequest(store, { projectId: 'project-1', requestId: request.id, expectedRevision: 1, idempotencyKey: 'unrelated-map',
+        issuedAt: new Date().toISOString(), start: 0, end: text.length, rationale: 'Separate feature',
+        target: { kind: 'new_feature', feature: { id: 'unrelated-feature', outcome: 'Unrelated behavior', criteria: [] } } });
+    } finally { store.close(); }
+    runFeature(config, 'plan');
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const [understand, design, plan, detail, review] = calls;
+    assert.deepEqual(calls.map(call => call.step), ['understand', 'design', 'plan', 'detail', 'plan_check']);
+    assert.ok(understand.sessionId);
+    assert.ok(!understand.args.includes('resume'));
+    for (const turn of [design, plan, detail]) {
+      assert.ok(turn.args.includes('resume'));
+      assert.equal(turn.sessionId, understand.sessionId);
+      assert.equal(turn.cwd, understand.cwd);
+    }
+    assert.ok(!review.args.includes('resume'));
+    assert.notEqual(review.sessionId, understand.sessionId);
+    const snapshot = (step: string) => {
+      const files = JSON.parse(calls.find((call) => call.step === step).prompt.trimEnd().split('\n').at(-1));
+      return JSON.parse(readFileSync(files.evidence, 'utf8'));
+    };
+    for (const step of ['understand', 'design', 'plan', 'detail', 'plan_check']) {
+      const records = snapshot(step).records;
+      if (step === 'understand') assert.equal(snapshot(step).project.id, 'project-1');
+      else {
+        assert.ok(records.some((record: any) => record.id === 'feature-1'));
+        assert.ok(records.some((record: any) => record.id === 'project-1'));
+      }
+      assert.equal(records.some((record: any) => record.id === 'unrelated-feature' || record.id === request.id), false);
+      const captured = records.find((record: any) => record.kind === 'request');
+      assert.ok(captured);
+      if (step === 'understand' || step === 'plan_check') assert.ok(captured.originalText && captured.originalText !== text);
+      else assert.equal(captured.originalText, undefined);
+    }
+  } finally { flow.close(); }
+});
+
+
+test('a large planning safety budget does not inflate the worker instruction hook deadline', () => {
+  const { flow, config } = intake();
+  try {
+    const agents = JSON.parse(readFileSync(config.agentConfig, 'utf8'));
+    agents.planningTimeoutMs = 21_600_000;
+    agents.planningIdleTimeoutMs = 1_800_000;
+    flow.save(config.agentConfig, agents);
+    const planned = runFeature(config, 'plan') as any;
+    assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
+  } finally { flow.close(); }
+});
+
+
+test('a source-comparison failure remains blocking, then corrected detail resumes without replanning', () => {
+  const { flow, config } = intake();
+  config.maxRevisionRounds = 0;
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const plan = outputs.detail.records[0];
+    plan.readiness.comparison.result = 'untested';
+    plan.readiness.comparison.findings = [{ result: 'untested', description: 'Code and check-plan have not run yet',
+      sourceRefs: plan.readiness.comparison.sourceRefs, evidence: [] }];
+    flow.save(outputsPath, outputs);
+    assert.throws(() => runFeature(config, 'plan'), /check-plan_failed/);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+    const check = JSON.parse(readFileSync(join(config.runDirectory, 'check-plan.stdout'), 'utf8'));
+    assert.ok(check.check.findings.some((finding: any) => finding.code === 'source_gap'));
+    outputs.detail.expectedRevision = 1;
+    outputs.detail.stage.revision = 2;
+    outputs.detail.stage.artifact.revision = 3;
+    plan.readiness.comparison.result = 'passed'; plan.readiness.comparison.findings = [];
+    for (const record of outputs.detail.records) {
+      record.revision = 3;
+      if (record.kind === 'detailed_plan_task') record.plan.revision = 3;
+    }
+    for (const task of plan.deliverySequence) task.revision = 3;
+    for (const slice of plan.workflow.slices) for (const task of slice.tasks) task.revision = 3;
+    flow.save(outputsPath, outputs);
+    const planned = runFeature(config, 'plan', '--resume') as any;
+    assert.equal(flow.wrapper.read().tasks[planned.tasks[0].taskId]!.held, true);
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    for (const step of ['understand', 'design', 'plan']) assert.equal(calls.filter((call) => call.step === step).length, 1);
+    assert.equal(calls.filter((call) => call.step === 'detail').length, 2);
+  } finally { flow.close(); }
+});
+
+
+test('plan resume reconciles only saved operations after a partial native transport failure', () => {
+  const { flow, config } = intake(true);
+  try {
+    flow.wrapper.edit((native) => { native.failure = { action: 'add', when: 'before', used: false }; });
+    assert.throws(() => runFeature(config, 'plan'), /reconcile-task/);
+    const saved = JSON.parse(readFileSync(join(config.runDirectory, 'planned.json'), 'utf8'));
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    assert.deepEqual(runFeature(config, 'plan', '--resume'), saved);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), calls, 'Never re-author checked work');
+    for (const task of saved.tasks) assert.equal(flow.wrapper.read().tasks[task.taskId]!.held, true);
+    const writes = flow.wrapper.read().calls.filter((call) => call.args[0] === 'add' && saved.tasks.some((task: any) => task.taskId === call.args[1]));
+    assert.equal(writes.length, saved.tasks.length);
+    const tampered = structuredClone(saved); tampered.tasks[0].task.revision++;
+    flow.save(join(config.runDirectory, 'planned.json'), tampered);
+    assert.throws(() => runFeature(config, 'plan', '--resume'), /planned_reconciliation_context_changed/);
+  } finally { flow.close(); }
+});
+
+test('a checked plan resumes without agents and keeps pinned evidence and plain web references distinct', () => {
+  const { flow, config } = intake();
+  try {
+    const path = join(config.repository, 'new-citation.mjs');
+    const text = 'export const pinnedBaseline = true;\n';
+    const git = (...args: string[]) => execFileSync('git', ['-C', config.repository, ...args], { encoding: 'utf8' }).trim();
+    writeFileSync(path, text);
+    git('add', '--', path);
+    git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Add source the planner discovers');
+    const revision = git('rev-parse', 'HEAD');
+    config.baselineEvidence[0]!.artifact.revision = revision;
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const source = { uri: path, excerpt: 'pinnedBaseline = true' };
+    const reference = { source: { uri: 'https://example.invalid/reference' }, digest: digestText('Reviewed reference.\n') };
+    const plainReference = { uri: 'https://example.invalid/background' };
+    outputs.design.records[0].sourceRefs.push(source, reference.source, plainReference);
+    flow.save(outputsPath, outputs);
+    const digest = digestText(text);
+    const pin = join(config.runDirectory, 'sources', `cited-${digest.slice(7)}.txt`);
+    writeFileSync(pin, 'A damaged snapshot must stop queueing.');
+    assert.throws(() => runFeature(config, 'plan'), /pinned_run_source_changed/);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+    assert.equal(existsSync(join(config.runDirectory, 'planned.json')), false);
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    const checked = JSON.parse(readFileSync(join(config.runDirectory, 'check-plan.stdout'), 'utf8'));
+    rmSync(pin);
+    writeFileSync(path, 'Mutable checkout content after planning.\n');
+    const referencePath = join(config.runDirectory, 'sources', `cited-${reference.digest.slice(7)}.txt`);
+    writeFileSync(referencePath, 'Reviewed reference.\n');
+    const references = join(flow.root, 'references.json');
+    flow.save(references, [reference]);
+    const run = join(flow.root, 'resume-run.json');
+    flow.save(run, config);
+    const planned = JSON.parse(execFileSync(process.execPath, [join(factory, 'scripts/run-feature.mjs'), 'plan', run,
+      '--resume', '--references', references], { encoding: 'utf8' }));
+    assert.deepEqual(planned.plan, checked.readyPlan);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), calls);
+    assert.deepEqual(planned.pinnedSources, [{ source, revision, digest }, reference]);
+    assert.equal(readFileSync(pin, 'utf8'), text);
     const taskId = planned.tasks[0].taskId;
     assert.equal(flow.wrapper.read().tasks[taskId]!.held, true);
     const prepared = runFeature(config, 'prepare-task', taskId) as any;
@@ -638,9 +1012,36 @@ for (const quoted of [false, true]) test(`HTTPS citations without snapshots ${qu
     try {
       const assignment = store.get(config.project.id, prepared.assignment.id, prepared.assignment.revision);
       assert.ok(assignment?.kind === 'assignment');
-      assert.ok(!assignment.selectedContext.some((context) => context.source.uri === uri));
+      assert.ok(assignment.selectedContext.some((context) =>
+        context.source.uri === path && context.extract === source.excerpt && context.artifact?.uri === pin));
+      assert.ok(assignment.selectedContext.some((context) =>
+        context.source.uri === reference.source.uri && context.artifact?.uri === referencePath));
+      assert.ok(!assignment.selectedContext.some((context) => context.source.uri === plainReference.uri));
       const design = store.get(config.project.id, assignment.design.id, assignment.design.revision);
-      assert.ok(design?.kind === 'design_revision' && design.sourceRefs.some((source) => source.uri === uri));
+      assert.ok(design?.kind === 'design_revision');
+      assert.ok(design.sourceRefs.some((source) => source.uri === plainReference.uri));
     } finally { store.close(); }
+  } finally { flow.close(); }
+});
+
+for (const link of [false, true]) test(`plan refuses a citation outside its repository (${link ? 'tracked symlink' : 'file path'})`, () => {
+  const { flow, config } = intake();
+  try {
+    const outside = join(flow.root, 'outside.txt');
+    writeFileSync(outside, 'This file is outside the registered repository.\n');
+    const source = link ? join(config.repository, 'escape.txt') : outside;
+    if (link) {
+      symlinkSync(outside, source);
+      const git = (...args: string[]) => execFileSync('git', ['-C', config.repository, ...args], { encoding: 'utf8' }).trim();
+      git('add', '--', source);
+      git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Track symlink outside repository');
+      config.baselineEvidence[0]!.artifact.revision = git('rev-parse', 'HEAD');
+    }
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    outputs.design.records[0].sourceRefs.push({ uri: source });
+    flow.save(outputsPath, outputs);
+    assert.throws(() => runFeature(config, 'plan'), /unauthorized_run_source/);
+    assert.equal(flow.wrapper.read().calls.length, 0);
   } finally { flow.close(); }
 });

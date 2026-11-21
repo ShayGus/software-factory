@@ -5,7 +5,7 @@ import {
   ArtifactSchema, BriefSpecEditsSchema, ClaimStateSchema, CommandNameSchema, ComparisonSchema, ConsolidationStateSchema,
   CorrectionActionSchema, CorrectionDeliveryFactSchema, CriterionResultStateSchema,
   DecisionDispositionSchema, DispositionSchema, EvidenceSchema, ExecutionStrategySchema,
-  FeatureStateSchema, IdSchema, MethodStageSchema, OperationStateSchema, RefSchema,
+  FeatureStateSchema, IdSchema, MethodStageSchema, OperationStateSchema, ProjectRuleFilesSchema, RefSchema,
   RequestDispositionSchema, ReviewOutcomeSchema, RevisionSchema, SourceRefSchema,
   TextSchema, TimestampSchema,
 } from './primitives.js';
@@ -132,6 +132,7 @@ export const SliceCriterionProvenanceSchema = z.strictObject({
 });
 export const ImplementationPlanRevisionSchema = record('implementation_plan_revision', {
   feature: RefSchema.nullable(), design: RefSchema, deliverySequence: z.array(RefSchema).min(1),
+  ticketTitle: TextSchema.optional(),
   strategy: ExecutionStrategySchema, strategyReason: TextSchema, integrationApproach: TextSchema,
   dependencies: z.array(DependencySchema), priorities: z.array(z.strictObject({
     taskId: IdSchema, priority: z.number().int(),
@@ -219,6 +220,7 @@ export const AssignmentSchema = record('assignment', {
   brief: z.strictObject({
     path: TextSchema, sidecarPath: TextSchema, scaffold: TextSchema,
     specEdits: BriefSpecEditsSchema.optional(),
+    ruleFiles: ProjectRuleFilesSchema.optional(),
     contextLayout: z.literal('sidecar').optional(),
     sidecarDigest: TextSchema,
     materialized: z.strictObject({ brief: TextSchema, sidecar: TextSchema }).optional(),

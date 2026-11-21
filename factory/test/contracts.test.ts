@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 import { z } from 'zod';
 import {
-  AssignmentSchema, CommandEnvelopeSchema, CommandNameSchema,
+  ArtifactSchema, AssignmentSchema, CommandEnvelopeSchema, CommandNameSchema,
   CriterionSchema, ExecutionObservationSchema, FeatureStateSchema, FirstMateInboxNoteSchema,
   FirstMateTaskMutationSchema, OperationSchema, RecordSchema, RecordsSchema,
   assertExpectedRevision, assertIdempotencyReuse, assertRevisionTransition, commandDigest,
@@ -339,4 +339,14 @@ test('truncated assignment context preserves its extract and reachable original 
   const assignment = AssignmentSchema.parse(byId('assignment-1'));
   assert.equal(AssignmentSchema.safeParse({ ...assignment,
     selectedContext: [{ source: { uri: 'fixture://original' }, truncated: true }] }).success, false);
+});
+
+
+test('artifact identity survives the JSON schema supplied to planning agents', () => {
+  const supplied = z.fromJSONSchema(z.toJSONSchema(ArtifactSchema));
+  assert.equal(supplied.safeParse({ uri: 'factory:future-output' }).success, false);
+  for (const artifact of [{ uri: 'fixture:existing', revision: 'commit-1' }, { uri: 'fixture:existing', digest: 'sha256:known' }]) {
+    assert.equal(supplied.safeParse(artifact).success, true);
+    assert.equal(ArtifactSchema.safeParse(artifact).success, true);
+  }
 });
