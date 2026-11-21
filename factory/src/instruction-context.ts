@@ -1,5 +1,6 @@
 import { learningContext, legacyContextSections, sourceRangeIsRetired, projectedContextArtifact, workerContextRecord, workerContextText, activeGuidance } from './learning-context.js';
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import type { Artifact, Ref } from './primitives.js';
 import type { Assignment, CriterionResult, FactoryRecord, ImplementationPlanRevision } from './records.js';
 import { planningRecord, samePlanningRef, stageCriteria } from './planning-checks.js';
@@ -15,6 +16,15 @@ export const sameSource = (a: Source, b: Source) => a.uri === b.uri && a.excerpt
   (a.record ? !!b.record && samePlanningRef(a.record, b.record) : !b.record);
 export const sameArtifactIdentity = (a: Artifact, b: Artifact) =>
   a.uri === b.uri && a.revision === b.revision && a.digest === b.digest;
+
+/** A bare public HTTPS citation can stay in the records without a fetched snapshot. */
+export function isPlainWebReference(source: Source): boolean {
+  if (source.record || source.excerpt !== undefined || !/^https:\/\//iu.test(source.uri)) return false;
+  const url = URL.parse(source.uri);
+  return !!url && !url.username && !url.password && url.hostname.includes('.') &&
+    !isIP(url.hostname) && !/\.(?:localhost|local|internal)\.?$/iu.test(url.hostname);
+}
+
 export type MissingContext = Source & { artifact?: Artifact };
 type ContextRequirement = { source: Source; artifact?: Artifact };
 const unique = <T>(items: T[], equal: (a: T, b: T) => boolean) =>
@@ -148,6 +158,7 @@ export function selectAssignmentContext(records: FactoryRecord[], assignment: Pa
     if (source.record && !record) { missing.push(missingContext(requirement)); continue; }
     const loaded = record ? { text: record.kind === 'request' ? record.originalText : JSON.stringify(record, null, 2),
       uri: recordSource(record).uri } : load(source, artifact);
+    if (!loaded && !artifact && isPlainWebReference(source)) continue;
     const versions = unique(required.artifacts.filter((candidate) => candidate.uri === source.uri), sameArtifactIdentity);
     if (!loaded || (artifact && ((loaded.identity && !sameArtifactIdentity(loaded.identity, artifact)) ||
       (versions.length > 1 && !loaded.identity)))) { missing.push(missingContext(requirement)); continue; }
@@ -192,10 +203,12 @@ export function missingAssignmentContext(records: FactoryRecord[], assignment: A
   const required = requiredAssignmentContext(records, assignment, assignment.selectedContext);
   const sources = assignment.brief ? required.sources : [assignment.design, assignment.plan, assignment.detailedPlanTask,
     ...required.requests].map(recordSource);
-  return contextRequirements(sources, assignment.brief ? required.artifacts : []).filter(({ source, artifact }) => !assignment.selectedContext.some((context) => {
-    const matches = assignment.brief ? sameSource(context.source, source) :
-      context.source.record && source.record && samePlanningRef(context.source.record, source.record);
-    return matches && (!assignment.brief || (context.extract !== undefined && context.artifact !== undefined &&
-      (!artifact || (context.artifact.revision === artifact.revision && (!artifact.digest || context.artifact.digest === artifact.digest)))));
-  })).map(missingContext);
+  return contextRequirements(sources, assignment.brief ? required.artifacts : [])
+    .filter(({ source, artifact }) => artifact || !isPlainWebReference(source))
+    .filter(({ source, artifact }) => !assignment.selectedContext.some((context) => {
+      const matches = assignment.brief ? sameSource(context.source, source) :
+        context.source.record && source.record && samePlanningRef(context.source.record, source.record);
+      return matches && (!assignment.brief || (context.extract !== undefined && context.artifact !== undefined &&
+        (!artifact || (context.artifact.revision === artifact.revision && (!artifact.digest || context.artifact.digest === artifact.digest)))));
+    })).map(missingContext);
 }

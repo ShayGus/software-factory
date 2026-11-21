@@ -11,7 +11,7 @@ import { retryAgentTurn, runStepAgent, type PlanningSession } from './agent-runn
 import { briefPreparationGateId, PrepareWorkerBriefInputSchema } from './briefs.js';
 import { MapRequestInputSchema, ref, requestRangeSource, stableId } from './intake.js';
 import { InstructionJudgeVerdictSchema } from './instruction-judge.js';
-import { digestText, requiredAssignmentContext, sameSource } from './instruction-context.js';
+import { digestText, isPlainWebReference, requiredAssignmentContext, sameSource } from './instruction-context.js';
 import { planningRecord, samePlanningRef } from './planning-checks.js';
 import { RecordStageInputSchema } from './planning.js';
 import { planReviewAuthority, planReviewDirections, PlanRevisionSchema, planRevisionDirections, reviseReviewedPlan } from './plan-review.js';
@@ -413,14 +413,16 @@ Each detailed task must require its worker to commit code, verify each assigned 
       if (task?.kind !== 'detailed_plan_task') throw new Error('run_task_missing');
       return task;
     });
-    // Agent-authored URIs can select only operator snapshots or the captured
-    // request. Never let an absolute path become authority to read a local file.
-    const sources = tasks.flatMap((task) => requiredAssignmentContext(history(), { projectId: project.id, feature: plan.feature,
-      design: plan.design, plan: ref(plan), detailedPlanTask: ref(task), criteria: task.criteria }).sources);
+    // Only operator snapshots and the captured request supply outside content.
+    const contexts = tasks.map((task) => requiredAssignmentContext(history(), { projectId: project.id, feature: plan.feature,
+      design: plan.design, plan: ref(plan), detailedPlanTask: ref(task), criteria: task.criteria }));
+    const sources = contexts.flatMap((context) => context.sources);
+    const artifacts = contexts.flatMap((context) => context.artifacts);
     const sourceFiles: z.input<typeof PrepareWorkerBriefInputSchema>['sourceFiles'] = [{ source: { uri: config.requestFile }, path: requestSnapshot }, ...config.sourceFiles];
     const pendingOutputs = plan.dependencies.flatMap((edge) => edge.needs.kind === 'criterion' ?
       [`factory:criterion-output/${encodeURIComponent(edge.prerequisiteTaskId)}/${encodeURIComponent(edge.needs.criterion.id)}@${edge.needs.criterion.revision}`] : []);
     for (const source of sources) if (!source.record && !pendingOutputs.includes(source.uri) && !sourceFiles.some((file) => sameSource(file.source, source))) {
+      if (isPlainWebReference(source) && !artifacts.some((artifact) => artifact.uri === source.uri)) continue;
       throw new Error(`unauthorized_run_source: ${source.uri}`);
     }
     const feature = plan.feature && history().find(record => record.id === plan.feature!.id && record.revision === plan.feature!.revision);
