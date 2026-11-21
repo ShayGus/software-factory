@@ -616,3 +616,31 @@ test('planning records the exact stored excerpt for an authored request range', 
     } finally { store.close(); }
   } finally { flow.close(); }
 });
+
+for (const quoted of [false, true]) test(`HTTPS citations without snapshots ${quoted ? 'reject excerpts' : 'stay as plain references'}`, () => {
+  const { flow, config } = intake();
+  try {
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const uri = 'https://example.invalid/background';
+    outputs.design.records[0].sourceRefs.push(quoted ? { uri, excerpt: 'Text requiring a snapshot' } : { uri });
+    flow.save(outputsPath, outputs);
+    if (quoted) {
+      assert.throws(() => runFeature(config, 'plan'), /unauthorized_run_source/);
+      assert.equal(flow.wrapper.read().calls.length, 0);
+      return;
+    }
+    const planned = runFeature(config, 'plan') as any;
+    const taskId = planned.tasks[0].taskId;
+    assert.equal(flow.wrapper.read().tasks[taskId]!.held, true);
+    const prepared = runFeature(config, 'prepare-task', taskId) as any;
+    const store = new ProjectStore(config.database, { readOnly: true });
+    try {
+      const assignment = store.get(config.project.id, prepared.assignment.id, prepared.assignment.revision);
+      assert.ok(assignment?.kind === 'assignment');
+      assert.ok(!assignment.selectedContext.some((context) => context.source.uri === uri));
+      const design = store.get(config.project.id, assignment.design.id, assignment.design.revision);
+      assert.ok(design?.kind === 'design_revision' && design.sourceRefs.some((source) => source.uri === uri));
+    } finally { store.close(); }
+  } finally { flow.close(); }
+});

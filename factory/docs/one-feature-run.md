@@ -225,6 +225,8 @@ The existing task mappings derive product requirements and native dependency edg
 `planned.json` binds the request, checked plan, detailed tasks and operation IDs to the unchanged run configuration; it is not a scheduler or a second source of task state.
 After partial task reconciliation, use its operation IDs with `outbox`/`reconcile-task` rather than repeating planning.
 `requestChannel` selects capture provenance and defaults to `cli`; the chat skill sets `chat`.
+Bare public HTTPS citations stay in the planning records as links without a fetch or a claim that the page was verified.
+External excerpts and versioned artifacts still require configured source snapshots.
 
 FirstMate selects the next eligible task through its normal supervision.
 `prepare-task` scaffolds and checks its brief, then reconciles its preparation-hold release through `manage-task`.
