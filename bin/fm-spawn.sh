@@ -2312,7 +2312,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
 fi
 ORCA_LAUNCH_ENV_ENABLED=0
 ORCA_LAUNCH_ENV_ARGS=
-if [ "$RELAUNCH" -eq 0 ]; then
+# Factory builder admission reads native records under this existing task-set
+# lock through publication, including relaunch and every runtime backend.
+if [ "$RELAUNCH" -eq 0 ] || [ -e "$CONFIG/software-factory.projects.json" ]; then
   mkdir -p "$STATE" || {
     echo "error: could not create parent state directory" >&2
     exit 1
@@ -2330,9 +2332,9 @@ if [ "$RELAUNCH" -eq 0 ]; then
   # through cleanup). Taken before this task's own locks, matching the
   # acquisition order documented there, and held through publication.
   #
-  # A relaunch is exempt: it republishes a task that already exists, so it is
-  # already covered by that task's control lock, which the teardown preflight
-  # tests.
+  # A non-factory relaunch is exempt: its existing task control lock covers
+  # teardown. Factory relaunches also take this lock so a completed builder
+  # cannot reacquire a place concurrently with a fresh builder's admission.
   #
   # Refusing rather than waiting is the fail-closed direction: the home may be
   # moments from removal, so there is nothing worth waiting for.
@@ -4965,6 +4967,9 @@ fi
 if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   HOOK_OPERATION=spawn
   [ "$RELAUNCH" -ne 1 ] || HOOK_OPERATION=relaunch
+  # shellcheck source=bin/fm-factory-lock-lib.sh
+  . "$SCRIPT_DIR/fm-factory-lock-lib.sh"
+  fm_factory_lock start "$PROJ_ABS" "$ID" || exit 1
   fm_hook_begin worker.start "$HOOK_OPERATION" task_id "$ID" kind "$KIND" \
     project "$PROJ_ABS" mode "$MODE" yolo "$YOLO" harness "$HARNESS" \
     backend "$BACKEND" branch "${BRANCH:-}" base_branch "${BASE_BRANCH:-}" \

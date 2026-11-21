@@ -243,6 +243,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Home-local command hooks: docs/lifecycle-hooks.md.
 # shellcheck source=bin/fm-hook-lib.sh
 . "$SCRIPT_DIR/fm-hook-lib.sh"
+# shellcheck source=bin/fm-factory-lock-lib.sh
+. "$SCRIPT_DIR/fm-factory-lock-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
@@ -1938,6 +1940,7 @@ case "$PROVIDER" in
     fi
     fm_hook_begin task.merge pr task_id "$ID" pr_url "$URL" pinned_head "$FM_PR_MERGE_HEAD" || exit 1
     fm_hook_before || exit 1
+    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" || exit 1
     if [ "${FM_HOOK_ACTIVE:-0}" = 1 ]; then
       HOOK_MERGE_HEAD=$FM_PR_MERGE_HEAD
       mergeable_status=0
@@ -2011,6 +2014,7 @@ case "$PROVIDER" in
     [ "$away_status" -eq 0 ] || exit "$away_status"
     fm_hook_begin task.merge pr task_id "$ID" pr_url "$URL" pinned_head "$FM_PR_MERGE_HEAD" || exit 1
     fm_hook_before || exit 1
+    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" || exit 1
     if [ "${FM_HOOK_ACTIVE:-0}" = 1 ]; then
       HOOK_MERGE_HEAD=$FM_PR_MERGE_HEAD
       gitlab_verify_mergeable || exit 1
@@ -2056,6 +2060,7 @@ case "$PROVIDER" in
     # directly through "tea api" instead.
     fm_hook_begin task.merge pr task_id "$ID" pr_url "$URL" pinned_head "$FM_PR_MERGE_HEAD" || exit 1
     fm_hook_before || exit 1
+    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" || exit 1
     if [ "${FM_HOOK_ACTIVE:-0}" = 1 ]; then
       HOOK_MERGE_HEAD=$FM_PR_MERGE_HEAD
       forgejo_verify_mergeable || exit 1

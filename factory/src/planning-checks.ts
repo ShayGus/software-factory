@@ -1,3 +1,4 @@
+import { unansweredOwnerQuestions } from './owner-questions.js';
 import { artifactReuse } from './records.js';
 import type { Ref } from './primitives.js';
 import { isDeepStrictEqual } from 'node:util';
@@ -160,6 +161,8 @@ export function planReadinessFindings(records: FactoryRecord[], detail: StageRev
   if (feature?.kind !== 'feature_revision') {
     add('stage_gap', detail, 'feature', 'Feature revision is missing'); return findings;
   }
+  for (const question of unansweredOwnerQuestions(records, feature.id)) add('unresolved_product_decision',
+    question, 'choice', question.questionOrChange);
   const chain: StageRevision[] = [];
   let stage: StageRevision | undefined = detail;
   for (const expected of ['detail', 'plan', 'design', 'understand'] as const) {

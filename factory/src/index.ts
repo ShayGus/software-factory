@@ -37,3 +37,6 @@ export * from './ui-bundle.js';
 export * from './runtime.js';
 export * from './recovery.js';
 export * from './ui-work.js';
+
+export * from './owner-questions.js';
+export * from './factory-locks.js';

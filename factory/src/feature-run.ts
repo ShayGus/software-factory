@@ -1,3 +1,4 @@
+import { assertNoOwnerQuestions } from './owner-questions.js';
 import { startManagedWorker, workerStartCheckRefused, workerStartOperationId } from './runtime.js';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -260,6 +261,7 @@ export function runFeature(configInput: unknown, phase: FeatureRunPhase, selecte
     let previousStage: StageRevision | undefined;
     let featureId: string | undefined;
     for (const step of planningAuthorSteps) {
+      if (featureId && step !== 'understand') assertNoOwnerQuestions(history(), featureId);
       const schema = step === 'understand' ? z.strictObject({ mapping: MapRequestInputSchema, input: RecordStageInputSchema }) : RecordStageInputSchema;
       const continuing = planningSession.id !== undefined;
       const readDirections = continuing

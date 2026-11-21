@@ -184,7 +184,7 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
       // Any pre-existing generation belongs to ordinary FirstMate management.
       if (task?.spawn_gen) return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Existing worker generation; explicit new attempt required', snapshot }));
       if (!data.hookRegistry || !assignment.brief) return recordOperationObservation(store, operation, 'pending', 'Worker start requires configured instruction and dispatch check');
-      const checked = checkConfiguredWorkerStart(store, data.projectId, assignment.firstMateTaskId, options.fmHome, data.hookRegistry, assignment.brief.path);
+      const checked = checkConfiguredWorkerStart(store, data.projectId, assignment.firstMateTaskId, options.fmHome, data.hookRegistry, assignment.brief.path, data.repository);
       if (!checked.ok || !checked.managed) return recordOperationObservation(store, operation, 'pending', JSON.stringify({ reason: 'worker_start_check_failed', checked }));
       operation = recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Worker start begun', snapshot }), {
         externalAttempt: { action: 'start', firstMateTaskId: assignment.firstMateTaskId, assignment: ref(assignment),

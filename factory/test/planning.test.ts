@@ -188,7 +188,13 @@ const findingCases: { name: string; code: string; edit: (flow: ReturnType<typeof
 for (const scenario of findingCases) test(`readiness records ${scenario.name} and withholds a ready revision`, () => {
   const flow = setup(scenario.name.includes('one slice'));
   try {
-    scenario.edit(flow); flow.start(); flow.finish();
+    scenario.edit(flow);
+    if (scenario.name === 'open product decision') {
+      assert.throws(() => flow.start(), /ticket_awaiting_owner/);
+      assert.equal(flow.store.get(base.projectId, flow.design.id), undefined);
+      return;
+    }
+    flow.start(); flow.finish();
     const result = flow.check();
     assert.equal(result.readyPlan, null);
     assert.equal(result.check?.kind, 'plan_readiness_revision');
@@ -599,10 +605,11 @@ test('review finding 7: classified technical questions do not become product app
     try {
       flow.decision.choice = { kind, state: 'open' }; flow.decision.disposition = 'proposed';
       flow.design.unresolvedQuestions = [flow.decision.questionOrChange];
+      if (kind === 'product') { assert.throws(() => flow.start(), /ticket_awaiting_owner/); continue; }
       flow.start(); flow.finish(); const result = flow.check();
       assert.equal(Boolean(result.readyPlan), kind === 'technical');
       assert.ok(result.check?.kind === 'plan_readiness_revision');
-      assert.equal(result.check.findings.some((finding) => finding.code === 'unresolved_product_decision'), kind === 'product');
+      assert.equal(result.check.findings.some((finding) => finding.code === 'unresolved_product_decision'), false);
     } finally { flow.store.close(); }
   }
 });
@@ -1161,5 +1168,31 @@ test('project-code reuse cannot relabel an existing factory design to skip its r
     const selected = { ...flow.designStage, revision: 2, reuse: { kind: 'project_code' as const,
       sources: [code], criterionMap: [], check: { ...comparison([request]), sourceRefs: [source(request), code] } } };
     assert.throws(() => flow.write(selected, []), /existing_artifact_requires_recorded_reuse_check/);
+  } finally { flow.store.close(); }
+});
+
+test('ticket-wide owner question blocks design and alternate planning writes, then the existing answer operation permits the same ticket', () => {
+  const flow = setup();
+  try {
+    flow.write(flow.understandStage, [flow.understanding]);
+    const question = DecisionChangeSchema.parse({ ...base, kind: 'decision_change', id: 'general-owner-question',
+      questionOrChange: 'May users change the connection?', affectedRecords: [feature], rationale: 'Unsettled user behavior',
+      disposition: 'proposed', sourceRefs: [source(request)], scopeChanges: [], choice: { kind: 'product', state: 'open' } });
+    applyCommand(flow.store, { schemaVersion: 1, id: 'ask', projectId: base.projectId, issuedAt: time,
+      idempotencyKey: 'ask', command: 'record_decision_suggestion', targetId: question.id, expectedRevision: 0, payload: { decision: question } });
+    assert.throws(() => flow.write(flow.designStage, [flow.design, flow.decision]), /ticket_awaiting_owner.*general-owner-question@1/);
+    assert.equal(flow.store.get(base.projectId, flow.design.id), undefined);
+    assert.throws(() => flow.write(flow.designStage, [flow.design, flow.decision,
+      { ...question, revision: 2, disposition: 'selected', choice: { kind: 'product', state: 'resolved' } }]),
+      /ticket_awaiting_owner/, 'A stage cannot silently resolve the existing owner question');
+    assert.throws(() => applyCommand(flow.store, { schemaVersion: 1, id: 'alternate-plan', projectId: base.projectId,
+      issuedAt: time, idempotencyKey: 'alternate-plan', command: 'design_plan_feature', targetId: flow.design.id,
+      expectedRevision: 0, payload: { feature, sourceRefs: [source(request)], existingDesignRefs: [], expectedRevisions: [],
+        design: flow.design, plan: flow.plan, tasks: flow.tasks } }), /ticket_awaiting_owner/);
+    applyCommand(flow.store, buildEditCommand({ kind: 'answer', decision: question }, { answer: 'Yes', reason: 'Owner answer' }, 'answer', time));
+    flow.write(flow.designStage, [flow.design, flow.decision]);
+    flow.write(flow.planStage, [flow.plan, ...flow.tasks]); flow.finish();
+    assert.equal(flow.check().check?.kind, 'plan_readiness_revision');
+    assert.equal(flow.store.history(base.projectId).filter(record => record.kind === 'request').length, 1);
   } finally { flow.store.close(); }
 });
