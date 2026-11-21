@@ -67,7 +67,7 @@ export function factoryProject(config: unknown, home: string, repository: string
 /** Native backlog `order` is the owner's order, not ID/creation/array order.
  * The native spawn task-set lock covers this check through record publication.
  * Runtime done releases a builder even without a PR; endpoint loss does not. */
-export function checkBuilderAdmission(records: FactoryRecord[], assignment: Assignment, snapshot: FleetSnapshot, repository: string) {
+export function checkBuilderAdmission(records: FactoryRecord[], assignment: Assignment, snapshot: FleetSnapshot, repository: string, capacity?: number) {
   const target = repositoryIdentity(repository);
   const mappings = records.filter(record => record.kind === 'task_mapping');
   const rows = snapshot.backlog.records.filter(row => row.id !== null);
@@ -84,7 +84,7 @@ export function checkBuilderAdmission(records: FactoryRecord[], assignment: Assi
   if (rows.some(row => row.id !== assignment.firstMateTaskId && row.state === 'in_flight' && row.kind === 'ship' &&
     (row.repo === candidate.repo || mappings.some(mapping => mapping.firstMateTaskId === row.id)) &&
     !snapshot.tasks.some(task => task.id === row.id))) throw new Error('factory_builder_inventory_incomplete');
-  if (occupants.length >= 3) throw new Error(`factory_deferred: three builders running (${occupants.map(task => task.id).join(', ')})`);
+  if (capacity !== undefined && occupants.length >= capacity) throw new Error(`factory_deferred: project capacity ${capacity} builders running (${occupants.map(task => task.id).join(', ')})`);
   const blocked = (row: typeof candidate) => !!row.hold_reason ||
     Array.isArray(row.unresolved_blocker_ids) && row.unresolved_blocker_ids.length > 0 ||
     Array.isArray(row.blocked_by_ids) && row.blocked_by_ids.some(id => !done.has(String(id)) && !rows.some(row => row.id === id && row.state === 'done'));

@@ -14,6 +14,7 @@ const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
 export const WorkerHookConfigSchema = FactoryProjectsSchema;
 const EventSchema = z.object({ version: z.literal(1), event: z.literal('worker.start.before'),
   home: absolute, task_id: z.string().min(1), project: absolute, kind: z.string().optional(),
+  project_capacity: z.string().regex(/^[1-9][0-9]{0,5}$/u).transform(Number).nullable().optional(),
   source_brief_path: absolute.nullable(), brief_path: absolute.nullable(),
   brief_sha256: z.string().regex(/^[a-f0-9]{64}$/u).nullable(),
 });
@@ -47,7 +48,7 @@ export function checkStartingWorker(configInput: unknown, eventInput: unknown, a
       parseStrictJson(readFileSync(project.agentConfig, 'utf8')),
       { sourceBriefPath: event.source_brief_path, sha256: event.brief_sha256 });
     if (report.ok && admission && event.kind !== 'scout') checkBuilderAdmission(store.records(project.projectId), assignment,
-      admission.snapshot ?? readFleetSnapshot({ fmHome: event.home, snapshotExecutable: admission.snapshotExecutable }), event.project);
+      admission.snapshot ?? readFleetSnapshot({ fmHome: event.home, snapshotExecutable: admission.snapshotExecutable }), event.project, event.project_capacity ?? undefined);
     const current = startingAssignment(config, event);
     if (!current || current.project.database !== project.database || current.project.projectId !== project.projectId ||
       current.assignment.id !== assignment.id || current.assignment.revision !== assignment.revision) {

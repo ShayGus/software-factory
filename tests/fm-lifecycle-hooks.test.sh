@@ -193,6 +193,7 @@ test_spawn() {
     assert_events worker.start.before
   done
   prepare_spawn spawn-pass
+  printf '%s 2\n' "$(basename "$PROJ")" > "$HOME_DIR/config/project-capacity"
   config worker.start.before worker.start.after
   out=$(HOOK_BEHAVIOR=save spawn --mode local-only --yolo off 2>&1) || fail "spawn failed: $out"
   assert_events worker.start.before,worker.start.after
@@ -200,6 +201,7 @@ test_spawn() {
   delivered=$(jq -r 'select(.event=="worker.start.after") | .delivered_brief_path' "$HOME_DIR/events.jsonl")
   cmp -s "$delivered" "$HOME_DIR/evaluated-brief" || fail 'delivered brief differs from approved bytes'
   jq -es '.[0].worktree == null and .[1].worktree != null and .[0].kind == "ship"' "$HOME_DIR/events.jsonl" >/dev/null || fail 'start payload does not identify allocation boundary'
+  jq -es 'all(.[]; .project_capacity == "2")' "$HOME_DIR/events.jsonl" >/dev/null || fail 'configured project capacity missing from native hook payload'
   # The general spawn fixture has no agent-state model; expose a plain shell
   # in the existing task window for recovery-grade relaunch preflight.
   mv "$FAKEBIN/tmux" "$FAKEBIN/tmux-default"
