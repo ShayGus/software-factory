@@ -13,7 +13,8 @@ import { AssignmentSchema, DetailedPlanTaskSchema, type Assignment, type Factory
 import { planningRecord } from './planning-checks.js';
 import { assignmentCriteria, digestText, recordSource, requiredAssignmentContext,
   sameSource, sameArtifactIdentity, selectAssignmentContext } from './instruction-context.js';
-import { assignmentMetadataFindings, instructionBodies, instructionFidelityFindings, renderWorkerBrief, scaffoldParts, workerAssignmentBlock, type InstructionFinding } from './instructions.js';
+import { assignmentMetadataFindings, instructionBodies, instructionFidelityFindings, renderIntentSection,
+  renderWorkerBrief, scaffoldParts, workerAssignmentBlock, type InstructionFinding } from './instructions.js';
 import { commandDigest, hasUnchangedFeatureScope, validateAssignmentForDispatch } from './rules.js';
 import { judgeWorkerInstructions } from './instruction-judge.js';
 import { ProjectStore, StoreError } from './store.js';
@@ -295,13 +296,14 @@ export function checkWorkerBrief(store: ProjectStore, projectId: string, assignm
       if (assignment.brief) {
         const parts = scaffoldParts(assignment.brief.scaffold);
         const { intent } = instructionBodies(records, assignment);
-        const verifiedPrefix = parts.prefix + intent + parts.newline.repeat(2) + parts.middle;
+        const verifiedPrefix = renderIntentSection(parts, intent);
         // Remove only the intent at its verified scaffold position inside the
         // single preserved source. Identical text in overlays is still checked.
         const sourceStart = candidate.indexOf(sourceCandidate);
         if (sourceStart >= 0 && sourceCandidate.startsWith(verifiedPrefix)) {
           const start = sourceStart + parts.prefix.length;
-          metadataCandidate = candidate.slice(0, start) + candidate.slice(start + intent.length);
+          const end = sourceStart + verifiedPrefix.length - parts.middle.length;
+          metadataCandidate = candidate.slice(0, start) + candidate.slice(end);
         }
       }
       findings.push(...assignmentMetadataFindings(metadataCandidate, instructionBodies(records, assignment).machineFields,
