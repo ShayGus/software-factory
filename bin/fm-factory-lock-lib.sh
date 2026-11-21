@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Required factory locks for registered homes. No registry preserves Firstmate's
 # existing path. A present registry with an unavailable checker fails closed.
-# fm_factory_lock <start|merge> <repository> <task-id> [<verified-head>]
+# fm_factory_lock <start|merge> <repository> <task-id> [<verified-head> <pr-url>]
 fm_factory_lock() {
   local registry="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/software-factory.projects.json"
   local factory_root="$SCRIPT_DIR/../factory" settings="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/software-factory.json"
@@ -19,5 +19,5 @@ fm_factory_lock() {
     fi
     return 0
   fi
-  node "$factory_root/scripts/factory-lock.mjs" "$1" "$registry" "$FM_HOME" "$2" "$3" "${4:-}"
+  node "$factory_root/scripts/factory-lock.mjs" "$1" "$registry" "$FM_HOME" "$2" "$3" "${4:-}" "${5:-}"
 }

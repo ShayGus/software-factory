@@ -11,14 +11,20 @@ import { readFileSync } from 'node:fs';
 import { runFeature } from '../dist/src/feature-run.js';
 import { parseStrictJson } from '../dist/src/strict-json.js';
 try {
-  const [phase, configPath, taskId, referencesFlag, referencesPath] = process.argv.slice(2);
-  const references = referencesFlag === '--references' && referencesPath && phase === 'plan' && taskId === '--resume' && process.argv.length === 7;
-  if (!['bootstrap', 'prepare', 'plan', 'prepare-task', 'start', 'review', 'review-all'].includes(phase) || !configPath ||
-    (process.argv.length > 5 && !references)) {
-    throw new Error('usage: run-feature.mjs <bootstrap|prepare|plan|prepare-task|start|review|review-all> /absolute/run.json [planned-task-id|--resume] [--references /absolute/references.json (plan resume only)]');
+  const [phase, configPath, ...args] = process.argv.slice(2);
+  const usage = 'usage: run-feature.mjs <bootstrap|prepare|plan|prepare-task|start|review|review-all> /absolute/run.json [planned-task-id|--resume] [--references /absolute/references.json (plan resume only)]\n' +
+    '       run-feature.mjs review-pr /absolute/run.json <canonical-pr-url> <verified-head>';
+  const references = phase === 'plan' && args.length === 3 && args[0] === '--resume' && args[1] === '--references';
+  if (!configPath || (phase === 'review-pr' ? args.length !== 2 :
+    !['bootstrap', 'prepare', 'plan', 'prepare-task', 'start', 'review', 'review-all'].includes(phase) || (args.length > 1 && !references))) {
+    throw new Error(usage);
   }
-  const approved = references ? parseStrictJson(readFileSync(referencesPath, 'utf8')) : undefined;
-  process.stdout.write(JSON.stringify(runFeature(parseStrictJson(readFileSync(configPath, 'utf8')), phase, taskId, approved), null, 2) + '\n');
+  const config = parseStrictJson(readFileSync(configPath, 'utf8'));
+  const approved = references ? parseStrictJson(readFileSync(args[2], 'utf8')) : undefined;
+  const result = phase === 'review-pr' ? runFeature(config, phase, undefined, { url: args[0], head: args[1] }) :
+    runFeature(config, phase, args[0], approved);
+  process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+  if (phase === 'review-pr' && result.review?.outcome !== 'passed') process.exitCode = 1;
 } catch (error) {
   process.stderr.write(String(error) + '\n'); process.exitCode = 1;
 }

@@ -289,6 +289,16 @@ Reattach to an active run through the ordinary driver and keep its original inte
 Read the full body of the pipeline-opened PR from the forge and pipe the raw Markdown into `node /absolute/software-factory/factory/scripts/ticket-validation.mjs check-pr /absolute/ticket-delivery.json`.
 Delivery needs the full Intent section, so an omitted, shortened or otherwise incomplete ticket leaves the verification incomplete under the repository's existing publication settings.
 
+### Reviewing the published head
+
+Read `head` from `bin/fm-factory-ticket-head.sh <canonical-pr-url>`.
+Run `run-feature.mjs review-pr /absolute/run.json <canonical-pr-url> <verified-head>` after publishing or resuming the ticket pull request and whenever its head advances.
+The runner verifies the forge identity and head before and after review and binds the aggregate ticket delivery to this pull request.
+A later head receives a product review of the complete diff from the nearest passing reviewed ancestor under the same ticket authority.
+If no ancestor qualifies, the reviewer checks the full pull request against the current request.
+Only a pass with existing technical evidence for the same commit makes the new head eligible at the native merge check.
+An incomplete review can be retried when its evidence is available.
+
 ## Worker-start hook
 
 The executable `scripts/worker-start-before.mjs` accepts the absolute path of an

@@ -20,8 +20,10 @@ import { planReviewAuthority, planReviewDirections, PlanRevisionSchema, planRevi
 import { BriefSpecEditsSchema, ComparisonSchema, EvidenceSchema, RefSchema, SourceRefSchema, TextSchema, type Ref } from './primitives.js';
 import { DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema, ImplementationPlanRevisionSchema,
   ProjectSchema, ProductReviewSchema, UnderstandingRevisionSchema, type Assignment, type FactoryRecord, type ProductReview, type StageRevision } from './records.js';
-import { deliveryReviewFindings, ReviewProductInputSchema } from './product-review.js';
-import { CommitSchema, ReviewTicketSchema } from './review-contracts.js';
+import { deliveryReviewFindings, ReviewProductInputSchema, snapshotDelivery } from './product-review.js';
+import { CommitSchema, PullRequestUrlSchema, ReviewTicketSchema, TicketDeliverySchema } from './review-contracts.js';
+import { reviewTicketPullRequest, ForgeTicketHeadSchema } from './ticket-review.js';
+import { repositoryIdentity } from './repository-identity.js';
 import { ProjectStore, StoreError } from './store.js';
 import { parseStrictJson } from './strict-json.js';
 import { validateTaskReviewForDelivery } from './rules.js';
@@ -76,7 +78,9 @@ const AuthorStageSchemas = {
   design: RecordStageInputSchema.extend({ records: z.array(z.union([DesignRevisionSchema, AuthoredDecisionSchema])) }),
   plan: PlanAuthorInputSchema, detail: PlanAuthorInputSchema,
 };
-export type FeatureRunPhase = 'bootstrap' | 'prepare' | 'plan' | 'prepare-task' | 'start' | 'review' | 'review-all';
+export type FeatureRunPhase = 'bootstrap' | 'prepare' | 'plan' | 'prepare-task' | 'start' | 'review' | 'review-all' | 'review-pr';
+const publishedTicketSchema = z.strictObject({ url: PullRequestUrlSchema, head: CommitSchema });
+type PublishedTicket = z.infer<typeof publishedTicketSchema>;
 const PreparedSchema = z.strictObject({ requestId: z.string(), assignment: RefSchema, briefPath: absolute, configDigest: z.string() });
 export const FeatureWorkerReturnSchema = ReviewProductInputSchema.pick({
   repository: true, deliveredArtifact: true, results: true, paths: true,
@@ -261,9 +265,10 @@ function bootstrapRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
  * Bootstrap replays the existing idempotent init; start observes FirstMate to
  * recover its durable operation after an ambiguous result. */
 export function runFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string, references?: unknown) {
-  const approved = z.array(ApprovedReferenceSchema).parse(references ?? []);
+  const published = phase === 'review-pr' ? publishedTicketSchema.parse(references) : undefined;
+  const approved = phase === 'review-pr' ? [] : z.array(ApprovedReferenceSchema).parse(references ?? []);
   if (approved.length && (phase !== 'plan' || selectedTaskId !== '--resume')) throw new Error('references_require_plan_resume');
-  if (!['plan', 'review', 'review-all'].includes(phase)) return executeFeature(configInput, phase, selectedTaskId);
+  if (!['plan', 'review', 'review-all', 'review-pr'].includes(phase)) return executeFeature(configInput, phase, selectedTaskId);
   const config = FeatureRunConfigSchema.parse(configInput);
   if (phase === 'review' && selectedTaskId) safeId.parse(selectedTaskId);
   mkdirSync(config.runDirectory, { recursive: true });
@@ -273,11 +278,11 @@ export function runFeature(configInput: unknown, phase: FeatureRunPhase, selecte
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${label}_attempt_in_progress: reconcile before retry`);
     throw error;
   }
-  try { return executeFeature(configInput, phase, selectedTaskId, approved); }
+  try { return executeFeature(configInput, phase, selectedTaskId, approved, published); }
   finally { rmSync(lock, { recursive: true }); }
 }
 
-function executeFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string, approvedReferences: PinnedSource[] = []) {
+function executeFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string, approvedReferences: PinnedSource[] = [], published?: PublishedTicket) {
   const resumePlan = phase === 'plan' && selectedTaskId === '--resume';
   if (resumePlan) selectedTaskId = undefined;
   let config = FeatureRunConfigSchema.parse(configInput);
@@ -298,6 +303,39 @@ function executeFeature(configInput: unknown, phase: FeatureRunPhase, selectedTa
   if (phase === 'bootstrap') return bootstrapRunProject(config);
   const currentProject = validatedRunProject(config); // Never initialize a missing hook context during preparation.
   const { project, firstMate: fm, runDirectory: directory } = config;
+  if (phase === 'review-pr') {
+    if (!published || fm.mode === 'local-only') throw new Error('published_ticket_identity_required');
+    const store = new ProjectStore(config.database);
+    try {
+      const manifest = PlannedSchema.parse(json(join(directory, 'planned.json')));
+      if (manifest.configDigest !== digestText(JSON.stringify(config))) throw new Error('planned_run_config_changed');
+      const plan = store.get(project.id, manifest.plan.id, manifest.plan.revision);
+      if (plan?.kind !== 'implementation_plan_revision' || !plan.feature) throw new Error('planned_ticket_feature_missing');
+      const ticketId = config.featureTaskId ?? stableId('feature-task', project.id, plan.feature.id);
+      const savedDelivery = json(join(directory, 'ticket-delivery.json'));
+      const raw = TicketDeliverySchema.partial({ review: true }).parse(savedDelivery);
+      const reviewId = `${config.taskId}-aggregate-review`;
+      // Older handoffs lacked the review ref. Recover only an unambiguous exact pass.
+      const matches = raw.review ? [raw.review] : store.history(project.id).filter((record) =>
+        record.kind === 'product_review' && record.id === reviewId && record.outcome === 'passed' &&
+        record.conformance?.deliveries?.some(({ artifact }) => artifact.revision === raw.commit)).map(ref);
+      if (matches.length !== 1 || matches[0]!.id !== reviewId) throw new Error('ticket_delivery_review_unavailable');
+      const delivery = TicketDeliverySchema.parse({ ...raw, review: matches[0] });
+      if (ticketId !== delivery.taskId || fm.mode !== delivery.mode ||
+        repositoryIdentity(config.repository) !== repositoryIdentity(delivery.repository)) throw new Error('ticket_delivery_context_changed');
+      const executable = fileURLToPath(new URL('../../../bin/fm-factory-ticket-head.sh', import.meta.url));
+      return reviewTicketPullRequest({ store, projectId: project.id, delivery, prUrl: published.url, expectedHead: published.head,
+        readForge: () => {
+          const result = spawnSync('bash', [executable, published.url], { cwd: config.repository,
+            env: firstMateEnv(fm.home), encoding: 'utf8', timeout: 30_000, maxBuffer: 4_000_000 });
+          if (result.error || result.signal || result.status !== 0) throw new Error(`ticket_forge_head_unavailable: ${result.stderr?.trim() ?? result.error?.message}`);
+          return ForgeTicketHeadSchema.parse(parseStrictJson(result.stdout));
+        },
+        readTicket: (featureId) => readFeatureReviewTicket({ fmHome: fm.home, tasksExecutable: fm.tasksExecutable },
+          project.id, featureId, ticketId), agentConfig: json(config.agentConfig), runDirectory: directory, fetchMissingCommits: true,
+      });
+    } finally { store.close(); }
+  }
   const maxRevisionRounds = config.maxRevisionRounds ?? 3;
   const agents = ProjectAgentConfigSchema.parse(json(config.agentConfig));
   for (const step of [...planningAuthorSteps, 'plan_check', 'instruction_check', 'product_review'] as const) {
@@ -998,7 +1036,11 @@ Each detailed task must require its worker to commit code, verify each assigned 
         intent = { intentFile, intentDigest: digestText(intentText) };
       }
       const notes = reviewedTicketNotes(history(), review);
-      const delivery = { ...ticket, repository: config.repository, commit: head, ...intent, ...(notes ? { reviewNotes: notes } : {}) };
+      const identity = repositoryIdentity(config.repository);
+      if (!review.conformance?.deliveries?.length || review.conformance.deliveries.some((entry) =>
+        repositoryIdentity(entry.repository ?? entry.artifact.uri) !== identity)) throw new Error('ticket_review_repository_mismatch');
+      const delivery = { ...ticket, repository: config.repository, repositoryIdentity: identity,
+        commit: head, review: ref(review), ...intent, ...(notes ? { reviewNotes: notes } : {}) };
       save('ticket-delivery', delivery);
       return { ...result, ticketDelivery: delivery };
     }

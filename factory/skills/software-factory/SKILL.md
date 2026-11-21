@@ -4,6 +4,7 @@ description: >-
   Run the installed Software Factory when an owner asks FirstMate to build or change a registered project in plain chat.
   Also load when asked to "update the factory" in an installed monorepo home.
   Resume its product review and dependent tasks when a factory-managed worker returns.
+  Load for publication or a new forge head on a Factory ticket pull request.
   Uses the existing factory toolkit, the current home's Beads backlog and normal FirstMate supervision.
 ---
 
@@ -145,7 +146,9 @@ If none exists, verify that the ticket branch still has the recorded commit, the
 On a no-mistakes run, use the [ticket validation handoff](../../docs/one-feature-run.md#publishing-a-reviewed-ticket) from an isolated checkout of the ticket branch.
 Reuse any active run on the branch and verify the full ticket in the pipeline-opened PR before reporting delivery complete.
 On a direct-PR run, push the ticket branch and open its single PR through the normal FirstMate forge workflow.
-The ticket is the sole PR owner. Record the PR URL on the parent ticket.
+The ticket is the sole PR owner.
+On publication or resumption, use [ticket pull request review](../../docs/one-feature-run.md#reviewing-the-published-head) to record the verified forge URL for the parent ticket and check the current head.
+Repeat on a later head before reporting readiness or attempting to merge.
 Use [the command runbook](../../docs/one-feature-run.md) for phase mechanics and recovery.
 After a partial or ambiguous external effect, inspect saved output, `outbox`, native state and the existing recovery operations; never restart planning or blindly spawn a replacement.
 

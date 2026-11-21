@@ -158,7 +158,13 @@ if(step==='instruction_check') {
  if(mode.narrow && snapshot.candidateInstructions.includes('Implement feature X for ERPNext only.')) { out={verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'instructions',text:'Implement feature X for ERPNext only.'}]}]}; }
 }
 
-if(step==='product_review') {
+if(step==='product_review' && snapshot.changes) {
+ assert.equal(snapshot.priorPass.review.id, mode.ticketPatchReview);
+ assert.match(snapshot.changes.patch, /[+]export const firstFix/);
+ assert.match(snapshot.changes.patch, /-baseline feature companion/);
+ assert.doesNotMatch(snapshot.changes.patch, /feature[.]mjs/);
+ out={verdict:'passed',assessment:'The fixes preserve the accepted behavior.',findings:[],unresolvedQuestions:[]};
+} else if(step==='product_review') {
  if(mode.publishReturnDuringReview) copyFileSync(mode.publishReturnDuringReview.source,mode.publishReturnDuringReview.path);
  assert.equal(snapshot.originalRequests[0].text,${JSON.stringify(original)});
  const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};

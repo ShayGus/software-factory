@@ -90,6 +90,44 @@ export const ProductVerdictSchema = z.strictObject({
     value[check] !== 'failed' || value.findings.some((finding) => finding.check === check && finding.disposition !== 'note')),
   'Failed comparisons need blocking findings');
 export type ProductVerdict = z.infer<typeof ProductVerdictSchema>;
+// The forge URL identifies the destination repository and request number.
+export const PullRequestUrlSchema = z.string().regex(
+  /^https:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._-]+)+\/(?:pull|pulls|-\/merge_requests)\/[1-9][0-9]*$/u)
+  .refine((url) => URL.canParse(url) && !url.split('/').some((segment) => segment === '.' || segment === '..'));
+
+export const TicketDeliverySchema = z.object({
+  taskId: IdSchema, branch: TextSchema, mode: z.enum(['no-mistakes', 'direct-PR']),
+  repository: TextSchema, repositoryIdentity: TextSchema.optional(), commit: CommitSchema, review: RefSchema,
+});
+
+export const TicketPatchSchema = z.strictObject({
+  patch: z.string().max(1_000_000), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+});
+
+export const TicketReviewVerdictSchema = z.strictObject({
+  verdict: checkState,
+  assessment: TextSchema,
+  findings: z.array(z.strictObject({
+    description: TextSchema,
+    quotes: z.array(z.strictObject({ source: z.enum(['patch', 'request']), text: TextSchema })).min(1),
+  })),
+  unresolvedQuestions: z.array(TextSchema),
+}).refine((value) => value.verdict === 'uncertain' ||
+  (value.verdict === 'failed' ? value.findings.length > 0 : !value.findings.length && !value.unresolvedQuestions.length),
+  'A pass must resolve all findings and questions; a failure needs findings');
+
+export const TicketReviewProofSchema = z.strictObject({
+  publication: RefSchema, ticketId: IdSchema, repository: TextSchema, prUrl: PullRequestUrlSchema,
+  head: CommitSchema, from: CommitSchema,
+  // No prior review means the complete PR changes were reviewed against the request.
+  priorReview: RefSchema.optional(), currentTicket: ReviewTicketSchema.optional(),
+  changes: TicketPatchSchema.nullable(), verdict: TicketReviewVerdictSchema.nullable(),
+  quality: QualityResultSchema.nullable(), profile: WorkflowAgentProfileSchema,
+});
+export type TicketDelivery = z.infer<typeof TicketDeliverySchema>;
+export type TicketReviewProof = z.infer<typeof TicketReviewProofSchema>;
+export type TicketReviewVerdict = z.infer<typeof TicketReviewVerdictSchema>;
+
 export const DeliveredFileSchema = z.strictObject({
   path: TextSchema, text: z.string(), artifact: ArtifactSchema, sizeBytes: z.number().int().positive().optional(),
 }).refine((file) => file.sizeBytes === undefined || file.text === '', 'Binary snapshots carry no file text');

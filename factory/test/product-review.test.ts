@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { RecordsSchema, ProjectStore, reviewProduct, parseRoborevResult, readRoborevResult, snapshotDelivery,
-  stepAgentCommand, validateRecords, validateReviewForCompletion, digestText, QualityResultSchema, type Assignment, type CriterionResult, type FactoryRecord,
+  stepAgentCommand, reviewTicketPullRequest, validateRecords, validateReviewForCompletion, digestText, QualityResultSchema, type Assignment, type CriterionResult, type FactoryRecord,
   checkFactoryMerge, ref, recordSource, planReadinessFindings, technicalReviewSatisfied, type StageRevision, type ProductVerdict, type QualityResult } from '../src/index.js';
 import { fakeJudgeOptions } from './judge-helper.js';
 
@@ -769,5 +769,163 @@ test('factory merge requires a passing full product review for the exact head an
     assert.throws(() => check(flow.commit, 'unmapped-task'), /ticket_missing_or_ambiguous/);
     assert.throws(() => checkFactoryMerge(registry, flow.directory, 'https://github.com/example/other', 'pilot-build', flow.commit), /repository_context_mismatch/);
     assert.deepEqual(checkFactoryMerge(registry, flow.directory, 'https://github.com/example/other', 'unmapped', flow.commit), { ok: true, managed: false });
+  } finally { flow.close(); }
+});
+
+
+test('a published ticket reviews only the range since its last passing head and unlocks that exact pull request', () => {
+  const flow = setup(goodCode, records => {
+    const mapping = records.find(record => record.kind === 'task_mapping')!;
+    assert.equal(mapping.kind, 'task_mapping');
+    mapping.featureTaskId = 'ticket-parent';
+  });
+  try {
+    const repoUrl = 'https://github.com/example/factory';
+    const prUrl = `${repoUrl}/pull/31`;
+    const branch = 'fm/ticket/ticket-parent';
+    const project = flow.store.get('project-1', 'project-1');
+    assert.ok(project?.kind === 'project');
+    flow.git('remote', 'add', 'origin', repoUrl);
+    const decision = { kind: 'decision_change', id: 'bind-ticket-project', projectId: 'project-1', schemaVersion: 1,
+      revision: 1, createdAt: at, updatedAt: at, questionOrChange: 'Bind native repository', affectedRecords: [ref(project)],
+      rationale: 'Test native project binding', disposition: 'selected', sourceRefs: [{ uri: 'fixture:registration' }], scopeChanges: [] };
+    flow.store.mutate({ schemaVersion: 1, id: 'bind-ticket', projectId: 'project-1', issuedAt: at, idempotencyKey: 'bind-ticket',
+      command: 'record_decision_suggestion', targetId: project.id, expectedRevision: project.revision, payload: { decision } },
+      () => [decision, { ...project, revision: project.revision + 1, repositories: [{ uri: flow.directory }], firstMateHomeRef: flow.directory }]);
+    const commitAll = (message: string) => {
+      flow.git('add', '-A', '--', '*.js');
+      flow.git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', message);
+      return flow.git('rev-parse', 'HEAD');
+    };
+    flow.git('switch', '-c', branch);
+    writeFileSync(join(flow.directory, 'legacy.js'), 'const obsolete = "remove this legacy code";\n');
+    const reviewedCommit = commitAll('Initial delivery');
+    const artifact = { ...flow.input.deliveredArtifact, revision: reviewedCommit };
+    // The original checkout can disappear after the aggregate handoff.
+    const oldCheckout = join(flow.directory, 'worker-checkout');
+    symlinkSync(flow.directory, oldCheckout);
+    const aggregate = reviewProduct(flow.store, { ...flow.input, repository: oldCheckout, deliveredArtifact: artifact, paths: ['feature.js'],
+      results: flow.input.results.map(result => ({ ...result, artifact,
+        evidence: result.evidence.map(evidence => ({ ...evidence, artifact })) })),
+    }, fakeJudgeOptions({ result: JSON.stringify(passing()) }), flow.reader).review;
+    assert.equal(aggregate.outcome, 'passed');
+    rmSync(oldCheckout);
+    const delivery = { taskId: 'ticket-parent', mode: 'no-mistakes' as const, branch, repository: flow.directory,
+      repositoryIdentity: 'github.com/example/factory', commit: reviewedCommit, review: ref(aggregate) };
+    const registry = { version: 1, projects: [{ home: flow.directory, database: flow.db, projectId: 'project-1', agentConfig: '/unused' }] };
+    const check = (head: string, url = prUrl) => checkFactoryMerge(registry, flow.directory, repoUrl, delivery.taskId, head, url);
+    let target = { url: prUrl, head: reviewedCommit, base: flow.commit, sourceBranch: branch, sourceRepository: repoUrl };
+    let observed = 0;
+    let currentTicket: { id: string; text: string } | undefined;
+    const calls = join(flow.directory, 'ticket-judge.jsonl');
+    const pass = { verdict: 'passed', assessment: 'Preserves accepted behavior.', findings: [], unresolvedQuestions: [] };
+    const fail = { verdict: 'failed', assessment: 'Change causes regression.', findings: [{ description: 'Legacy behavior changed.',
+      quotes: [{ source: 'patch', text: '-const obsolete = "remove this legacy code";' }] }], unresolvedQuestions: [] };
+    const run = (reader = flow.reader, verdict: unknown = pass, readForge = () => { observed++; return target; }) =>
+      reviewTicketPullRequest({ store: flow.store, projectId: 'project-1', delivery, prUrl: target.url,
+        expectedHead: target.head, readForge, readTicket: () => currentTicket,
+        agentConfig: fakeJudgeOptions({ result: JSON.stringify(verdict), record: calls }), readQuality: reader });
+    const initial = run();
+    assert.equal(initial.publication.reviewedCommit, reviewedCommit);
+    assert.deepEqual(ref(initial.review), ref(aggregate));
+    assert.equal(initial.replayed, true);
+    assert.equal(observed, 2);
+    assert.deepEqual(check(reviewedCommit).review, ref(aggregate));
+    assert.throws(() => check(reviewedCommit, `${repoUrl}/pull/32`), /pull_request_mismatch/);
+
+    writeFileSync(join(flow.directory, 'fix.js'), 'export const fixed = true;\n');
+    commitAll('Add fix');
+    rmSync(join(flow.directory, 'legacy.js'));
+    const fixedHead = commitAll('Remove obsolete code');
+    target = { ...target, head: fixedHead };
+    assert.throws(() => check(fixedHead), /requires_passing_product_review_for_head/);
+    const rejected = run(flow.reader, fail);
+    assert.equal(rejected.review.outcome, 'failed');
+    assert.throws(() => check(fixedHead), /requires_passing_product_review_for_head/);
+
+    // A further commit supersedes the rejected head. Both earlier changes
+    // remain in scope because the rejected head never became a baseline.
+    writeFileSync(join(flow.directory, 'fix.js'), 'export const fixed = true;\n// preserve feature behavior\n');
+    const updated = commitAll('Finish fix');
+    target = { ...target, head: updated };
+    const missing = run(() => { throw Error('No existing result'); });
+    assert.equal(missing.review.outcome, 'incomplete');
+    assert.throws(() => check(updated), /requires_passing_product_review_for_head/);
+    const mismatched = run(() => flow.reader(flow.directory, fixedHead, at));
+    assert.equal(mismatched.review.outcome, 'incomplete');
+    assert.equal(mismatched.review.ticketReview?.quality, null);
+    assert.throws(() => check(updated), /requires_passing_product_review_for_head/);
+    assert.throws(() => run(flow.reader, pass, () => {
+      observed++;
+      return observed % 2 ? target : { ...target, head: fixedHead };
+    }), /head_changed/);
+    assert.throws(() => check(updated), /requires_passing_product_review_for_head/);
+    const completed = run();
+    assert.equal(completed.review.outcome, 'passed', JSON.stringify(completed.review));
+    assert.deepEqual(completed.review.ticketReview?.priorReview, ref(aggregate));
+    assert.equal(completed.review.ticketReview?.quality?.commit, updated);
+    assert.equal(completed.review.ticketReview?.from, reviewedCommit);
+    assert.deepEqual(completed.review.results, []);
+    assert.equal(check(updated).managed, true);
+    assert.deepEqual(check(updated).review, ref(completed.review));
+    const tampered = structuredClone(flow.store.history('project-1'));
+    const tamperedReview = tampered.find(record => record.kind === 'product_review' && record.revision === completed.review.revision &&
+      record.id === completed.review.id);
+    assert.ok(tamperedReview?.kind === 'product_review' && tamperedReview.ticketReview?.changes);
+    tamperedReview.ticketReview.changes.patch = '';
+    assert.equal(validateReviewForCompletion(tampered, completed.review).ok, false);
+    assert.throws(() => check(updated, `${repoUrl}/pull/32`), /pull_request_mismatch/);
+    assert.equal(run(() => { throw Error('must replay'); }).replayed, true);
+
+    const snapshots = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const { changes, priorPass, originalRequests, deliveredFiles, workerReturns } =
+      snapshots.find(snapshot => snapshot.head === fixedHead);
+    assert.equal(priorPass.head, reviewedCommit);
+    assert.equal(originalRequests[0].text, original);
+    assert.match(changes.patch, /\+export const fixed = true/);
+    assert.match(changes.patch, /-const obsolete = "remove this legacy code";/);
+    assert.doesNotMatch(changes.patch, /feature\.js|system\.featureX/);
+    assert.equal(deliveredFiles, undefined);
+    assert.equal(workerReturns, undefined);
+
+    flow.git('mv', 'fix.js', 'renamed.js');
+    const newer = commitAll('Rename fix');
+    target = { ...target, head: newer };
+    assert.throws(() => check(newer), /requires_passing_product_review_for_head/);
+    const next = run();
+    assert.equal(next.review.outcome, 'passed');
+    assert.deepEqual(next.review.ticketReview?.priorReview, ref(completed.review));
+    assert.match(next.review.ticketReview!.changes!.patch, /rename from fix.js\nrename to renamed.js/);
+    assert.deepEqual(check(newer).review, ref(next.review));
+
+    // A change to the native authority also requires whole-PR review.
+    currentTicket = { id: delivery.taskId, text: `${original} Preserve the revised interface.` };
+    writeFileSync(join(flow.directory, 'renamed.js'), 'export const fixed = false;\n');
+    target = { ...target, head: commitAll('Change under revised authority') };
+    const changedScope = run(flow.reader, { ...pass, verdict: 'uncertain' });
+    assert.equal(changedScope.review.outcome, 'incomplete');
+    assert.equal(changedScope.review.ticketReview?.priorReview, undefined);
+    assert.throws(() => check(target.head), /requires_passing_product_review_for_head/);
+    currentTicket = undefined;
+
+    flow.git('switch', '--detach', flow.commit);
+    writeFileSync(join(flow.directory, 'replacement.js'), 'export const replacement = true;\n');
+    const divergent = commitAll('Rewrite delivery');
+    target = { ...target, head: divergent };
+    assert.throws(() => check(divergent), /requires_passing_product_review_for_head/);
+    const uncertainFull = run(flow.reader, { ...pass, verdict: 'uncertain' });
+    assert.equal(uncertainFull.review.outcome, 'incomplete');
+    assert.equal(uncertainFull.review.ticketReview?.priorReview, undefined);
+    assert.equal(uncertainFull.review.ticketReview?.from, flow.commit);
+    assert.throws(() => check(divergent), /requires_passing_product_review_for_head/);
+    const full = run();
+    assert.equal(full.review.outcome, 'passed');
+    assert.deepEqual(check(divergent).review, ref(full.review));
+    writeFileSync(join(flow.directory, 'replacement.js'), 'export const replacement = "later";\n');
+    target = { ...target, head: commitAll('Advance rewritten delivery') };
+    const afterFull = run();
+    assert.deepEqual(afterFull.review.ticketReview?.priorReview, ref(full.review));
+    target = { ...target, url: `${repoUrl}/pull/32` };
+    assert.throws(() => run(), /ticket_publication_conflict/);
   } finally { flow.close(); }
 });

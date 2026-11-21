@@ -6,7 +6,7 @@ import {
   CriterionResultSchema, DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema,
   ImplementationPlanRevisionSchema, ObservationSchema, ProductReviewSchema, SelectedContextSchema,
   FeatureRevisionSchema, CriterionSchema, UnderstandingRevisionSchema, StageRevisionSchema,
-  ProjectSchema, DependencySchema,
+  ProjectSchema, DependencySchema, TicketPublicationSchema,
 } from './records.js';
 import { ReviewTicketSchema } from './review-contracts.js';
 
@@ -107,15 +107,17 @@ export const ReviewDeliveryTargetSchema = z.strictObject({
 });
 export const RecordReviewResultCommandSchema = z.strictObject({
   ...mutation, command: z.literal('record_review_result'),
-  payload: z.strictObject({
+  payload: z.union([z.strictObject({
     originalRequests: z.array(RefSchema).min(1), feature: RefSchema.nullable(), design: RefSchema, plan: RefSchema,
     assignment: RefSchema, deliveredArtifact: ArtifactSchema,
     results: z.array(CriterionResultSchema), review: ProductReviewSchema.optional(),
+    ticketReview: z.strictObject({ publication: RefSchema, head: TextSchema, from: TextSchema,
+      priorReview: RefSchema.optional(), currentTicket: ReviewTicketSchema.optional() }).optional(),
     generation: z.strictObject({ repository: TextSchema, paths: z.array(TextSchema), maxSourceChars: z.number().int().positive(),
       baselineEvidence: z.array(EvidenceSchema), agentConfigDigest: TextSchema,
       currentTicket: ReviewTicketSchema.optional(),
       additionalDeliveries: z.array(ReviewDeliveryTargetSchema).optional() }).optional(),
-  }),
+  }), z.strictObject({ publication: TicketPublicationSchema })]),
 });
 export const CaptureConsolidateLearningCommandSchema = z.strictObject({
   ...mutation, command: z.literal('capture_consolidate_learning'),

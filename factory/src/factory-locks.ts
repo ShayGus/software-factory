@@ -12,6 +12,8 @@ import { parseStrictJson } from './strict-json.js';
 import { samePlanningRef } from './planning-checks.js';
 import { CommitSchema } from './review-contracts.js';
 import type { Artifact, Ref } from './primitives.js';
+import { repositoryIdentity, pullRequestIdentity, samePullRequest } from './repository-identity.js';
+export { repositoryIdentity } from './repository-identity.js';
 
 const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
 export const FactoryProjectsSchema = z.strictObject({
@@ -20,25 +22,6 @@ export const FactoryProjectsSchema = z.strictObject({
   })),
 });
 
-/** Compare native repository context with stored project repositories. Git common
- * directories identify worktree aliases; forge identity also identifies clones. */
-export function repositoryIdentity(input: string): string {
-  let remote = input.startsWith('git:') && !input.startsWith('git://') ? input.slice(4) : input;
-  if (remote.startsWith('file:')) remote = new URL(remote).pathname;
-  if (isAbsolute(remote)) {
-    const directory = realpathSync(remote);
-    const git = (...args: string[]) => execFileSync('git', ['-C', directory, ...args],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-    try { remote = git('remote', 'get-url', 'origin'); }
-    catch { return `local:${realpathSync(git('rev-parse', '--path-format=absolute', '--git-common-dir'))}`; }
-  }
-  if (!remote.includes('://')) remote = remote.replace(/^(?:[^@]+@)?([^:]+):(.+)$/u, 'ssh://$1/$2');
-  const url = new URL(remote);
-  if (!['http:', 'https:', 'ssh:', 'git:'].includes(url.protocol) || url.password || url.search || url.hash) throw new Error('factory_repository_identity_unavailable');
-  const path = url.pathname.replace(/^\/+|\/+$/gu, '').replace(/\.git$/iu, '');
-  if (!path) throw new Error('factory_repository_identity_unavailable');
-  return `${url.host.toLowerCase()}/${url.hostname === 'github.com' ? path.toLowerCase() : path}`;
-}
 export function factoryProject(config: unknown, home: string, repository: string, mergeTaskId?: string) {
   const registry = FactoryProjectsSchema.parse(config);
   const target = repositoryIdentity(repository);
@@ -146,7 +129,7 @@ export function checkBuilderAdmission(records: FactoryRecord[], assignment: Assi
 }
 
 /** Eligibility only. Existing forge checks, owner holds and head pin still apply. */
-export function checkFactoryMerge(config: unknown, home: string, repository: string, taskId: string, head: string) {
+export function checkFactoryMerge(config: unknown, home: string, repository: string, taskId: string, head: string, prUrl?: string) {
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(head)) throw new Error('factory_merge_requires_exact_head');
   const project = factoryProject(config, home, repository, taskId);
   if (!project) return { ok: true, managed: false };
@@ -160,12 +143,27 @@ export function checkFactoryMerge(config: unknown, home: string, repository: str
     if (features.length !== 1) throw new Error('factory_merge_ticket_missing_or_ambiguous');
     assertNoOwnerQuestions(records, features[0]!);
     const target = repositoryIdentity(repository);
-    const review = current.find(record => record.kind === 'product_review' && record.feature?.id === features[0] &&
-      record.outcome === 'passed' && record.conformance?.deliveries?.length &&
-      record.conformance.deliveries.every(delivery => delivery.artifact.revision === head &&
-        repositoryIdentity(delivery.repository ?? delivery.artifact.uri) === target) &&
-      record.reviewedArtifacts.some(artifact => artifact.revision === head && repositoryIdentity(artifact.uri) === target) &&
-      validateReviewForCompletion(records, record).ok);
+    const publication = current.find(record => record.kind === 'ticket_publication' && mappings.some(mapping =>
+      record.ticketId === mapping.featureTaskId || record.ticketId === mapping.firstMateTaskId));
+    if (publication?.kind === 'ticket_publication' && (!prUrl || publication.repository !== target ||
+      pullRequestIdentity(prUrl).repository !== target || !samePullRequest(publication.prUrl, prUrl) ||
+      publication.ticketId !== taskId)) throw new Error('factory_merge_ticket_pull_request_mismatch');
+
+    const review = current.find(record => {
+      if (record.kind !== 'product_review' || record.feature?.id !== features[0] || record.outcome !== 'passed') return false;
+      if (record.ticketReview) {
+        const proof = record.ticketReview;
+        return !!publication && samePlanningRef(publication, proof.publication) && proof.head === head &&
+          validateReviewForCompletion(records, record).ok;
+      }
+      return !publication && !!record.conformance?.deliveries?.length &&
+        record.conformance.deliveries.every(delivery => delivery.artifact.revision === head &&
+          repositoryIdentity(delivery.repository ?? delivery.artifact.uri) === target) &&
+        record.reviewedArtifacts.some(artifact => artifact.revision === head && repositoryIdentity(artifact.uri) === target) &&
+        validateReviewForCompletion(records, record).ok;
+    }) ?? (publication?.kind === 'ticket_publication' && publication.initialBaseline && publication.reviewedCommit === head ?
+      records.find(record => record.kind === 'product_review' && samePlanningRef(record, publication.aggregateReview) &&
+        validateReviewForCompletion(records, record).ok) : undefined);
     if (!review) throw new Error(`factory_merge_requires_passing_product_review_for_head: ${head}`);
     return { ok: true, managed: true, review: { id: review.id, revision: review.revision } };
   } finally { store.close(); }

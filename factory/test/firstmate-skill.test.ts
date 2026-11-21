@@ -262,6 +262,11 @@ for (const existingTicket of [false, true]) test(`a publishing run gives both su
       outputs.design.records[0].decisions = [ref(decision)];
       flow.save(outputsPath, outputs);
     }
+    const repository = 'https://github.com/example/factory';
+    git('remote', 'add', 'origin', repository);
+    writeFileSync(join(config.repository, 'companion.txt'), 'baseline feature companion\n');
+    git('add', 'companion.txt');
+    git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Keep existing companion');
     const planned = runFeature(config, 'plan') as any;
     const [producer, consumer] = planned.tasks.map((task: any) => task.taskId);
     assert.equal(planned.tasks.length, 2);
@@ -306,7 +311,8 @@ for (const existingTicket of [false, true]) test(`a publishing run gives both su
     const intentFile = join(config.runDirectory, 'ticket-intent.md');
     const reviewNotes = '## Factory review notes\n\n- **code** Code observation\n- **scope** Scope observation\n- **product** Product observation';
     assert.deepEqual(result.ticketDelivery, { taskId: parent.id, branch, mode: 'no-mistakes', yolo: 'off',
-      repository: config.repository, commit: finalCommit, intentFile, intentDigest: digestText(expectedIntent), reviewNotes });
+      repository: config.repository, repositoryIdentity: 'github.com/example/factory', commit: finalCommit,
+      review: ref(result.review), intentFile, intentDigest: digestText(expectedIntent), reviewNotes });
     assert.deepEqual(JSON.parse(readFileSync(deliveryPath, 'utf8')), result.ticketDelivery);
     assert.equal(readFileSync(intentFile, 'utf8'), expectedIntent);
 
@@ -364,6 +370,39 @@ fs.writeFileSync(${JSON.stringify(prBody)}, '## What Changed\\n\\nSynthetic pipe
       finalCommit, result.ticketDelivery.intentDigest], { cwd: config.repository, encoding: 'utf8' });
     assert.match(pinnedStart.stderr, /handoff changed after worker admission/);
     flow.save(deliveryPath, result.ticketDelivery);
+
+    const url = `${repository}/pull/31`;
+    writeFileSync(join(config.repository, 'first-fix.mjs'), 'export const firstFix = true;\n');
+    git('add', 'first-fix.mjs');
+    git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'First fix');
+    rmSync(join(config.repository, 'companion.txt'));
+    git('add', '-u', '--', 'companion.txt');
+    git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Second fix');
+    const fixed = git('rev-parse', 'HEAD');
+    const forgeResponse = join(flow.root, 'forge-ticket.json');
+    flow.save(forgeResponse, { html_url: url, head: { sha: fixed, ref: branch, repo: { html_url: repository } }, base: { sha: base } });
+    writeFileSync(join(flow.root, 'gh-axi'), `#!${process.execPath}
+const assert = require('node:assert/strict');
+assert.deepEqual(process.argv.slice(2, 6), ['api', '/repos/example/factory/pulls/31', '--full', '--jq']);
+assert.match(process.argv[6], /@base64/);
+assert.equal(process.env.GH_HOST, 'github.com');
+const { html_url, head, base } = JSON.parse(require('node:fs').readFileSync(${JSON.stringify(forgeResponse)}));
+const json = JSON.stringify({ url: html_url, head: head.sha, base: base.sha, sourceBranch: head.ref, sourceRepository: head.repo.html_url });
+process.stdout.write('api_response:\\n  body: ' + Buffer.from(json).toString('base64') + '\\n  truncated: false\\n');
+`, { mode: 0o700 });
+    flow.save(join(flow.root, 'mode.json'), { ticketPatchReview: result.review.id });
+    const runnerConfig = join(flow.root, 'publishing-run.json');
+    flow.save(runnerConfig, config);
+    const runner = join(factory, 'scripts/run-feature.mjs');
+    const merge = () => spawnSync(process.execPath, [join(factory, 'scripts/factory-lock.mjs'), 'merge', config.hookRegistry,
+      flow.home, repository, parent.id, fixed, url], { encoding: 'utf8' });
+    assert.match(merge().stderr, /requires_passing_product_review_for_head/);
+    const reviewed = spawnSync(process.execPath, [runner, 'review-pr', runnerConfig, url, fixed], { encoding: 'utf8' });
+    assert.equal(reviewed.status, 0, reviewed.stderr + reviewed.stdout);
+    const followUp = JSON.parse(reviewed.stdout).review;
+    assert.equal(followUp.ticketReview.from, finalCommit);
+    assert.equal(followUp.ticketReview.head, fixed);
+    assert.deepEqual(JSON.parse(merge().stdout).review, ref(followUp));
     writeFileSync(intentFile, 'Changed after review.');
     assert.throws(() => checkStartingWorker(registry, event), /ticket intent is empty or changed/);
     assert.match(validate('start').stderr, /ticket intent is empty or changed/);

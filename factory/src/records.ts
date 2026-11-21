@@ -1,6 +1,6 @@
 import { LearningIdentitySchema, LearningInputKindSchema, LearningCaptureReasonSchema, LegacySectionSchema, LegacyReplacementSchema, LearningVerdictSchema } from './learning-contracts.js';
 import { z } from 'zod';
-import { ProductConformanceSchema } from './review-contracts.js';
+import { CommitSchema, PullRequestUrlSchema, TicketReviewProofSchema, ProductConformanceSchema } from './review-contracts.js';
 import {
   ArtifactSchema, BriefSpecEditsSchema, ClaimStateSchema, CommandNameSchema, ComparisonSchema, ConsolidationStateSchema,
   CorrectionActionSchema, CorrectionDeliveryFactSchema, CriterionResultStateSchema,
@@ -247,6 +247,14 @@ export const ProductReviewSchema = record('product_review', {
   unresolvedQuestions: z.array(TextSchema), outcome: ReviewOutcomeSchema,
   reviewerSession: TextSchema, reviewedAt: TimestampSchema,
   conformance: ProductConformanceSchema.optional(),
+  ticketReview: TicketReviewProofSchema.optional(),
+});
+
+export const TicketPublicationSchema = record('ticket_publication', {
+  ticketId: IdSchema, repository: TextSchema, prUrl: PullRequestUrlSchema, sourceBranch: TextSchema,
+  aggregateReview: RefSchema, reviewedCommit: CommitSchema, firstObservedHead: CommitSchema,
+  // Presence proves the reviewed commit was on this PR when its binding was made.
+  initialBaseline: z.literal(true).optional(),
 });
 
 export const MeasurementClaimSchema = record('measurement_claim', {
@@ -373,7 +381,7 @@ export const RecordSchema = z.discriminatedUnion('kind', [
   ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, TaskMappingSchema, AssignmentSchema,
   CriterionResultSchema, ProductReviewSchema, MeasurementClaimSchema, DecisionChangeSchema,
   ObservationSchema, GuidanceRevisionSchema, OperationSchema, UnderstandingRevisionSchema,
-  StageRevisionSchema, PlanReadinessRevisionSchema, LearningRunSchema,
+  StageRevisionSchema, PlanReadinessRevisionSchema, LearningRunSchema, TicketPublicationSchema,
 ]);
 export const RecordsSchema = z.array(RecordSchema);
 
@@ -388,6 +396,7 @@ export type DetailedPlanTask = z.infer<typeof DetailedPlanTaskSchema>;
 export type TaskMapping = z.infer<typeof TaskMappingSchema>;
 export type Assignment = z.infer<typeof AssignmentSchema>;
 export type CriterionResult = z.infer<typeof CriterionResultSchema>;
+export type TicketPublication = z.infer<typeof TicketPublicationSchema>;
 export type ProductReview = z.infer<typeof ProductReviewSchema>;
 export type MeasurementClaim = z.infer<typeof MeasurementClaimSchema>;
 export type DecisionChange = z.infer<typeof DecisionChangeSchema>;

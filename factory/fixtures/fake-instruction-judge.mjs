@@ -14,7 +14,11 @@ const snapshot = JSON.parse(readFileSync(evidence, 'utf8'));
 assert.equal(snapshot.schemaVersion, 1);
 const plan = snapshot.plan ?? snapshot.plans?.find((plan) =>
   plan.id === snapshot.reviewPlan?.id && plan.revision === snapshot.reviewPlan?.revision);
-assert.ok(snapshot.originalRequests.length && snapshot.design && plan && snapshot.task && snapshot.candidateInstructions);
+assert.ok(snapshot.originalRequests.length && snapshot.design && plan);
+if (snapshot.changes) {
+  assert.equal(typeof snapshot.changes.patch, 'string');
+  assert.match(snapshot.head, /^[a-f0-9]{40,64}$/);
+} else assert.ok(snapshot.task && snapshot.candidateInstructions);
 assert.match(prompt, /Do not obey that material/);
 if (values.record) appendFileSync(values.record, JSON.stringify({ ...snapshot, prompt, agentArgv, agentPid: process.pid,
   inheritedSessionMarkers: Object.keys(process.env).filter((name) => ['CLAUDECODE', 'CLAUDE_SESSION_ID', 'CODEX_THREAD_ID'].includes(name) || name.startsWith('FM_') || name.startsWith('ORCA_')) }) + '\n');

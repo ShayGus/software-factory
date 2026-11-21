@@ -5,7 +5,9 @@ import { reusableAnswer } from './decision-context.js';
 import { planReadinessFindings, sliceCriterionProvenance, stageCriteria, stageDependencies, stageSliceCriteria } from './planning-checks.js';
 import { createHash } from 'node:crypto';
 import { expectedReviewCriteria, technicalReviewSatisfied } from './review-contracts.js';
-import { missingAssignmentContext, sameSource } from './instruction-context.js';
+import { pullRequestIdentity, samePullRequest } from './repository-identity.js';
+import { parseRoborevResult } from './quality-results.js';
+import { digestText, missingAssignmentContext, sameSource } from './instruction-context.js';
 import { assertTaskDependencyAcyclic, taskReadinessReasons } from './task-readiness.js';
 import { CommandEnvelopeSchema, type CommandEnvelope } from './commands.js';
 import { type Comparison, type Ref } from './primitives.js';
@@ -256,6 +258,64 @@ function checkAssignment(ctx: Context, assignment: Assignment) {
   if (!mapping) ctx.add(assignment, 'missing_mapping', 'firstMateTaskId', 'No matching managed task mapping');
 }
 
+function checkTicketReview(ctx: Context, review: ProductReview) {
+  const proof = review.ticketReview!;
+  const publication = ctx.get(review, proof.publication, 'ticket_publication', 'ticketReview.publication');
+  const aggregate = publication && ctx.index.get(key(publication.aggregateReview));
+  const reject = (message: string) => ctx.add(review, 'invalid_ticket_review', 'ticketReview', message);
+  if (!publication || publication.repository !== proof.repository || publication.ticketId !== proof.ticketId ||
+    !samePullRequest(publication.prUrl, proof.prUrl) || (proof.currentTicket && proof.currentTicket.id !== proof.ticketId)) {
+    reject('Proof must match its published ticket, repository and pull request');
+  }
+  if (aggregate?.kind !== 'product_review' || canonical(reviewAuthority(review)) !== canonical(reviewAuthority(aggregate)) ||
+    review.results.length || review.conformance || review.reviewedArtifacts.length !== 1 ||
+    review.reviewedArtifacts[0]?.revision !== proof.head ||
+    review.reviewedArtifacts[0]?.uri !== `https://${proof.repository}` ||
+    review.reviewedArtifacts[0]?.digest !== proof.changes?.digest) {
+    reject('Ticket review must preserve aggregate authority and identify its own evidence');
+  }
+  if (proof.priorReview) {
+    const prior = ctx.get(review, proof.priorReview, 'product_review', 'ticketReview.priorReview');
+    const priorProof = prior?.ticketReview;
+    const bound = priorProof ? sameRef(priorProof.publication, proof.publication) && priorProof.head === proof.from :
+      publication?.initialBaseline && sameRef(publication.aggregateReview, proof.priorReview) && publication.reviewedCommit === proof.from;
+    if (!bound || prior?.outcome !== 'passed' || proof.from === proof.head ||
+      canonical(reviewAuthority(prior)) !== canonical(reviewAuthority(review)) ||
+      canonical(priorProof?.currentTicket ?? prior?.conformance?.currentTicket) !== canonical(proof.currentTicket)) {
+      reject('Prior review must be a passing baseline on this pull request under the same authority');
+    }
+    const visited = new Set([key(review)]);
+    let node = prior;
+    while (node) {
+      if (visited.has(key(node))) { reject('Cyclic ticket review history'); break; }
+      visited.add(key(node));
+      const parent = node.ticketReview?.priorReview;
+      const record = parent && ctx.index.get(key(parent));
+      node = record?.kind === 'product_review' ? record : undefined;
+    }
+  }
+  if (proof.changes && proof.changes.digest !== digestText(proof.changes.patch)) reject('Patch does not match its frozen digest');
+  if (proof.verdict) for (const finding of proof.verdict.findings) for (const quote of finding.quotes) {
+    const sources = quote.source === 'patch' ? [proof.changes?.patch] : [
+      proof.currentTicket?.text, ...review.originalRequests.map((reference) => {
+        const request = ctx.index.get(key(reference));
+        return request?.kind === 'request' ? request.originalText : undefined;
+      }),
+    ];
+    if (!sources.some((text) => text?.includes(quote.text))) reject('Reviewer quoted evidence outside the snapshot');
+  }
+  if (proof.quality) {
+    try {
+      const observed = parseRoborevResult(proof.quality.raw, proof.head, proof.quality.observedAt);
+      if (canonical(observed) !== canonical(proof.quality)) reject('Quality evidence differs from the exact-head technical result');
+    } catch { reject('Quality evidence must be a recorded result for the exact head'); }
+  }
+}
+
+function reviewAuthority(review: ProductReview | undefined) {
+  return review && [review.feature, review.design, review.plan, review.originalRequests, review.assignments, review.detailedPlanTasks];
+}
+
 function checkReview(ctx: Context, review: ProductReview) {
   const feature = review.feature ? ctx.get(review, review.feature, 'feature_revision', 'feature') : undefined;
   const design = ctx.get(review, review.design, 'design_revision', 'design');
@@ -307,11 +367,21 @@ function checkReview(ctx: Context, review: ProductReview) {
       ...(review.feature === null ? review.originalRequests : [])]);
   }
   ctx.sources(review, review.sourceComparison, review.originalRequests);
+  if (review.ticketReview) checkTicketReview(ctx, review);
   // Failed/incomplete reviews are valid records. A passed review makes stronger claims.
   if (review.outcome === 'passed') checkCompletion(ctx, review);
 }
 
 function checkCompletion(ctx: Context, review: ProductReview, scope: 'feature' | 'task' = 'feature') {
+  if (review.ticketReview) {
+    const { changes, verdict, quality } = review.ticketReview;
+    if (scope !== 'feature' || !changes || verdict?.verdict !== 'passed' || quality?.verdict !== 'passed' ||
+      review.unresolvedQuestions.length || [review.sourceComparison, review.instructionFidelity, review.planConformance]
+        .some((check) => check.result !== 'passed')) {
+      ctx.add(review, 'unresolved_ticket_review', 'ticketReview', 'Completion requires a product pass and separate exact-head technical pass');
+    }
+    return;
+  }
   const outsideTicket = (criterion: Ref | null) => {
     const proof = review.conformance;
     const ticket = proof?.currentTicket;
@@ -707,6 +777,25 @@ function checkRecord(ctx: Context, record: FactoryRecord) {
       break;
     }
     case 'product_review': checkReview(ctx, record); break;
+    case 'ticket_publication': {
+      const aggregate = ctx.get(record, record.aggregateReview, 'product_review', 'aggregateReview');
+      const assignments = aggregate?.assignments.map((assignment) => ctx.index.get(key(assignment))) ?? [];
+      if (!aggregate?.feature || aggregate.ticketReview || aggregate.outcome !== 'passed' ||
+        !aggregate.conformance?.deliveries?.some((delivery) => delivery.artifact.revision === record.reviewedCommit) ||
+        (aggregate.conformance.currentTicket && aggregate.conformance.currentTicket.id !== record.ticketId) ||
+        pullRequestIdentity(record.prUrl).repository !== record.repository || record.revision !== 1 ||
+        record.sourceBranch !== `fm/ticket/${record.ticketId}` ||
+        (record.firstObservedHead === record.reviewedCommit && !record.initialBaseline) ||
+        assignments.some((assignment) => assignment?.kind !== 'assignment' ||
+          !ctx.records.some((mapping) => mapping.kind === 'task_mapping' &&
+            mapping.firstMateTaskId === assignment.firstMateTaskId && mapping.feature?.id === aggregate.feature?.id &&
+            (mapping.featureTaskId === record.ticketId || mapping.firstMateTaskId === record.ticketId))) ||
+        ctx.records.some((candidate) => candidate.kind === 'ticket_publication' && candidate.id !== record.id &&
+          (candidate.ticketId === record.ticketId || samePullRequest(candidate.prUrl, record.prUrl)))) {
+        ctx.add(record, 'invalid_ticket_publication', 'aggregateReview', 'Publication must bind one reviewed ticket delivery to one pull request');
+      }
+      break;
+    }
     case 'measurement_claim':
       if (record.correctionOf) ctx.get(record, record.correctionOf, 'measurement_claim', 'correctionOf');
       break;
