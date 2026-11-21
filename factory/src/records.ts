@@ -2,7 +2,7 @@ import { LearningIdentitySchema, LearningInputKindSchema, LearningCaptureReasonS
 import { z } from 'zod';
 import { ProductConformanceSchema } from './review-contracts.js';
 import {
-  ArtifactSchema, ClaimStateSchema, CommandNameSchema, ComparisonSchema, ConsolidationStateSchema,
+  ArtifactSchema, BriefSpecEditsSchema, ClaimStateSchema, CommandNameSchema, ComparisonSchema, ConsolidationStateSchema,
   CorrectionActionSchema, CorrectionDeliveryFactSchema, CriterionResultStateSchema,
   DecisionDispositionSchema, DispositionSchema, EvidenceSchema, ExecutionStrategySchema,
   FeatureStateSchema, IdSchema, MethodStageSchema, OperationStateSchema, RefSchema,
@@ -218,6 +218,7 @@ export const AssignmentSchema = record('assignment', {
   // lifecycle template and identities so a later gate can detect file damage.
   brief: z.strictObject({
     path: TextSchema, sidecarPath: TextSchema, scaffold: TextSchema,
+    specEdits: BriefSpecEditsSchema.optional(),
     contextLayout: z.literal('sidecar').optional(),
     sidecarDigest: TextSchema,
     materialized: z.strictObject({ brief: TextSchema, sidecar: TextSchema }).optional(),

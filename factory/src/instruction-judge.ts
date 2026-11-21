@@ -8,7 +8,7 @@ import { planningRecord } from './planning-checks.js';
 import { digestText, recordSource, requiredAssignmentContext } from './instruction-context.js';
 import { workerAssignmentMetadata } from './instructions.js';
 import type { WorkflowAgentProfile } from './agent-profiles.js';
-import { runStepAgent } from './agent-runner.js';
+import { runJudgmentAgent } from './agent-runner.js';
 import { parseStrictJson } from './strict-json.js';
 
 export const InstructionJudgeVerdictSchema = z.strictObject({
@@ -66,11 +66,10 @@ function textLeaves(value: unknown): string[] {
 export type InstructionJudgment = { ok: true; inputDigest: string; profile: WorkflowAgentProfile; verdict: InstructionJudgeVerdict; comparison: Comparison } |
   { ok: false; inputDigest: string | null; error: string };
 
-/** Exactly one configured agent process, no retries, provider SDK or RoboRev
- * invocation. The installed worker CLI reads the prompt on stdin and writes one
- * JSON verdict on stdout. Missing, failed or ungrounded judgment fails closed. */
+/** A broken judgment is corrected in the same reviewer session if allowed.
+ * Missing or ungrounded judgment after the configured rounds fails closed. */
 export function judgeWorkerInstructions(records: FactoryRecord[], assignment: Assignment, candidate: string,
-  config: unknown, comparedAt = new Date().toISOString()): InstructionJudgment {
+  config: unknown, comparedAt = new Date().toISOString(), maxRevisionRounds = 0): InstructionJudgment {
   let inputDigest: string | null = null;
   try {
     const snapshot = instructionJudgeSnapshot(records, assignment, candidate);
@@ -78,17 +77,20 @@ export function judgeWorkerInstructions(records: FactoryRecord[], assignment: As
     inputDigest = digestText(input);
     const directory = dirname(assignment.returnLocation);
     const project = records.find((record) => record.kind === 'project' && record.id === assignment.projectId);
-    const result = runStepAgent(config, assignment.projectId, 'instruction_check', instructionJudgeDirections, {
-      evidence: snapshot, ...(isAbsolute(directory) && existsSync(directory) ? { runDirectory: directory } : {}),
-      repositories: project?.kind === 'project' ? project.repositories.map((repository) => repository.uri).filter(isAbsolute) : undefined,
-    });
-    const verdict = InstructionJudgeVerdictSchema.parse(parseStrictJson(result.stdout));
     const quoteSources = { original_request: snapshot.originalRequests.map((request) => request.text), assignment: textLeaves(snapshot.assignment),
       design: textLeaves(snapshot.design), plan: textLeaves(snapshot.plan), task: textLeaves(snapshot.task),
       instructions: [candidate] };
-    for (const finding of verdict.findings) for (const quote of finding.quotes) {
-      if (!quoteSources[quote.source].some((text) => text.includes(quote.text))) throw new Error('instruction_judge_quote_not_in_evidence');
-    }
+    const result = runJudgmentAgent(config, assignment.projectId, 'instruction_check', instructionJudgeDirections, {
+      evidence: snapshot, ...(isAbsolute(directory) && existsSync(directory) ? { runDirectory: directory } : {}),
+      repositories: project?.kind === 'project' ? project.repositories.map((repository) => repository.uri).filter(isAbsolute) : undefined,
+    }, maxRevisionRounds, (stdout) => {
+      const parsed = InstructionJudgeVerdictSchema.parse(parseStrictJson(stdout));
+      for (const finding of parsed.findings) for (const quote of finding.quotes) {
+        if (!quoteSources[quote.source].some((text) => text.includes(quote.text))) throw new Error('instruction_judge_quote_not_in_evidence');
+      }
+      return parsed;
+    });
+    const verdict = result.output;
     const sourceRefs = [...snapshot.originalRequests.map((request) => request.record), assignment.design, assignment.plan,
       assignment.detailedPlanTask].map(recordSource);
     const comparison: Comparison = { result: verdict.verdict === 'pass' ? 'passed' : 'failed', sourceRefs,

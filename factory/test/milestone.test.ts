@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
-import { checkStartingWorker, ProjectStore, ref, recordSource, runFeature,
+import { checkStartingWorker, DetailedPlanTaskSchema, ProjectStore, ref, recordSource, runFeature,
   validateReviewForCompletion, FeatureRunConfigSchema, prepareWorkerBrief, applyCommand, buildEditCommand,
   assertNoOwnerQuestions, type DecisionChange } from '../src/index.js';
 
@@ -372,6 +372,55 @@ test('plan reviewer failure stops before a task or worker is created', () => {
   try {
     flow.mode({ planFailure: true }); assert.throws(() => runFeature(flow.config, 'prepare'), /plan_review_failed/);
     assert.equal(flow.wrapper.read().calls.length, 0); assert.equal(existsSync(join(flow.root, 'worker-started')), false);
+  } finally { flow.close(); }
+});
+
+test('a failed product review sends scoped feedback to the original worker and reviews its new commit', () => {
+  const flow = scenario();
+  try {
+    const send = join(flow.root, 'send.mjs');
+    const sent = join(flow.root, 'feedback.json');
+    writeFileSync(send, `#!${process.execPath}
+import {writeFileSync} from 'node:fs';
+writeFileSync(${JSON.stringify(sent)},JSON.stringify({target:process.argv[2],message:process.argv[3],
+ generation:process.env.FM_SEND_EXPECTED_SPAWN_GEN,idempotent:process.env.FM_SEND_IDEMPOTENT}));`, { mode: 0o755 });
+    const config = { ...flow.config, firstMate: { ...flow.config.firstMate, sendExecutable: send } };
+    flow.mode({ badDelivery: true, exposeWorkerGeneration: true });
+    runFeature(config, 'prepare');
+    runFeature(config, 'start');
+    const awaiting = runFeature(config, 'review') as any;
+    assert.equal(awaiting.state, 'awaiting_worker_revision');
+    const feedback = JSON.parse(readFileSync(sent, 'utf8'));
+    assert.equal(feedback.target, config.taskId);
+    assert.equal(feedback.generation, 'generation-1');
+    assert.equal(feedback.idempotent, '1');
+    assert.match(feedback.message, /ERPNext only violates original generality/u);
+    flow.mode({ returnRevision: 2 });
+    execFileSync(flow.returnWorker, [config.taskId]);
+    const revised = runFeature(config, 'review') as any;
+    assert.equal(revised.review.outcome, 'passed');
+    assert.equal(revised.review.revision, 2);
+    assert.notEqual(revised.review.reviewedArtifacts[0].revision, awaiting.review.reviewedArtifacts[0].revision);
+  } finally { flow.close(); }
+});
+
+test('a semantic instruction failure repairs the brief with the original author before dispatch', () => {
+  const flow = scenario();
+  try {
+    const task = DetailedPlanTaskSchema.parse(flow.outputs.detail.records.find((record) =>
+      typeof record === 'object' && record !== null && 'kind' in record && record.kind === 'detailed_plan_task'));
+    const instructionOmission = 'Verify every supported connected system.';
+    flow.mode({ instructionOmission, requirePreparationHold: true, specEdits: [
+      { find: task.expectedBehavior, replace: `${task.expectedBehavior} ${instructionOmission}` },
+    ] });
+    const prepared = runFeature(flow.config, 'prepare') as any;
+    assert.equal(prepared.assignment.revision, 2);
+    assert.ok(readFileSync(prepared.briefPath, 'utf8').includes(instructionOmission));
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const author = calls.filter((call) => call.step === 'detail');
+    assert.equal(author.length, 2);
+    assert.equal(author[0].sessionId, author[1].sessionId);
+    assert.equal(flow.wrapper.read().tasks[flow.config.taskId]!.held, false);
   } finally { flow.close(); }
 });
 

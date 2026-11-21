@@ -8,7 +8,7 @@ import { ArtifactSchema, EvidenceSchema, IdSchema, RefSchema, TimestampSchema, t
 import { CriterionResultSchema, ProductReviewSchema, type FactoryRecord, type ProductReview } from './records.js';
 import { CommitSchema, DeliveredFileSchema, ProductVerdictSchema, QualityResultSchema, expectedReviewCriteria, type ProductVerdict, type QualityResult } from './review-contracts.js';
 import { ProjectAgentConfigSchema, resolveStepAgentProfile } from './agent-profiles.js';
-import { runStepAgent } from './agent-runner.js';
+import { runJudgmentAgent } from './agent-runner.js';
 import { instructionJudgeSnapshot } from './instruction-judge.js';
 import { digestText, recordSource } from './instruction-context.js';
 import { planningRecord } from './planning-checks.js';
@@ -154,9 +154,9 @@ function comparison(check: 'sourceComparison' | 'instructionFidelity' | 'planCon
 export type QualityReader = (repository: string, commit: string, at: string) => QualityResult;
 
 /** Canonical record_review_result handler. No worker/task lifecycle changes.
- * One agent call on a new operation; replay returns its persisted review. */
+ * A new operation judges its frozen evidence; replay returns its persisted review. */
 export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: unknown, readQuality: QualityReader = readRoborevResult,
-  runDirectory?: string) {
+  runDirectory?: string, maxRevisionRounds = 0) {
   const data = ReviewProductInputSchema.parse(input);
   const config = ProjectAgentConfigSchema.parse(agentConfig);
   const { profile } = resolveStepAgentProfile(config, data.projectId, 'product_review');
@@ -252,10 +252,10 @@ export function reviewProduct(store: ProjectStore, input: unknown, agentConfig: 
   let verdict: ProductVerdict | null = null;
   let error: string | undefined;
   try {
-    const result = runStepAgent(config, data.projectId, 'product_review', productReviewDirections, {
+    const result = runJudgmentAgent(config, data.projectId, 'product_review', productReviewDirections, {
       evidence: snapshot, runDirectory, repositories: [...new Set(deliveryInputs.map((delivery) => delivery.repository))],
-    });
-    verdict = groundedVerdict(parseStrictJson(result.stdout), snapshot);
+    }, maxRevisionRounds, (stdout) => groundedVerdict(parseStrictJson(stdout), snapshot));
+    verdict = result.output;
   } catch (cause) { error = cause instanceof Error ? cause.message : String(cause); }
   const sources = [...snapshot.originalRequests.map((request) => request.record), assignment.design, ...snapshot.plans.map(ref), ...assignments.map((target) => target.detailedPlanTask)].map(recordSource);
   const improvementEvidence = verdict?.criteria.filter((criterion) => criterion.state === 'accomplished').flatMap((criterion) =>

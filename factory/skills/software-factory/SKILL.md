@@ -92,8 +92,7 @@ All native tasks retain their preparation hold; plan dependencies retain their p
 The saved `planned.json` is a command-input/evidence manifest; the project database and Beads remain the authorities.
 
 Stop on any nonzero exit.
-For `plan_review_failed`, read `plan-check-agent.json` and explain its findings in plain words.
-For a structural check failure, read `check-plan.stdout` and explain each finding and the missing behavior or decision.
+For exhausted plan revisions, read the review or structural findings file named in the error and explain what remains unresolved.
 Do not queue unchecked work or bypass a failed check.
 Use the existing decisions records/screen for unresolved product questions; ask only questions that require the owner's product decision.
 Saved stage inputs, agent outputs, source selections and checks are the evidence for the report.
@@ -107,11 +106,11 @@ For each task, use the returned native `taskId`:
 1. When its prerequisites have evidence, run `run-feature.mjs prepare-task <configPath> <taskId>`.
    This invokes `fm-brief.sh`, `prepare-brief`, the independent preparation instruction check, then `manage-task` to release only the preparation hold.
    An unmet prerequisite remains blocked by the existing readiness rules.
-   A failed instruction check stops dispatch; read the task's `check-brief.stdout`, explain the omission or narrowing, and leave its native hold in place.
+   If instruction repair is exhausted, read the task findings named in the error and leave its native hold in place.
 2. Run `run-feature.mjs start <configPath> <taskId>`.
    The existing FirstMate adapter invokes normal `fm-spawn.sh` with the configured build profile.
    The installed `worker.start.before` hook checks the actual launch candidate again.
-   A hook refusal is a failed gate, not permission to launch another way.
+   If start repair is exhausted or a launch outcome is ambiguous, report the existing operation and its findings.
 3. Supervise the worker with FirstMate's normal status, steering, return and delivery workflow.
    Keep the generated assignment's return location in the task context so a return wake resumes this skill.
    Do not replace supervision with a polling service or add another scheduler or backlog.
@@ -122,7 +121,8 @@ For each task, use the returned native `taskId`:
    Preserve the return's criterion identities, limitations and evidence; do not manufacture a technical pass or use a result from a different commit.
    Run `run-feature.mjs review <configPath> <taskId>`.
    It calls `review-product` against the original request and actual committed snapshots, with a separate reviewer and existing technical result.
-   A failed or uncertain slice judgment stops that task's delivery and its dependents and must be reported plainly, even if technical checks passed.
+   For `awaiting_worker_revision`, keep the same worker and resume review on its revised return.
+   When review exhausts its revisions or the original worker is unavailable, report the remaining findings and keep that task's delivery and dependents held.
    Keep unrelated eligible branches progressing.
    `taskOutcome: passed` means this task's own criteria, worker results and exact-commit technical evidence passed; its canonical review can remain feature-incomplete.
    Sibling returns are not inputs to this task's eligibility.
@@ -135,6 +135,7 @@ For each task, use the returned native `taskId`:
 After every task has returned, run `run-feature.mjs review-all <configPath>`.
 This invokes the existing `review-product` command with all exact assignments and deliveries from one return snapshot taken at aggregate start, covering the whole original request and integration across slices.
 If returns are missing, it reports `state: awaiting_worker_returns` and `pendingTasks`; resume aggregate review on later return wakes.
+For `awaiting_worker_revision`, resume aggregate review on a revised return from the named workers.
 Aggregate failure or pending work keeps the feature incomplete and never blocks an independently passing task's delivery.
 For one task the same final phase supplies a whole-request review.
 For a publishing run, wait for the verified `ticketDelivery` result from the aggregate review.

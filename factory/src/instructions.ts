@@ -125,7 +125,13 @@ export function instructionBodies(records: FactoryRecord[], assignment: Assignme
     ['Dependency behavior', lines(required.dependencies.map((dependency) => dependency.reason))],
     ['Worker return', lines(task.returnRequirements ?? [])],
   ];
-  const prose = blocks.map(([title, body]) => `### ${title}\n\n${body}`).join('\n\n')
+  let prose = blocks.map(([title, body]) => `### ${title}\n\n${body}`).join('\n\n');
+  for (const edit of assignment.brief?.specEdits ?? []) {
+    const index = prose.indexOf(edit.find);
+    if (index === -1 || prose.indexOf(edit.find, index + 1) !== -1) throw new Error('brief_edit_requires_unique_prose');
+    prose = prose.slice(0, index) + edit.replace + prose.slice(index + edit.find.length);
+  }
+  prose = prose
     .replaceAll(assignmentBlockBegin, '&lt;!-- software-factory-assignment:v1:begin --&gt;')
     .replaceAll(assignmentBlockEnd, '&lt;!-- software-factory-assignment:v1:end --&gt;');
   const full = workerAssignmentBlock(records, assignment);

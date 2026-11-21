@@ -94,7 +94,10 @@ Continuations receive the current stored records and carry forward the planner's
 Build flags go to real `fm-spawn.sh`.
 The independent plan check and other reviews use fresh sessions, separate from planning and the build worker.
 There are no agent calls for mechanical capture, mapping, rendering or transport.
-If an agent process fails, its exit error points to the saved `agent.stderr` beside its input and stdout.
+The installed setting `maxRevisionRounds` is captured in each run and defaults to three corrective rounds per gate.
+Set it to zero to stop after the first failure.
+An agent turn that errors or emits invalid output receives the diagnostic in its next turn, using its original session when available.
+If the retries are exhausted, the error points to the saved `agent.stderr` beside the turn's input and stdout.
 
 ## Execute the path
 
@@ -124,15 +127,22 @@ Stage agents return the existing `RecordStageInputSchema`.
 Understand also returns `MapRequestInputSchema`.
 Each stage opens the schemas and record context from its evidence file.
 The `prepare` convenience phase rejects multiple features, multiple tasks and plan dependencies.
-The skill uses `plan` followed by task-specific phases for larger plans; those phases invoke the existing individual commands described below. A failed plan
-review stops before queueing. The native task stays held until brief preparation,
-instruction checking and hook/registry verification succeed.
+The skill uses `plan` followed by task-specific phases for larger plans.
+Independent plan review checks every line of the confirmed definition of done and each recorded owner answer.
+For legacy requests without a separately confirmed definition of done, the captured request supplies the requirements.
+Rare corner cases and observations outside those requirements are advisory.
+Blocking findings go back to the same planner session to revise the affected detail, followed by an independent review of that revision.
+The native task stays held until brief preparation, instruction checking and hook/registry verification succeed.
 `check-brief --preparation-gate factory:brief-preparation/<task-id>` is a read-only preparation
 check: it defers only that reserved condition and reports `dispatchReady: false`.
 All other readiness rules still apply. This option is never used by the start hook.
 After success, `manage-task` records the check evidence and reconciles the release;
-a failed check or unavailable hook leaves the native task held. Other readiness,
-context and semantic checks retain their existing failure behavior. No UI, scheduler or alternate record store is added.
+a failed check or unavailable hook leaves the native task held.
+An instruction failure goes back to the planner for a targeted edit to the brief prose while the request, scaffold and assignment metadata stay fixed.
+A start precheck refusal can reprepare the brief and retry the same start operation before any launch is attempted.
+An ambiguous launch still requires runtime reconciliation.
+A failed product review with attributable findings sends them to the original worker through its verified FirstMate inbox.
+Review reports `awaiting_worker_revision` while it waits for a new commit or revised criterion evidence, then checks the new delivery on the next return wake.
 
 Bootstrap does not read agent settings or require hook installation. It retains
 `bootstrap-project-input.json`, `bootstrap.stdout` and `bootstrap.stderr` under

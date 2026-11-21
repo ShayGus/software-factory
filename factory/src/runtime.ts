@@ -177,7 +177,7 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
         if (task?.spawn_gen && task.project === data.repository &&
           Date.parse(snapshot.generated) >= Date.parse(operation.externalAttempt.startedAt) &&
           task.spawn_gen !== operation.externalAttempt.baselineGeneration) {
-          return recordOperationObservation(store, operation, 'succeeded', JSON.stringify({ recovered: 'worker_start', snapshot }));
+          return recordOperationObservation(store, operation, 'succeeded', JSON.stringify({ recovered: 'worker_start', snapshot, spawnGeneration: task.spawn_gen }));
         }
         return recordOperationObservation(store, operation, 'unknown', JSON.stringify({ reason: 'Start outcome unresolved; no retry authorized', snapshot }));
       }
@@ -191,7 +191,12 @@ export function startManagedWorker(store: ProjectStore, input: unknown, adapter:
           attemptId: assignment.attemptId, repository: data.repository, baselineGeneration: null, startedAt: new Date().toISOString() } });
       const stdout = execFileSync(data.executable, data.args, { cwd: options.fmHome, env: firstMateEnv(options.fmHome),
         encoding: 'utf8', timeout: options.timeoutMs ?? 120_000, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
-      return recordOperationObservation(store, operation, 'succeeded', JSON.stringify({ accepted: true, stdout }));
+      let spawnGeneration: string | null | undefined;
+      try {
+        const launched = runtimeTask(readFleetSnapshot(options), original.firstMateTaskId, false);
+        if (launched?.project === data.repository) spawnGeneration = launched.spawn_gen;
+      } catch { /* The accepted start remains valid without a verified feedback destination. */ }
+      return recordOperationObservation(store, operation, 'succeeded', JSON.stringify({ accepted: true, stdout, spawnGeneration }));
     } catch (error) { return recordOperationObservation(store, operation, 'unknown', String(error)); }
   });
 }
