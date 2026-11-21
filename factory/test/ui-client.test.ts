@@ -167,7 +167,7 @@ for (const competing of ['feature', 'design', 'feature-behind-design'] as const)
 test(`review 1438 finding 1: ${competing} writer between save and refresh preserves draft and locks further submission`, async t => {
   const store = new ProjectStore(':memory:'); t.after(() => store.close());
   const history = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
-  store.importProject({ schemaVersion: 1, projectId: 'project-1', history, receipts: [] });
+  store.importProject({ schemaVersion: 1, projectId: 'project-1', history: history.filter((record) => record.id !== 'decision-open'), receipts: [] });
   const feature = () => {
     const record = store.get('project-1', 'feature-1'); assert.ok(record?.kind === 'feature_revision'); return record;
   };

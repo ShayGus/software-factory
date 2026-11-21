@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { RecordsSchema, ProjectStore, reviewProduct, parseRoborevResult, readRoborevResult, snapshotDelivery,
-  stepAgentCommand, validateRecords, validateReviewForCompletion, type Assignment, type CriterionResult, type FactoryRecord,
-  checkFactoryMerge, ref, recordSource, planReadinessFindings, type StageRevision, type ProductVerdict, type QualityResult } from '../src/index.js';
+  stepAgentCommand, reviewTicketPullRequest, validateRecords, validateReviewForCompletion, digestText, QualityResultSchema, type Assignment, type CriterionResult, type FactoryRecord,
+  checkFactoryMerge, ref, recordSource, planReadinessFindings, technicalReviewSatisfied, type StageRevision, type ProductVerdict, type QualityResult } from '../src/index.js';
 import { fakeJudgeOptions } from './judge-helper.js';
 
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
@@ -21,6 +21,46 @@ function qualityRaw(commit: string, verdict = 'pass') {
     structured_output: { schema_version: 2, verdict, summary: 'Existing result', findings: [] },
     job: { id: 42, git_ref: commit, status: 'done', job_type: 'review' } });
 }
+
+test('technical advisories preserve the failed raw verdict and require exact acceptance of every finding', () => {
+  const commit = 'a'.repeat(40);
+  const finding = { severity: 'low', location: 'test/review.test.ts:42', problem: 'A test omits a corner case', fix: 'Extend the test' };
+  const other = { ...finding, location: 'test/review.test.ts:54' };
+  const raw = JSON.parse(qualityRaw(commit, 'fail'));
+  raw.structured_output.findings = [finding];
+  const result = parseRoborevResult(JSON.stringify(raw), commit, at);
+  const approval = { artifact: { uri: 'fixture:owner-approval', revision: commit, digest: 'sha256:approved' },
+    description: 'Owner accepted this exact finding', observedAt: at };
+  assert.equal(result.verdict, 'failed');
+  assert.equal(technicalReviewSatisfied(result), false);
+  assert.equal(technicalReviewSatisfied({ ...result, advisoryAcceptance: { approval, findings: [finding] } }), true);
+  assert.equal(technicalReviewSatisfied({ ...result, advisoryAcceptance: { approval, findings: [other] } }), false);
+  raw.structured_output.findings.push(other);
+  const second = parseRoborevResult(JSON.stringify(raw), commit, at);
+  assert.equal(technicalReviewSatisfied({ ...second, advisoryAcceptance: { approval, findings: [finding] } }), false);
+});
+
+test('scope advisories must match the complete recorded findings, prompt and commit', () => {
+  const commit = 'a'.repeat(40);
+  const scopeDigest = digestText('Scope prompt for ' + commit);
+  const findings = ['A timing test covers an extra case.', 'An additional notice is displayed.'];
+  const raw = JSON.stringify({ job_id: 42, job: { id: 42, git_ref: 'factory-scope-' + scopeDigest.slice(-16),
+    status: 'done', job_type: 'task' }, prompt_digest: scopeDigest,
+    output: JSON.stringify({ verdict: 'fail', findings }) });
+  const result = QualityResultSchema.parse({ tool: 'roborev', commit, jobId: 42, verdict: 'failed',
+    artifact: { uri: 'roborev:job/42', revision: commit, digest: digestText(raw) }, observedAt: at, raw, scopeDigest });
+  const approval = { artifact: { uri: 'fixture:owner-approval', revision: commit, digest: digestText('Accepted scope findings') },
+    description: 'Owner accepted these exact findings', observedAt: at };
+  const accepted = QualityResultSchema.parse({ ...result, advisoryAcceptance: { approval, findings: [...findings].reverse() } });
+  assert.equal(technicalReviewSatisfied(result), false);
+  assert.equal(technicalReviewSatisfied(accepted), true);
+  assert.equal(accepted.verdict, 'failed');
+  assert.equal(accepted.raw, raw);
+  assert.equal(technicalReviewSatisfied({ ...accepted, scopeDigest: digestText('Another scope prompt') }), false);
+  assert.equal(technicalReviewSatisfied({ ...accepted, commit: 'b'.repeat(40) }), false);
+  assert.equal(technicalReviewSatisfied({ ...accepted, jobId: 43 }), false);
+  assert.equal(technicalReviewSatisfied({ ...accepted, advisoryAcceptance: { approval, findings: findings.slice(1) } }), false);
+});
 function passing(code = goodCode): ProductVerdict {
   return { sourceComparison: 'passed', instructionFidelity: 'passed', planConformance: 'passed',
     criteria: [general, second].map((criterion) => ({ criterion, state: 'accomplished',
@@ -59,7 +99,7 @@ function setup(code = goodCode, edit?: (records: FactoryRecord[]) => void) {
     qualityReads++; return parseRoborevResult(qualityRaw(sha), sha, observedAt);
   };
   const run = (verdict: ProductVerdict, options: { record?: string; result?: string; exit?: string; sleep?: string } = {}) =>
-    reviewProduct(store, input, fakeJudgeOptions({ result: JSON.stringify(verdict), ...options }), reader);
+    reviewProduct(store, input, fakeJudgeOptions({ result: JSON.stringify(verdict), ...options }), reader, directory);
   return { directory, db, records, store, input, reader, run, git, commit, qualityReads: () => qualityReads,
     close: () => { store.close(); rmSync(directory, { recursive: true, force: true }); } };
 }
@@ -82,7 +122,8 @@ test('decisive case: perfect compliance with the ERPNext brief and green technic
     assert.equal(input.candidateInstructions, 'Implement feature X only for ERPNext.');
     assert.deepEqual(input.acceptanceCases, ['ERPNext case', 'Second-system case']);
     assert.equal(input.deliveredArtifact.revision, flow.commit);
-    assert.equal(input.deliveredFiles[0].text, badCode);
+    assert.equal(input.deliveredFiles[0].text, undefined);
+    assert.equal(readFileSync(input.deliveredFiles[0].snapshotPath, 'utf8'), badCode);
     assert.equal(input.workerReturns.length, 2);
     assert.equal(input.technicalReviews[0].commit, flow.commit);
     assert.notEqual(input.agentPid, process.pid); assert.deepEqual(input.inheritedSessionMarkers, []);
@@ -263,7 +304,7 @@ test('ordinary RoboRev reads still use only show --json for the delivered commit
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('CLI persists an incomplete review and exits nonzero when an existing quality result is missing', () => {
+test('CLI persists an incomplete review and exits nonzero when quality reviewers are unavailable', () => {
   const flow = setup();
   try {
     const config = fakeJudgeOptions({ result: JSON.stringify(passing()) });
@@ -331,7 +372,7 @@ test('binary delivery lists the committed path and size alongside reviewable sou
     const evidence = JSON.parse(readFileSync(calls, 'utf8'));
     assert.deepEqual(evidence.deliveredFiles.find((file: { path: string }) => file.path === 'opaque.bin'),
       { path: 'opaque.bin', sizeBytes: 3, artifact: binary.artifact });
-    assert.equal(evidence.deliveredFiles[0].text, goodCode);
+    assert.equal(readFileSync(evidence.deliveredFiles[0].snapshotPath, 'utf8'), goodCode);
   } finally { flow.close(); }
 });
 
@@ -599,18 +640,19 @@ test('quality cache isolates repositories and artifacts even at the same commit'
   } finally { flow.close(); rmSync(other, { recursive: true, force: true }); }
 });
 
-test('large source within both limits is serialized once and reaches the reviewer', () => {
-  const code = goodCode + '// ' + 'x'.repeat(800_000);
+test('large committed source is read through the manifest without appearing in the review JSON', () => {
+  const code = goodCode + '// ' + 'x'.repeat(1_600_000);
   const flow = setup(code);
   try {
     const calls = join(flow.directory, 'large-review.jsonl');
-    const result = reviewProduct(flow.store, { ...flow.input, maxSourceChars: 1_000_000 },
-      fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) }), flow.reader);
+    const result = reviewProduct(flow.store, flow.input,
+      fakeJudgeOptions({ record: calls, result: JSON.stringify(passing()) }), flow.reader, flow.directory);
     assert.equal(result.review.outcome, 'passed');
     const serialized = readFileSync(calls, 'utf8');
-    assert.equal(serialized.split('x'.repeat(800_000)).length - 1, 1);
+    assert.equal(serialized.includes('x'.repeat(512)), false);
     const snapshot = JSON.parse(serialized);
-    assert.equal(snapshot.deliveredFiles[0].text, code);
+    assert.equal(readFileSync(snapshot.deliveredFiles[0].snapshotPath, 'utf8'), code);
+    assert.equal(result.review.conformance?.deliveredFiles[0]?.text, code);
   } finally { flow.close(); }
 });
 
@@ -727,5 +769,163 @@ test('factory merge requires a passing full product review for the exact head an
     assert.throws(() => check(flow.commit, 'unmapped-task'), /ticket_missing_or_ambiguous/);
     assert.throws(() => checkFactoryMerge(registry, flow.directory, 'https://github.com/example/other', 'pilot-build', flow.commit), /repository_context_mismatch/);
     assert.deepEqual(checkFactoryMerge(registry, flow.directory, 'https://github.com/example/other', 'unmapped', flow.commit), { ok: true, managed: false });
+  } finally { flow.close(); }
+});
+
+
+test('a published ticket reviews only the range since its last passing head and unlocks that exact pull request', () => {
+  const flow = setup(goodCode, records => {
+    const mapping = records.find(record => record.kind === 'task_mapping')!;
+    assert.equal(mapping.kind, 'task_mapping');
+    mapping.featureTaskId = 'ticket-parent';
+  });
+  try {
+    const repoUrl = 'https://github.com/example/factory';
+    const prUrl = `${repoUrl}/pull/31`;
+    const branch = 'fm/ticket/ticket-parent';
+    const project = flow.store.get('project-1', 'project-1');
+    assert.ok(project?.kind === 'project');
+    flow.git('remote', 'add', 'origin', repoUrl);
+    const decision = { kind: 'decision_change', id: 'bind-ticket-project', projectId: 'project-1', schemaVersion: 1,
+      revision: 1, createdAt: at, updatedAt: at, questionOrChange: 'Bind native repository', affectedRecords: [ref(project)],
+      rationale: 'Test native project binding', disposition: 'selected', sourceRefs: [{ uri: 'fixture:registration' }], scopeChanges: [] };
+    flow.store.mutate({ schemaVersion: 1, id: 'bind-ticket', projectId: 'project-1', issuedAt: at, idempotencyKey: 'bind-ticket',
+      command: 'record_decision_suggestion', targetId: project.id, expectedRevision: project.revision, payload: { decision } },
+      () => [decision, { ...project, revision: project.revision + 1, repositories: [{ uri: flow.directory }], firstMateHomeRef: flow.directory }]);
+    const commitAll = (message: string) => {
+      flow.git('add', '-A', '--', '*.js');
+      flow.git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', message);
+      return flow.git('rev-parse', 'HEAD');
+    };
+    flow.git('switch', '-c', branch);
+    writeFileSync(join(flow.directory, 'legacy.js'), 'const obsolete = "remove this legacy code";\n');
+    const reviewedCommit = commitAll('Initial delivery');
+    const artifact = { ...flow.input.deliveredArtifact, revision: reviewedCommit };
+    // The original checkout can disappear after the aggregate handoff.
+    const oldCheckout = join(flow.directory, 'worker-checkout');
+    symlinkSync(flow.directory, oldCheckout);
+    const aggregate = reviewProduct(flow.store, { ...flow.input, repository: oldCheckout, deliveredArtifact: artifact, paths: ['feature.js'],
+      results: flow.input.results.map(result => ({ ...result, artifact,
+        evidence: result.evidence.map(evidence => ({ ...evidence, artifact })) })),
+    }, fakeJudgeOptions({ result: JSON.stringify(passing()) }), flow.reader).review;
+    assert.equal(aggregate.outcome, 'passed');
+    rmSync(oldCheckout);
+    const delivery = { taskId: 'ticket-parent', mode: 'no-mistakes' as const, branch, repository: flow.directory,
+      repositoryIdentity: 'github.com/example/factory', commit: reviewedCommit, review: ref(aggregate) };
+    const registry = { version: 1, projects: [{ home: flow.directory, database: flow.db, projectId: 'project-1', agentConfig: '/unused' }] };
+    const check = (head: string, url = prUrl) => checkFactoryMerge(registry, flow.directory, repoUrl, delivery.taskId, head, url);
+    let target = { url: prUrl, head: reviewedCommit, base: flow.commit, sourceBranch: branch, sourceRepository: repoUrl };
+    let observed = 0;
+    let currentTicket: { id: string; text: string } | undefined;
+    const calls = join(flow.directory, 'ticket-judge.jsonl');
+    const pass = { verdict: 'passed', assessment: 'Preserves accepted behavior.', findings: [], unresolvedQuestions: [] };
+    const fail = { verdict: 'failed', assessment: 'Change causes regression.', findings: [{ description: 'Legacy behavior changed.',
+      quotes: [{ source: 'patch', text: '-const obsolete = "remove this legacy code";' }] }], unresolvedQuestions: [] };
+    const run = (reader = flow.reader, verdict: unknown = pass, readForge = () => { observed++; return target; }) =>
+      reviewTicketPullRequest({ store: flow.store, projectId: 'project-1', delivery, prUrl: target.url,
+        expectedHead: target.head, readForge, readTicket: () => currentTicket,
+        agentConfig: fakeJudgeOptions({ result: JSON.stringify(verdict), record: calls }), readQuality: reader });
+    const initial = run();
+    assert.equal(initial.publication.reviewedCommit, reviewedCommit);
+    assert.deepEqual(ref(initial.review), ref(aggregate));
+    assert.equal(initial.replayed, true);
+    assert.equal(observed, 2);
+    assert.deepEqual(check(reviewedCommit).review, ref(aggregate));
+    assert.throws(() => check(reviewedCommit, `${repoUrl}/pull/32`), /pull_request_mismatch/);
+
+    writeFileSync(join(flow.directory, 'fix.js'), 'export const fixed = true;\n');
+    commitAll('Add fix');
+    rmSync(join(flow.directory, 'legacy.js'));
+    const fixedHead = commitAll('Remove obsolete code');
+    target = { ...target, head: fixedHead };
+    assert.throws(() => check(fixedHead), /requires_passing_product_review_for_head/);
+    const rejected = run(flow.reader, fail);
+    assert.equal(rejected.review.outcome, 'failed');
+    assert.throws(() => check(fixedHead), /requires_passing_product_review_for_head/);
+
+    // A further commit supersedes the rejected head. Both earlier changes
+    // remain in scope because the rejected head never became a baseline.
+    writeFileSync(join(flow.directory, 'fix.js'), 'export const fixed = true;\n// preserve feature behavior\n');
+    const updated = commitAll('Finish fix');
+    target = { ...target, head: updated };
+    const missing = run(() => { throw Error('No existing result'); });
+    assert.equal(missing.review.outcome, 'incomplete');
+    assert.throws(() => check(updated), /requires_passing_product_review_for_head/);
+    const mismatched = run(() => flow.reader(flow.directory, fixedHead, at));
+    assert.equal(mismatched.review.outcome, 'incomplete');
+    assert.equal(mismatched.review.ticketReview?.quality, null);
+    assert.throws(() => check(updated), /requires_passing_product_review_for_head/);
+    assert.throws(() => run(flow.reader, pass, () => {
+      observed++;
+      return observed % 2 ? target : { ...target, head: fixedHead };
+    }), /head_changed/);
+    assert.throws(() => check(updated), /requires_passing_product_review_for_head/);
+    const completed = run();
+    assert.equal(completed.review.outcome, 'passed', JSON.stringify(completed.review));
+    assert.deepEqual(completed.review.ticketReview?.priorReview, ref(aggregate));
+    assert.equal(completed.review.ticketReview?.quality?.commit, updated);
+    assert.equal(completed.review.ticketReview?.from, reviewedCommit);
+    assert.deepEqual(completed.review.results, []);
+    assert.equal(check(updated).managed, true);
+    assert.deepEqual(check(updated).review, ref(completed.review));
+    const tampered = structuredClone(flow.store.history('project-1'));
+    const tamperedReview = tampered.find(record => record.kind === 'product_review' && record.revision === completed.review.revision &&
+      record.id === completed.review.id);
+    assert.ok(tamperedReview?.kind === 'product_review' && tamperedReview.ticketReview?.changes);
+    tamperedReview.ticketReview.changes.patch = '';
+    assert.equal(validateReviewForCompletion(tampered, completed.review).ok, false);
+    assert.throws(() => check(updated, `${repoUrl}/pull/32`), /pull_request_mismatch/);
+    assert.equal(run(() => { throw Error('must replay'); }).replayed, true);
+
+    const snapshots = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const { changes, priorPass, originalRequests, deliveredFiles, workerReturns } =
+      snapshots.find(snapshot => snapshot.head === fixedHead);
+    assert.equal(priorPass.head, reviewedCommit);
+    assert.equal(originalRequests[0].text, original);
+    assert.match(changes.patch, /\+export const fixed = true/);
+    assert.match(changes.patch, /-const obsolete = "remove this legacy code";/);
+    assert.doesNotMatch(changes.patch, /feature\.js|system\.featureX/);
+    assert.equal(deliveredFiles, undefined);
+    assert.equal(workerReturns, undefined);
+
+    flow.git('mv', 'fix.js', 'renamed.js');
+    const newer = commitAll('Rename fix');
+    target = { ...target, head: newer };
+    assert.throws(() => check(newer), /requires_passing_product_review_for_head/);
+    const next = run();
+    assert.equal(next.review.outcome, 'passed');
+    assert.deepEqual(next.review.ticketReview?.priorReview, ref(completed.review));
+    assert.match(next.review.ticketReview!.changes!.patch, /rename from fix.js\nrename to renamed.js/);
+    assert.deepEqual(check(newer).review, ref(next.review));
+
+    // A change to the native authority also requires whole-PR review.
+    currentTicket = { id: delivery.taskId, text: `${original} Preserve the revised interface.` };
+    writeFileSync(join(flow.directory, 'renamed.js'), 'export const fixed = false;\n');
+    target = { ...target, head: commitAll('Change under revised authority') };
+    const changedScope = run(flow.reader, { ...pass, verdict: 'uncertain' });
+    assert.equal(changedScope.review.outcome, 'incomplete');
+    assert.equal(changedScope.review.ticketReview?.priorReview, undefined);
+    assert.throws(() => check(target.head), /requires_passing_product_review_for_head/);
+    currentTicket = undefined;
+
+    flow.git('switch', '--detach', flow.commit);
+    writeFileSync(join(flow.directory, 'replacement.js'), 'export const replacement = true;\n');
+    const divergent = commitAll('Rewrite delivery');
+    target = { ...target, head: divergent };
+    assert.throws(() => check(divergent), /requires_passing_product_review_for_head/);
+    const uncertainFull = run(flow.reader, { ...pass, verdict: 'uncertain' });
+    assert.equal(uncertainFull.review.outcome, 'incomplete');
+    assert.equal(uncertainFull.review.ticketReview?.priorReview, undefined);
+    assert.equal(uncertainFull.review.ticketReview?.from, flow.commit);
+    assert.throws(() => check(divergent), /requires_passing_product_review_for_head/);
+    const full = run();
+    assert.equal(full.review.outcome, 'passed');
+    assert.deepEqual(check(divergent).review, ref(full.review));
+    writeFileSync(join(flow.directory, 'replacement.js'), 'export const replacement = "later";\n');
+    target = { ...target, head: commitAll('Advance rewritten delivery') };
+    const afterFull = run();
+    assert.deepEqual(afterFull.review.ticketReview?.priorReview, ref(full.review));
+    target = { ...target, url: `${repoUrl}/pull/32` };
+    assert.throws(() => run(), /ticket_publication_conflict/);
   } finally { flow.close(); }
 });

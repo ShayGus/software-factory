@@ -19,7 +19,9 @@ import {
 import { fakeTask, fakeTaskWrapper } from './task-wrapper-helper.js';
 import { fakeJudge } from './judge-helper.js';
 
-const fixture = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
+const questionFixture = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/ui-overview.json', import.meta.url), 'utf8')));
+// The editable fixture starts with no outstanding owner choice.
+const fixture = questionFixture.filter((record) => record.id !== 'decision-open');
 function setup(t: test.TestContext, history: FactoryRecord[] = fixture, options: Partial<UiOptions> = {}, trustedOrigins: string[] = []) {
   const directory = mkdtempSync(join(tmpdir(), 'sf-ui-'));
   const database = join(directory, 'project.sqlite');
@@ -161,7 +163,7 @@ for (const screen of ['/', '/projects/project-1/features/feature-1']) for (const
 });
 
 test('rendered pages retain original intent, a brief-to-plan route, evidence gaps and text uncertainty states', async (t) => {
-  const flow = setup(t);
+  const flow = setup(t, questionFixture);
   const page = await flow.http('GET', '/projects/project-1/features/feature-1');
   assert.match(page.body, /Build feature X for every connected system, ERPNext is only an example\./u);
   assert.match(page.body, /Missing evidence — untested/u);
@@ -916,7 +918,7 @@ test('review 1377 finding 5: standalone maintenance keeps its objective and exac
 });
 
 for (const route of ['/', '/projects/project-1/decisions']) test(`BUILD-14 answers a material question through the rendered form at ${route}`, async (t) => {
-  const flow = setup(t);
+  const flow = setup(t, questionFixture);
   const page = await flow.http('GET', route);
   assert.equal(page.status, 200);
   assert.match(page.body, /Which second connected system/);
@@ -941,7 +943,7 @@ for (const route of ['/', '/projects/project-1/decisions']) test(`BUILD-14 answe
 });
 
 test('BUILD-14 existing answers reuse exact product context with provenance and reject stale or conflicting sources', async (t) => {
-  const history = structuredClone(fixture);
+  const history = structuredClone(questionFixture);
   const question = history.find((record) => record.id === 'decision-open'); assert.ok(question?.kind === 'decision_change');
   const answered = { ...question, id: 'existing-answer', choice: { kind: 'product' as const, state: 'resolved' as const }, disposition: 'selected' as const,
     answer: { text: 'Use CRM B.' } };
@@ -972,7 +974,7 @@ test('BUILD-14 existing answers reuse exact product context with provenance and 
 });
 
 test('BUILD-14 technical questions have no answer or approval controls and reads never mutate', async (t) => {
-  const history = structuredClone(fixture);
+  const history = structuredClone(questionFixture);
   const product = history.find((record) => record.id === 'decision-open'); assert.ok(product?.kind === 'decision_change');
   history.push({ ...product, id: 'technical-open', questionOrChange: 'Choose an internal implementation helper', choice: { kind: 'technical', state: 'open' } });
   const flow = setup(t, history);
@@ -1055,7 +1057,7 @@ test('BUILD-14 last-run diff comes from real consolidation receipts with a fake 
 });
 
 test('BUILD-14 imported answer provenance and product classification remain validated', () => {
-  const history = structuredClone(fixture);
+  const history = structuredClone(questionFixture);
   const question = history.find((record) => record.id === 'decision-open'); assert.ok(question?.kind === 'decision_change');
   question.choice = { kind: 'product', state: 'resolved' }; question.disposition = 'selected';
   question.answer = { text: 'Use CRM B.', reusedFrom: { id: 'missing-answer', revision: 1 } };
@@ -1073,7 +1075,7 @@ test('BUILD-14 next consolidation preview respects future start seconds and DST 
 });
 
 test('review 1384 finding 1: answering an older feature question retains exact criteria and request context after an edit', async (t) => {
-  const flow = setup(t);
+  const flow = setup(t, questionFixture);
   const feature = flow.store.get('project-1', 'feature-1', 1); assert.ok(feature?.kind === 'feature_revision');
   const criterion = flow.store.get('project-1', feature.criteria[0]!.id, feature.criteria[0]!.revision); assert.ok(criterion?.kind === 'criterion');
   const request = flow.store.get('project-1', feature.sourceRequests[0]!.id, feature.sourceRequests[0]!.revision); assert.ok(request?.kind === 'request');
@@ -1121,7 +1123,7 @@ test('review 1384 finding 2: classified captures normalize omitted optional arra
 });
 
 test('review 1384 finding 3: reuse requires explicit answer text and never substitutes legacy rationale or instruction', async (t) => {
-  const history = structuredClone(fixture);
+  const history = structuredClone(questionFixture);
   const question = history.find((record) => record.id === 'decision-open'); assert.ok(question?.kind === 'decision_change');
   const legacy = { ...question, id: 'legacy-decision', disposition: 'selected' as const, choice: { kind: 'product' as const, state: 'resolved' as const },
     originalInstruction: 'Select the system named in the product instruction.', rationale: 'This rationale explains the tradeoff; it is not an answer.' };
@@ -1312,7 +1314,7 @@ for (const mode of ['split', 'renamed'] as const) test(`non-ready Detail retains
 });
 
 test('resolved question history links to the saved answer instead of a missing open-question anchor', async t => {
-  const flow = setup(t);
+  const flow = setup(t, questionFixture);
   const page = await flow.http('GET', '/projects/project-1/decisions');
   const editor = findEditor(page.body, 'answer'); assert.ok(editor.context.kind === 'answer');
   await sendEdit(flow, editor, { answer: 'Saved answer for this question' }, 'resolved-question-link');
@@ -1322,7 +1324,7 @@ test('resolved question history links to the saved answer instead of a missing o
 });
 
 test('criterion-only question keeps separately labeled current context when its owner revision is ambiguous', async t => {
-  const history = structuredClone(fixture);
+  const history = structuredClone(questionFixture);
   const question = history.find(r => r.kind === 'decision_change' && r.choice?.state === 'open'); assert.ok(question?.kind === 'decision_change');
   question.affectedRecords = [{ id: 'criterion-general', revision: 1 }];
   const flow = setup(t, history);
@@ -1337,7 +1339,7 @@ test('criterion-only question keeps separately labeled current context when its 
 });
 
 test('each affected criterion resolves its own unique feature snapshot', async t => {
-  const history = structuredClone(fixture);
+  const history = structuredClone(questionFixture);
   const question = history.find(r => r.kind === 'decision_change' && r.choice?.state === 'open'); assert.ok(question?.kind === 'decision_change');
   question.affectedRecords = [{ id: 'criterion-general', revision: 1 }, { id: 'criterion-second-system', revision: 2 }];
   const feature = history.find(r => r.kind === 'feature_revision'); assert.ok(feature?.kind === 'feature_revision');

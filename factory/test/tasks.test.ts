@@ -1,13 +1,13 @@
 import { fakeRuntime } from './runtime-helper.js';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import {
-  ProjectStore, RecordsSchema, MapManageExecutionTaskCommandSchema, queueManagedTask, manageExecutionTask,
+  ProjectStore, RecordsSchema, TaskWrapper, MapManageExecutionTaskCommandSchema, queueManagedTask, manageExecutionTask,
   reconcileManagedTask, taskReadinessReasons, ref, validateAssignmentForDispatch, parseFirstMateTaskDetail,
   FirstMateTaskMutationSchema, importLegacyTasks, disableProject, type FactoryRecord, type TaskMapping, type TaskAdapterOptions,
 } from '../src/index.js';
@@ -953,4 +953,20 @@ test('lost feature creation output recovers the same parent before creating the 
   assert.equal(retry.state, 'succeeded', retry.reconciliation?.note);
   assert.equal(flow.fake.read().calls.filter(call => call.args[0] === 'add' && call.args[1] === 'feature-f03').length, 1);
   assert.deepEqual(flow.fake.read().tasks['managed-task']!.deps, [{ type: 'parent', id: 'feature-f03' }]);
+});
+
+
+test('task transport selects the configured home installation before an ambient older tool', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-home-tools-'));
+  const home = join(directory, 'home'); const installed = join(home, '.tools', 'bin'); const ambient = join(directory, 'ambient');
+  mkdirSync(installed, { recursive: true }); mkdirSync(ambient);
+  for (const [path, marker] of [[installed, 'home-beads'], [ambient, 'ambient-markdown']]) {
+    writeFileSync(join(path!, 'tasks-axi'), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(marker)});\n`, { mode: 0o755 });
+  }
+  const wrapperPath = join(directory, 'fm-tasks.mjs');
+  writeFileSync(wrapperPath, `#!${process.execPath}\nimport {execFileSync} from 'node:child_process';process.stdout.write(execFileSync('tasks-axi',process.argv.slice(2),{encoding:'utf8'}));\n`, { mode: 0o755 });
+  const previous = process.env.PATH; process.env.PATH = `${ambient}${delimiter}${previous ?? ''}`;
+  t.after(() => { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; rmSync(directory, { recursive: true, force: true }); });
+  const wrapper = new TaskWrapper({ fmHome: home, tasksExecutable: wrapperPath });
+  assert.equal(wrapper.run(['--help']), 'home-beads');
 });

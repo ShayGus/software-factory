@@ -13,6 +13,7 @@ const defaultOriginal = 'Build feature X for every connected system, ERPNext is 
 const goodCode = 'export function feature(system) { return system.featureX(); }\n';
 export const unrequestedOption = 'export const providerTimeout = 180_000;';
 export const unrequestedTest = 'export const futureTimeoutTest = () => providerTimeout > 0;';
+export const unchangedReviewLine = 'export const unchangedProof = true;';
 const badCode = 'export function feature(system) { if (system.name !== "ERPNext") throw Error("unsupported"); return system.featureX(); }\n';
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 const script = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
@@ -118,6 +119,12 @@ let out=JSON.parse(readFileSync(root+'/outputs.json','utf8'))[step];
 if(out && snapshot.request) out=JSON.parse(JSON.stringify(out).replaceAll(${JSON.stringify(at)},new Date(Date.parse(snapshot.request.capturedAt)+1).toISOString()).replaceAll(${JSON.stringify(request.id)},snapshot.request.id).replaceAll(${JSON.stringify(requestFile)},snapshot.request.source.uri));
 if(step==='detail' && snapshot.findings) out=snapshot.instructionText ? mode.specEdits ?? [] :
  {plan:{},tasks:[{id:snapshot.tasks[0].id,changes:{expectedBehavior:'Correct scope for all connected systems, revision '+snapshot.plan.revision}}]};
+if(step==='detail' && mode.reviseTitles && snapshot.findings && !snapshot.instructionText) {
+ assert.deepEqual(JSON.parse(readFileSync(root+'/fake-state.json','utf8')).calls,[]);
+ assert.deepEqual(snapshot.findings.map(finding=>finding.title),['Project Leap','Phase 1']);
+ out={plan:{ticketTitle:'Export invoices from all connected systems'},
+  tasks:[{id:snapshot.tasks[0].id,changes:{expectedBehavior:'Export invoice records using the shared report'}}]};
+}
 if(step==='detail' && mode.ticketAtPlanReview && !snapshot.findings) {
  const path=root+'/fake-state.json';
  const native=JSON.parse(readFileSync(path,'utf8'));
@@ -127,6 +134,9 @@ if(step==='detail' && mode.ticketAtPlanReview && !snapshot.findings) {
 if(step==='plan_check') out=mode.planFailure || (mode.reviseOnce && snapshot.plan.revision===2) ?
  {verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'original_request',text:${JSON.stringify(original)}}]}]} :
  {verdict:'pass',findings:[]};
+if(step==='plan_check') out.titleFindings=mode.reviseTitles ? snapshot.ticketTitles
+ .filter(ticket=>['Project Leap','Phase 1'].includes(ticket.title))
+ .map(ticket=>({id:ticket.id,reason:'The title omits invoice export'})) : [];
 if(step==='plan_check' && mode.ticketAtPlanReview) {
  assert.deepEqual(snapshot.currentTicket,mode.ticketAtPlanReview);
  assert.deepEqual(snapshot.authority,[mode.confirmedDone]);
@@ -148,15 +158,48 @@ if(step==='instruction_check') {
  if(mode.narrow && snapshot.candidateInstructions.includes('Implement feature X for ERPNext only.')) { out={verdict:'fail',findings:[{type:'narrowing',message:'ERPNext example became the full scope',quotes:[{source:'instructions',text:'Implement feature X for ERPNext only.'}]}]}; }
 }
 
-if(step==='product_review') {
+if(step==='product_review' && snapshot.changes) {
+ assert.equal(snapshot.priorPass.review.id, mode.ticketPatchReview);
+ assert.match(snapshot.changes.patch, /[+]export const firstFix/);
+ assert.match(snapshot.changes.patch, /-baseline feature companion/);
+ assert.doesNotMatch(snapshot.changes.patch, /feature[.]mjs/);
+ out={verdict:'passed',assessment:'The fixes preserve the accepted behavior.',findings:[],unresolvedQuestions:[]};
+} else if(step==='product_review') {
  if(mode.publishReturnDuringReview) copyFileSync(mode.publishReturnDuringReview.source,mode.publishReturnDuringReview.path);
  assert.equal(snapshot.originalRequests[0].text,${JSON.stringify(original)});
  const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};
  const extra=mode.extraScope?${JSON.stringify([unrequestedOption, unrequestedTest])}:[];
- assert.equal(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').text,code+extra.map(x=>x+'\\n').join(''));
+ const productCommit=snapshot.deliveries[0].deliveredArtifact.revision;
+ if(mode.verifyReviewRound) {
+  const events=readFileSync(root+'/review-events.jsonl','utf8').trimEnd().split('\\n').map(JSON.parse);
+  const inputs=events.filter(entry=>entry.phase==='launch'&&entry.commit===productCommit);
+  assert.deepEqual(inputs.map(entry=>entry.reviewer).sort(),['code','scope']);
+  assert.ok(!events.some(entry=>entry.phase==='collect'&&entry.commit===productCommit),'product must start before either quality result is collected');
+  const diff=readFileSync(snapshot.deliveries[0].diffPath,'utf8');
+  for(const input of inputs) assert.equal(input.patch,diff);
+  if(mode.returnRevision===2) {
+   assert.match(diff,/^\\+export function feature/m);
+   assert.ok(!diff.includes(${JSON.stringify(unchangedReviewLine)}));
+   assert.equal(snapshot.previousProductReview.commits[0],mode.previousCommit);
+   assert.ok(snapshot.previousProductReview.findings.some(entry=>entry.message==='ERPNext only violates original generality'));
+   assert.ok(snapshot.deliveredFiles.every(file=>!file.snapshotPath));
+  } else {
+   assert.ok(diff.includes(${JSON.stringify(unchangedReviewLine)}));
+   assert.equal(snapshot.previousProductReview,undefined);
+  }
+  appendFileSync(root+'/review-events.jsonl',JSON.stringify({phase:'product',commit:productCommit})+'\\n');
+ }
+ if(!snapshot.previousProductReview) {
+  assert.equal(readFileSync(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').snapshotPath,'utf8'),code+extra.map(x=>x+'\\n').join('')+
+   (mode.verifyReviewRound?${JSON.stringify(unchangedReviewLine + '\n')}:''));
+ }
  out={sourceComparison:'passed',instructionFidelity:mode.badDelivery?'failed':'passed',planConformance:mode.badDelivery?'failed':'passed',
  criteria:snapshot.assignedCriteria.map((criterion,i)=>({criterion,state:mode.badDelivery&&i===1?'failed':'accomplished',behavior:'Common interface behavior',quotes:[{source:'delivery',text:code.trim()}],limitations:[]})),
  findings:mode.badDelivery?['instructionFidelity','planConformance'].map(check=>({check,type:'narrowed_generality',message:'ERPNext only violates original generality',quotes:[{source:'original_request',text:${JSON.stringify(original)}},{source:'delivery',text:code.trim()}]})):[],suggestions:[],unresolvedQuestions:[]};
+ if(mode.verifyReviewRound) {
+  if(mode.returnRevision===2) out.criteria.shift();
+  else out.criteria[0].quotes=[{source:'delivery',text:${JSON.stringify(unchangedReviewLine)}}];
+ }
  if(mode.ticketAtProductReview) {
   assert.deepEqual(snapshot.currentTicket,mode.ticketAtProductReview);
   assert.deepEqual(snapshot.deliveries[0].confirmedDefinitionOfDone,[mode.confirmedDone]);
@@ -172,16 +215,17 @@ if(step==='product_review') {
    out.findings=[{check:'planConformance',type:'missing_behavior',message:'The current ticket requires additional browser proof',quotes:criterion.quotes}];
   }
  }
+ if(mode.productNote) out.findings.push({check:'planConformance',type:'unrequested_addition',disposition:'note',message:'Product observation',quotes:[{source:'delivery',text:code.trim()}]});
  if(mode.extraScope) {
   assert.deepEqual(snapshot.deliveries[0].confirmedDefinitionOfDone,[mode.confirmedDone]);
   const diff=readFileSync(snapshot.deliveries[0].diffPath,'utf8');
   for(const addition of extra) assert.ok(diff.includes('+'+addition));
   if(!mode.productAcceptsExtra) {
-   out.planConformance='failed';
-   out.findings=extra.map(addition=>({check:'planConformance',type:'unrequested_addition',message:addition,
+   out.findings=extra.map(addition=>({check:'planConformance',type:'unrequested_addition',disposition:'note',message:addition,
      quotes:[{source:'delivery',text:addition}]}));
   }
  }
+ out.findings=out.findings.map(finding=>({disposition:'blocking',...finding}));
 }
 if (sessionId) {
  writeFileSync(args[args.indexOf('--output-last-message')+1],JSON.stringify(out));
@@ -207,7 +251,7 @@ const assignment=store.records('project-1').find(r=>r.kind==='assignment'&&r.fir
 const run=dirname(assignment.returnLocation);
 const mode=JSON.parse(readFileSync(root+'/mode.json','utf8')); const prepared={assignment:{id:assignment.id,revision:assignment.revision}};
 const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};
-writeFileSync(repository+'/feature.mjs',code+(mode.extraScope?${JSON.stringify(`${unrequestedOption}\n${unrequestedTest}\n`)}:''));
+writeFileSync(repository+'/feature.mjs',code+(mode.verifyReviewRound?${JSON.stringify(unchangedReviewLine + '\n') }:'')+(mode.extraScope?${JSON.stringify(`${unrequestedOption}\n${unrequestedTest}\n`)}:''));
 const git=(...a)=>execFileSync('git',['-C',repository,...a],{encoding:'utf8'}).trim();git('add','feature.mjs');git('-c','core.hooksPath=/dev/null','commit','--allow-empty','-qm','Fake worker delivery '+taskId);
 if(mode.extraScope) git('-c','core.hooksPath=/dev/null','commit','--allow-empty','-qm','Finalize multi-commit delivery');
 const artifact={uri:'git:'+repository,revision:git('rev-parse','HEAD')};
@@ -236,7 +280,7 @@ if(mode.exposeWorkerGeneration) writeFileSync(${JSON.stringify(join(home, 'runti
  current_state:{state:'active',freshness:'fresh',observed_at:''}
 }]));
 const worker=spawnSync(${JSON.stringify(returnWorker)},[process.argv[2]],{encoding:'utf8'});process.stderr.write(worker.stderr);process.exit(worker.status??1);`);
-  executable('roborev', `import {readFileSync,writeFileSync} from 'node:fs';
+  executable('roborev', `import {appendFileSync,readdirSync,readFileSync,writeFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
 const root=${JSON.stringify(root)};
 const mode=JSON.parse(readFileSync(root+'/mode.json','utf8'));
@@ -253,20 +297,51 @@ if(command==='run') {
   assert.deepEqual(input.currentTicket,mode.ticketAtProductReview);
   assert.deepEqual(input.definitionOfDone,[mode.confirmedDone]);
  }
- const additions=${JSON.stringify([unrequestedOption, unrequestedTest])}.filter(addition=>input.patch.includes('+'+addition));
- const findings=mode.technicalAcceptsExtra?[]:additions;
- const output=JSON.stringify({verdict:findings.length?'fail':'pass',findings});
- const job={id:43,uuid,git_ref:args[3],status:'done',job_type:'task'};
- writeFileSync(root+'/scope-review.json',JSON.stringify({job_id:43,job,prompt,output}));
- process.stdout.write(JSON.stringify({job_id:43,job_uuid:uuid,git_ref:args[3],status:'queued'}));
-} else if(command==='wait') assert.deepEqual(args,['--job','--quiet','43']);
-else if(args[0]==='--job') {
- assert.deepEqual(args,['--job','--json','43']);
- process.stdout.write(readFileSync(root+'/scope-review.json','utf8'));
-} else {
- assert.equal(command,'show');assert.equal(args[0],'--json');
+ const findings=[];
+ if(input.reviewer==='scope'&&!mode.technicalAcceptsExtra) {
+  const additions=${JSON.stringify([unrequestedOption, unrequestedTest])}.filter(addition=>input.patch.includes('+'+addition));
+  for(const message of additions) findings.push({disposition:'note',message});
+ }
+ if(input.reviewer==='code'&&mode.technicalFailureCommits?.includes(input.commit)) {
+  findings.push({disposition:'blocking',message:'Code defect on this commit'});
+ }
+ if(mode.verifyReviewRound && mode.returnRevision===2) {
+  assert.deepEqual(input.previous,{commit:mode.previousCommit,findings:[
+   {disposition:'blocking',message:input.reviewer+' blocker'},
+   ...(input.reviewer==='code'?[{disposition:'note',message:'Code observation'}]:[])]});
+  assert.ok(!input.patch.includes(${JSON.stringify(unchangedReviewLine)}));
+ } else if (mode.verifyReviewRound) {
+  findings.push({disposition:'blocking',message:input.reviewer+' blocker'});
+  if(input.reviewer==='code') findings.push({disposition:'note',message:'Code observation'});
+ }
+ if(mode.codeNote && input.reviewer==='code') findings.push({disposition:'note',message:'Code observation'});
+ if(mode.scopeNote && input.reviewer==='scope') findings.push({disposition:'note',message:'Scope observation'});
+ const output=JSON.stringify({verdict:findings.some(finding=>finding.disposition==='blocking')?'fail':'pass',findings});
+ const id=43+readdirSync(root).filter(name=>/^review-job-\\d+\\.json$/.test(name)).length;
+ const job={id,uuid,git_ref:args[3],status:'done',job_type:'task'};
+ writeFileSync(root+'/review-job-'+id+'.json',JSON.stringify({job_id:id,job,prompt,output,commit:input.commit}));
+ if(mode.verifyReviewRound) appendFileSync(root+'/review-events.jsonl',JSON.stringify({phase:'launch',...input})+'\\n');
+ process.stdout.write(JSON.stringify({job_id:id,job_uuid:uuid,git_ref:args[3],status:'queued'}));
+} else if(command==='show' && args[0]==='--json') {
  const verdict=mode.technicalFailureCommits?.includes(args[1])?'fail':'pass';
- process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict},job:{id:42,git_ref:args[1],status:'done',job_type:'review'}}));
+ process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical verdict',created_at:${JSON.stringify(at)},
+  structured_output:{verdict},job:{id:42,git_ref:args[1],status:'done',job_type:'review'}}));
+} else {
+ assert.equal(args[0],'--job');
+ const raw=readFileSync(root+'/review-job-'+args[2]+'.json','utf8');
+ if (command==='wait') {
+  assert.equal(args[1],'--quiet');
+  if(mode.verifyReviewRound) {
+   const {commit}=JSON.parse(raw);
+   const events=readFileSync(root+'/review-events.jsonl','utf8').trimEnd().split('\\n').map(JSON.parse);
+   assert.ok(events.some(entry=>entry.phase==='product'&&entry.commit===commit),'quality must stay in flight until product starts');
+   appendFileSync(root+'/review-events.jsonl',JSON.stringify({phase:'collect',commit})+'\\n');
+  }
+ } else {
+  assert.equal(command,'show');
+  assert.equal(args[1],'--json');
+  process.stdout.write(raw);
+ }
 }`);
   const project = { ...baseline.find((record) => record.kind === 'project')!, repositories: [{ uri: repository }], firstMateHomeRef: home };
   const runtime = fakeRuntime(home);

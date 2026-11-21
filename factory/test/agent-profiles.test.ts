@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { ProjectAgentConfigSchema, WorkflowAgentProfileSchema, WorkflowAgentStepSchema, instructionAgentCommand,
-  resolveStepAgentProfile, judgeWorkerInstructions, RecordsSchema, type Assignment } from '../src/index.js';
+  resolveStepAgentProfile, stepAgentCommand, judgeWorkerInstructions, RecordsSchema, type Assignment } from '../src/index.js';
 import { fakeJudge, fakeJudgeOptions } from './judge-helper.js';
+import { runStepAgent } from '../src/agent-runner.js';
 const records = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 const assignment = records.find((record): record is Assignment => record.kind === 'assignment')!;
 
@@ -93,4 +94,81 @@ for (const [harness, model, effort, accepted] of [
 test('a configured step cannot silently fall back when its harness executable is missing', () => {
   const config = structuredClone(fakeJudge); delete config.executables.codex;
   assert.throws(() => instructionAgentCommand(config, 'project-1'), /agent_executable_not_configured: codex/);
+});
+
+
+for (const harness of ['codex', 'claude'] as const) test(`${harness} planning has configurable idle and safety deadlines independent of instruction checks`, () => {
+  const config = structuredClone(fakeJudge);
+  for (const step of ['understand', 'design', 'plan', 'detail', 'plan_check'] as const) {
+    config.steps[step] = { harness, provider: harness };
+    assert.equal(stepAgentCommand(config, 'project-1', step).timeoutMs, 21_600_000);
+    assert.equal(stepAgentCommand(config, 'project-1', step).idleTimeoutMs, 1_800_000);
+  }
+  config.planningTimeoutMs = 7_200_000;
+  config.planningIdleTimeoutMs = 2_400_000;
+  config.timeoutMs = 42_000;
+  for (const step of ['understand', 'design', 'plan', 'detail', 'plan_check'] as const) {
+    assert.equal(stepAgentCommand(config, 'project-1', step).timeoutMs, 7_200_000);
+    assert.equal(stepAgentCommand(config, 'project-1', step).idleTimeoutMs, 2_400_000);
+  }
+  assert.equal(instructionAgentCommand(config, 'project-1').timeoutMs, 42_000);
+  config.planningTimeoutMs = 900_001;
+  assert.equal(stepAgentCommand(config, 'project-1', 'plan').timeoutMs, 900_001, 'No fifteen-minute ceiling');
+});
+
+test('a stuck planning process is terminated at its configured total wall-clock deadline', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-planning-deadline-'));
+  try {
+    const executable = join(directory, 'stuck.mjs');
+    writeFileSync(executable, `#!${process.execPath}\nsetTimeout(() => {}, 30_000);\n`, { mode: 0o755 });
+    const config = { ...structuredClone(fakeJudge), planningTimeoutMs: 50, executables: { codex: executable } };
+    const started = performance.now();
+    assert.throws(() => runStepAgent(config, 'project-1', 'plan', 'Plan the feature', { evidence: null }), /planning_safety_timeout/);
+    assert.ok(performance.now() - started < 5000, 'The process must not survive its bounded planning call');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+for (const stream of ['stdout', 'stderr']) test(`planning ${stream} progress keeps a stage alive beyond its idle window`, () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-planning-progress-'));
+  try {
+    const executable = join(directory, 'progress.mjs');
+    writeFileSync(executable, `#!${process.execPath}\nlet count=0; const timer=setInterval(()=>{process.${stream}.write('progress\\n'); if(++count===12){clearInterval(timer); process.stdout.write('done');}},125);\n`, { mode: 0o755 });
+    const config = { ...structuredClone(fakeJudge), planningTimeoutMs: 10_000, planningIdleTimeoutMs: 1000,
+      executables: { codex: executable } };
+    const result = runStepAgent(config, 'project-1', 'plan', 'Plan the feature', { evidence: null });
+    assert.ok(result.stdout.endsWith('done'));
+    assert.ok(result.activity!.elapsedMs > config.planningIdleTimeoutMs);
+    assert.ok(result.activity![stream === 'stdout' ? 'stdoutBytes' : 'stderrBytes'] > 0);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('silent planning is stopped for inactivity with its measured progress preserved', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-planning-idle-'));
+  try {
+    const executable = join(directory, 'idle.mjs');
+    writeFileSync(executable, `#!${process.execPath}\nsetTimeout(() => {}, 30_000);\n`, { mode: 0o755 });
+    const config = { ...structuredClone(fakeJudge), planningTimeoutMs: 5000, planningIdleTimeoutMs: 200,
+      executables: { codex: executable } };
+    const progressPath = join(directory, 'progress.json');
+    assert.throws(() => runStepAgent(config, 'project-1', 'plan', 'Plan the feature', { evidence: null, progressPath }), /planning_idle_timeout/);
+    const progress = JSON.parse(readFileSync(progressPath, 'utf8'));
+    assert.equal(progress.termination, 'planning_idle_timeout');
+    assert.ok(progress.elapsedMs >= config.planningIdleTimeoutMs);
+    assert.equal(progress.cpuProbeAvailable, true);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('silent CPU activity also keeps planning alive', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'sf-planning-cpu-'));
+  try {
+    const executable = join(directory, 'cpu.mjs');
+    writeFileSync(executable, `#!${process.execPath}\nconst end=Date.now()+3500; while(Date.now()<end){} process.stdout.write('done');\n`, { mode: 0o755 });
+    const config = { ...structuredClone(fakeJudge), planningTimeoutMs: 15_000, planningIdleTimeoutMs: 1000,
+      executables: { codex: executable } };
+    const result = runStepAgent(config, 'project-1', 'plan', 'Plan the feature', { evidence: null });
+    assert.equal(result.stdout, 'done');
+    assert.ok(result.activity!.cpuActivityEvents > 0);
+    assert.ok(result.activity!.elapsedMs > config.planningIdleTimeoutMs);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

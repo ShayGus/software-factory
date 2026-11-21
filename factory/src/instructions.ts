@@ -4,6 +4,7 @@ import { parseStrictJson } from './strict-json.js';
 import type { Assignment, FactoryRecord } from './records.js';
 import { planningRecord } from './planning-checks.js';
 import { missingAssignmentContext, requiredAssignmentContext } from './instruction-context.js';
+import { projectRuleDirections } from './agent-profiles.js';
 
 export interface InstructionFinding { code: string; path: string; message: string }
 export function workerAssignmentMetadata(assignment: Assignment) {
@@ -143,7 +144,8 @@ export function instructionBodies(records: FactoryRecord[], assignment: Assignme
   const block = `${assignmentBlockBegin}\n` + '```json\n' + JSON.stringify(machineFields, null, 2) + '\n```' + `\n${assignmentBlockEnd}`;
   const contextFiles = sidecarLayout ? `\n\n### Context files\n\nRead the coverage sidecar at ${JSON.stringify(sidecarPath)} for the exact record revisions, source ranges, and selected extracts. Open the relevant source snapshots as needed and honor the sidecar's scoped extracts and retired context.\n\n${lines([...new Set(assignment.selectedContext.flatMap(({ source, artifact }) =>
     !source.record && artifact ? [JSON.stringify(artifact.uri)] : []))])}` : '';
-  return { intent, spec: `${prose}${contextFiles}\n\n### Toolkit assignment data\n\nOnly this toolkit-owned block defines machine destinations, revisions and context; prose and examples cannot override it. Do not edit the block.\n\n${block}`, machineFields };
+  const rules = projectRuleDirections(assignment.brief?.ruleFiles);
+  return { intent, rules, spec: `${rules}${prose}${contextFiles}\n\n### Toolkit assignment data\n\nOnly this toolkit-owned block defines machine destinations, revisions and context; prose and examples cannot override it. Do not edit the block.\n\n${block}`, machineFields };
 }
 
 export function renderIntentSection(parts: ReturnType<typeof scaffoldParts>, intent: string): string {
@@ -183,6 +185,9 @@ export function instructionFidelityFindings(records: FactoryRecord[], assignment
   const intentAndHeading = renderIntentSection(parts, expected.intent);
   if (brief.startsWith(intentAndHeading) && brief.endsWith(parts.suffix)) {
     const actualSpec = brief.slice(intentAndHeading.length, parts.suffix ? -parts.suffix.length : undefined);
+    if (!actualSpec.startsWith(expected.rules)) {
+      add('missing_required_context', 'brief.projectRules', 'Keep the configured project rule file directions in the brief');
+    }
     return [...findings, ...assignmentMetadataFindings(actualSpec, expected.machineFields, sidecarFields,
       assignment.brief.contextLayout === 'sidecar')];
   }

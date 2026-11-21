@@ -70,7 +70,7 @@ For wrappers without atomic `add --hold-reason`, set `guardTaskId` to an existin
 The registry starts empty, so the enabled hook has no unavailable databases to inspect.
 FirstMate bootstraps each selected project's database before adding its registry entry, and preserves existing entries.
 Keep every registered database available while its managed tasks can launch or relaunch.
-The 300-second hook budget covers the installed template's 280-second agent deadline; the runner validates the total hook and spawn budgets before releasing work.
+The configured instruction-hook budget covers the installed template's instruction-check deadline; the runner validates the total hook and spawn budgets before releasing work.
 For larger deadlines or additional hooks, follow the [runbook budget rules](docs/one-feature-run.md#worker-start-hook).
 
 Start a fresh FirstMate session in this home so its harness discovers the skill.
@@ -1034,9 +1034,19 @@ Missing entries and cross-project configuration are refused.
   },
   "executables": { "codex": "/absolute/path/to/codex", "claude": "/absolute/path/to/claude" },
   "cwd": "/absolute/review-directory",
-  "timeoutMs": 120000
+  "timeoutMs": 120000,
+  "planningTimeoutMs": 21600000,
+  "planningIdleTimeoutMs": 1800000
 }
 ```
+
+`planningIdleTimeoutMs` stops understand, design, plan, detail and semantic plan-review calls after prolonged inactivity, defaulting to 1,800,000 ms.
+Stdout, stderr and CPU/process activity in the owned agent process group reset that window, so active planning can take longer for larger features.
+If CPU activity cannot be observed, missing output alone does not prove inactivity.
+`planningTimeoutMs` is the separate overall safety budget, defaulting to 21,600,000 ms and configurable up to the platform timer range; there is no fixed fifteen-minute ceiling.
+Attempt progress and final timing records retain observed activity, elapsed time and the stop reason.
+`timeoutMs` remains the separate deadline for instruction checks, product review and learning consolidation, defaulting to 120,000 ms with a 600,000 ms cap.
+Planning does not run inside the worker-start instruction hook.
 
 `resolveStepAgentProfile` is the shared resolver for understand/design/plan/detail,
 independent `plan_check`, `instruction_check`, `build`, `product_review` and
@@ -1065,7 +1075,7 @@ Every check launches a separate one-shot process with directions and a frozen ev
 The default timeout is two minutes.
 The CLI returns its final JSON verdict on stdout and sends progress to stderr.
 Instruction checking makes one agent call per check.
-Product review uses the same isolated agent runner and reads existing RoboRev evidence as described below.
+Product review uses the same isolated agent runner alongside the Factory's RoboRev reviewers.
 
 The result follows `fixtures/instruction-judge.schema.json`:
 
@@ -1263,14 +1273,15 @@ Each entry retains its own task, commit, file snapshots, quality evidence and ex
 A maintenance delivery with no criteria contributes one null-criterion outcome alongside the distinct criterion outcomes, including when the deliveries belong to a feature.
 The feature-wide completion rule still requires all active required criteria, so a delivered partial slice stays incomplete until the aggregate supplies the remaining evidence.
 `paths` optionally adds unchanged dependency files to the review snapshot; every path changed by the commit is included automatically.
-`maxSourceChars` bounds the delivered snapshot, defaulting to 256,000 characters and limited to 1,000,000.
-The snapshot accepts at most 1,000 paths and the complete package is limited to 1,500,000 characters.
+The snapshot accepts at most 1,000 paths and defaults to 16,000,000 characters per delivery.
+An explicit `maxSourceChars` sets a lower limit of up to 1,000,000 characters.
+The review manifest and accompanying metadata are limited to 1,500,000 characters.
 Binary files are listed by committed path and byte size without supplying their contents to the reviewer.
 Unreadable commits, missing requested paths and exceeded limits return explicit errors rather than silently truncating evidence.
 Files come from the pinned commit, including first-parent merge changes, regardless of local worktree edits.
 Supply relevant unchanged dependencies in `paths`; the reviewer must report uncertainty when the supplied evidence cannot establish behavior.
 
-The package includes exact original request text, the design and plan revisions, detailed task and acceptance cases, canonical assignment metadata, actual delivered code, per-criterion worker returns, selected decisions, baseline evidence and existing technical-review results.
+The package includes exact original request text, the design and plan revisions, detailed task and acceptance cases, canonical assignment metadata, paths to frozen delivered files, per-criterion worker returns, selected decisions, baseline evidence and existing technical-review results.
 The reviewer checks the plan independently against the original request and reports original-request omissions even when no listed criterion mentions them.
 It also checks the pinned changes and names each addition that neither the confirmed ticket nor the assigned plan requires.
 A brief that incorrectly narrows a general design to ERPNext cannot redefine correctness.
@@ -1282,20 +1293,24 @@ The product reviewer reads the frozen package through the shared one-shot runner
 An accomplished outcome requires committed-code evidence from a delivery assigned to that criterion.
 Every assigned criterion, including optional criteria, must have a worker return before the review can pass.
 Unavailable agents, timeouts, malformed output, uncertain behavior, missing worker evidence, missing baseline evidence or unavailable quality results leave the review incomplete.
-A failed product comparison or technical verdict records a failed review.
+A blocking product, code, or scope finding records a failed review.
 A passing review requires passing original-source, instruction-fidelity and plan-conformance comparisons, accomplished assigned behavior, and the existing completion rules for required criteria, baseline and improvement evidence.
 
 `readRoborevResult` invokes only `roborev show --json <full-commit-SHA>` in the supplied repository.
 The adapter follows the inspected `roborev v0.74.0-fmpatch.1` response: review `job_id`, raw output and `structured_output`, plus nested `job.id`, `job.git_ref`, `job.status` and `job.job_type`.
 Only completed review jobs for that exact commit are accepted.
 The structured technical verdict is retained; a missing verdict is uncertain, and a closed review does not imply a pass.
-The Factory review also submits the pinned diff and confirmed definition of done as a read-only RoboRev scope review.
-That result must name each unrequested addition and fails the delivery when any are found.
-Factory binds the returned job to the exact submitted prompt and reuses a definitive scoped result only for that same prompt.
-The ordinary result reader still only reads the existing commit review.
-A definitive exact-commit quality result already retained by an earlier product review is reused, including when that product review failed.
-An uncertain cached quality result is refreshed on a new review operation, preserving the original uncertain review and receipt replay.
-A changed delivered commit reads its own quality result.
+The Factory starts read-only RoboRev code and scope jobs against the same pinned commits and confirmed definition of done, then runs product review while those jobs execute.
+Code review covers correctness and security, scope review checks the confirmed ticket, and product review checks the delivered behavior.
+Factory collects all three results before sending the builder one list for the delivery.
+Each finding is blocking or a note.
+Blockers identify a concrete bug, a security problem, or a violated line of the confirmed definition of done.
+A notes-only review passes when the required evidence is complete, and the ticket's pull request carries the notes.
+A follow-up under the same ticket and assignments gives each reviewer its own earlier findings and the diff from its previously reviewed commit.
+Factory retains prior product criterion outcomes when their committed evidence still supports them.
+The original review evidence remains in the review record.
+Factory binds each RoboRev result to its exact submitted prompt and reuses definitive results only for that same prompt and artifact.
+Unavailable or uncertain reviewer results remain incomplete and can be reviewed again in a new operation.
 
 The product review persists its input digest, unique reviewer session, selected profile, committed file snapshots, raw technical evidence and per-criterion accomplished/failed/uncertain verdicts in the existing review record.
 Original source, design, plan, task and worker returns remain available through their exact historical references.

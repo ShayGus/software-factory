@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fakeJudge } from './judge-helper.js';
+import { runStepAgent } from '../src/agent-runner.js';
 import {
   ProjectStore, RecordsSchema, UnderstandingRevisionSchema, DesignRevisionSchema,
   ImplementationPlanRevisionSchema, DetailedPlanTaskSchema, StageRevisionSchema, DecisionChangeSchema,
@@ -1171,6 +1172,39 @@ test('project-code reuse cannot relabel an existing factory design to skip its r
   } finally { flow.store.close(); }
 });
 
+for (const target of ['feature', 'understanding'] as const) test(`understand records a reverse-linked ${target} product question from a replay agent`, () => {
+  const flow = setup();
+  const directory = mkdtempSync(join(tmpdir(), 'sf-understand-replay-'));
+  try {
+    // Minimal replay of an understanding plus decisions whose affectedRecords
+    // point backwards to this stage, without a premature design carrier.
+    const decision = { ...flow.decision, id: 'understanding-question', disposition: 'proposed',
+      choice: { kind: 'product', state: 'open' },
+      affectedRecords: [ref(target === 'feature' ? feature : flow.understanding)] };
+    const input = { idempotencyKey: 'replayed-understand', expectedRevision: 0, issuedAt: time,
+      stage: flow.understandStage, records: [flow.understanding, decision] };
+    const executable = join(directory, 'agent.mjs');
+    writeFileSync(executable, `#!${process.execPath}\nprocess.stdin.resume(); process.stdin.on('end', () => process.stdout.write(${JSON.stringify(JSON.stringify(input))}));\n`, { mode: 0o755 });
+    const agent = { ...fakeJudge, executables: { codex: executable } };
+    const output = JSON.parse(runStepAgent(agent, base.projectId, 'understand', 'Understand the request', { evidence: input }).stdout);
+    recordStage(flow.store, output);
+    assert.equal(flow.store.get(base.projectId, decision.id)?.kind, 'decision_change');
+    const view = projectView(flow.store, { projectId: base.projectId });
+    assert.ok(view.questions.some((question) => question.decision.id === decision.id));
+  } finally { flow.store.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+for (const target of ['request', 'project', 'wrong-revision'] as const) test(`understand rejects an auxiliary question linked only to ${target}`, () => {
+  const flow = setup();
+  try {
+    const affected = target === 'request' ? request : target === 'project' ? { id: base.projectId, revision: 1 } :
+      { ...feature, revision: 2 };
+    const decision = { ...flow.decision, id: 'unrelated-question', affectedRecords: [affected] };
+    assert.throws(() => flow.write(flow.understandStage, [flow.understanding, decision]), /unrelated_stage_record/);
+    assert.equal(flow.store.get(base.projectId, flow.understanding.id), undefined, 'Reject the whole transaction');
+  } finally { flow.store.close(); }
+});
+
 test('ticket-wide owner question blocks design and alternate planning writes, then the existing answer operation permits the same ticket', () => {
   const flow = setup();
   try {
@@ -1194,5 +1228,6 @@ test('ticket-wide owner question blocks design and alternate planning writes, th
     flow.write(flow.planStage, [flow.plan, ...flow.tasks]); flow.finish();
     assert.equal(flow.check().check?.kind, 'plan_readiness_revision');
     assert.equal(flow.store.history(base.projectId).filter(record => record.kind === 'request').length, 1);
+
   } finally { flow.store.close(); }
 });

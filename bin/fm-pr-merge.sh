@@ -1940,7 +1940,7 @@ case "$PROVIDER" in
     fi
     fm_hook_begin task.merge pr task_id "$ID" pr_url "$URL" pinned_head "$FM_PR_MERGE_HEAD" || exit 1
     fm_hook_before || exit 1
-    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" || exit 1
+    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" "$URL" || exit 1
     if [ "${FM_HOOK_ACTIVE:-0}" = 1 ]; then
       HOOK_MERGE_HEAD=$FM_PR_MERGE_HEAD
       mergeable_status=0
@@ -2014,7 +2014,7 @@ case "$PROVIDER" in
     [ "$away_status" -eq 0 ] || exit "$away_status"
     fm_hook_begin task.merge pr task_id "$ID" pr_url "$URL" pinned_head "$FM_PR_MERGE_HEAD" || exit 1
     fm_hook_before || exit 1
-    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" || exit 1
+    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" "$URL" || exit 1
     if [ "${FM_HOOK_ACTIVE:-0}" = 1 ]; then
       HOOK_MERGE_HEAD=$FM_PR_MERGE_HEAD
       gitlab_verify_mergeable || exit 1
@@ -2060,7 +2060,7 @@ case "$PROVIDER" in
     # directly through "tea api" instead.
     fm_hook_begin task.merge pr task_id "$ID" pr_url "$URL" pinned_head "$FM_PR_MERGE_HEAD" || exit 1
     fm_hook_before || exit 1
-    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" || exit 1
+    fm_factory_lock merge "$PROJECT_URL" "$ID" "$FM_PR_MERGE_HEAD" "$URL" || exit 1
     if [ "${FM_HOOK_ACTIVE:-0}" = 1 ]; then
       HOOK_MERGE_HEAD=$FM_PR_MERGE_HEAD
       forgejo_verify_mergeable || exit 1
