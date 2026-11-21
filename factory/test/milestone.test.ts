@@ -9,7 +9,8 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { checkStartingWorker, ProjectStore, ref, recordSource, runFeature,
-  validateReviewForCompletion, FeatureRunConfigSchema, prepareWorkerBrief } from '../src/index.js';
+  validateReviewForCompletion, FeatureRunConfigSchema, prepareWorkerBrief, applyCommand, buildEditCommand,
+  assertNoOwnerQuestions, type DecisionChange } from '../src/index.js';
 
 const at = '2026-11-11T18:00:00Z';
 const script = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
@@ -31,7 +32,7 @@ function laterAttempt(flow: ReturnType<typeof scenario>, suffix: string) {
 }
 
 function startingEvent(flow: ReturnType<typeof scenario>, source: string) {
-  return { version: 1, event: 'worker.start.before', home: flow.home, task_id: 'milestone-worker',
+  return { version: 1, event: 'worker.start.before', home: flow.home, project: flow.config.repository, task_id: 'milestone-worker',
     source_brief_path: source, brief_path: source, brief_sha256: createHash('sha256').update(readFileSync(source)).digest('hex') };
 }
 
@@ -80,7 +81,7 @@ test('review 1251 finding 9: relative snapshot paths are rejected before capture
   } finally { flow.close(); }
 });
 
-test('review 1201 finding 5: bootstrap works before hook enablement without an agent config and keeps unmanaged starts available', () => {
+test('review 1201 finding 5: bootstrap works before hook enablement without an agent config and preserves factory membership', () => {
   const flow = scenario({ bootstrap: false });
   try {
     const hookPath = join(flow.home, 'config', 'hooks.json'); const hooks = JSON.parse(readFileSync(hookPath, 'utf8'));
@@ -94,11 +95,11 @@ test('review 1201 finding 5: bootstrap works before hook enablement without an a
     assert.equal(existsSync(hookPath), false);
     flow.save(hookPath, hooks); // Operator enables the hook only AFTER validated bootstrap.
     const registry = JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8'));
-    const event = { version: 1, event: 'worker.start.before', home: flow.home, task_id: 'ordinary-task',
+    const event = { version: 1, event: 'worker.start.before', home: flow.home, project: flow.config.repository, task_id: 'ordinary-task',
       source_brief_path: null, brief_path: null, brief_sha256: null };
-    assert.deepEqual(checkStartingWorker(registry, event), { ok: true, managed: false });
+    assert.throws(() => checkStartingWorker(registry, event), /factory_task_requires_mapping/);
     assert.throws(() => runFeature(flow.config, 'prepare')); // An agent preflight failure cannot remove the bootstrap context.
-    assert.deepEqual(checkStartingWorker(registry, event), { ok: true, managed: false });
+    assert.throws(() => checkStartingWorker(registry, event), /factory_task_requires_mapping/);
     assert.equal(flow.wrapper.read().calls.length, 0);
     assert.equal(existsSync(join(flow.root, 'agents.jsonl')), false);
   } finally { flow.close(); }
@@ -234,7 +235,7 @@ test('review 2: a conflicting assignment block anywhere in the launch overlay is
     const candidate = join(flow.root, 'conflicting-launch.md'); writeFileSync(candidate, text);
     const before = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
     const report = checkStartingWorker(JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8')), {
-      version: 1, event: 'worker.start.before', home: flow.home, task_id: 'milestone-worker', source_brief_path: source,
+      version: 1, event: 'worker.start.before', home: flow.home, project: flow.config.repository, task_id: 'milestone-worker', source_brief_path: source,
       brief_path: candidate, brief_sha256: createHash('sha256').update(text).digest('hex'),
     });
     assert.equal(report.ok, false);
@@ -256,7 +257,7 @@ for (const context of ['empty', 'wrong-project'] as const) {
       flow.save(flow.config.hookRegistry, { version: 1, projects: [{ home: flow.home, projectId, database, agentConfig: flow.config.agentConfig }] });
       const before = readFileSync(database);
       const result = spawnSync(script, [flow.config.hookRegistry], { encoding: 'utf8', input: JSON.stringify({
-        version: 1, event: 'worker.start.before', home: flow.home, task_id: 'milestone-worker',
+        version: 1, event: 'worker.start.before', home: flow.home, project: flow.config.repository, task_id: 'milestone-worker',
         source_brief_path: null, brief_path: null, brief_sha256: null,
       }) });
       assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -374,14 +375,14 @@ test('plan reviewer failure stops before a task or worker is created', () => {
   } finally { flow.close(); }
 });
 
-test('hook passes unmanaged tasks and fails closed for missing managed context and changed candidate digest', () => {
+test('hook refuses unmapped factory tasks and fails closed for missing managed context and changed candidate digest', () => {
   const flow = scenario();
   try {
     runFeature(flow.config, 'prepare');
     const registry = JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8'));
     const source = join(flow.data, 'milestone-worker', 'brief.md'); const text = readFileSync(source, 'utf8');
-    const event = { version: 1, event: 'worker.start.before', home: flow.home, task_id: 'ordinary-task', source_brief_path: null, brief_path: null, brief_sha256: null };
-    assert.deepEqual(checkStartingWorker(registry, event), { ok: true, managed: false });
+    const event = { version: 1, event: 'worker.start.before', home: flow.home, project: flow.config.repository, task_id: 'ordinary-task', source_brief_path: null, brief_path: null, brief_sha256: null };
+    assert.throws(() => checkStartingWorker(registry, event), /factory_task_requires_mapping/);
     const managed = { ...event, task_id: 'milestone-worker', source_brief_path: source, brief_path: source,
       brief_sha256: createHash('sha256').update(text).digest('hex') };
     const alias = join(flow.root, 'home-alias'); symlinkSync(flow.home, alias);
@@ -397,20 +398,20 @@ test('hook passes unmanaged tasks and fails closed for missing managed context a
 });
 
 
-test('followup: passive legacy mappings remain unmanaged, explicit management and orphan assignments stay protected', () => {
+test('factory legacy and orphan tasks require an unambiguous canonical mapping', () => {
   const flow = scenario();
   try {
     const registry = JSON.parse(readFileSync(flow.config.hookRegistry, 'utf8'));
     const fixture = JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8'));
     const template = fixture.find((record: any) => record.kind === 'task_mapping');
     const legacy = { ...template, legacy: true, feature: null, criteria: [], detailedPlanTask: null };
-    const event = { version: 1, event: 'worker.start.before', home: flow.home, task_id: legacy.firstMateTaskId,
+    const event = { version: 1, event: 'worker.start.before', home: flow.home, project: flow.config.repository, task_id: legacy.firstMateTaskId,
       source_brief_path: null, brief_path: null, brief_sha256: null };
     for (const kind of ['passive', 'managed', 'orphan'] as const) {
       const database = join(flow.root, `${kind}.sqlite`);
       const history = fixture.filter((record: any) => ['project', 'request', 'feature_revision', 'criterion', 'design_revision', 'implementation_plan_revision', 'detailed_plan_task', 'task_mapping', 'assignment'].includes(record.kind) &&
         (kind === 'orphan' || record.kind !== 'assignment'))
-        .map((record: any) => kind === 'passive' && record.kind === 'task_mapping' ? legacy : record);
+        .map((record: any) => record.kind === 'project' ? { ...record, firstMateHomeRef: flow.home, repositories: [{ uri: flow.config.repository }] } : kind === 'passive' && record.kind === 'task_mapping' ? legacy : record);
       const store = new ProjectStore(database);
       try { store.importProject({ schemaVersion: 1, projectId: 'project-1', history, receipts: [] }); }
       finally { store.close(); }
@@ -419,8 +420,7 @@ test('followup: passive legacy mappings remain unmanaged, explicit management an
         try { db.exec("DELETE FROM record_history WHERE kind = 'task_mapping'"); } finally { db.close(); }
       }
       registry.projects[0].database = database;
-      if (kind === 'passive') assert.deepEqual(checkStartingWorker(registry, event), { ok: true, managed: false });
-      else assert.throws(() => checkStartingWorker(registry, event), /hook_(managed_assignment_missing_or_ambiguous|candidate_missing)/);
+      assert.throws(() => checkStartingWorker(registry, event), /hook_(factory_task_requires_mapping|managed_assignment_missing_or_ambiguous|candidate_missing)/);
     }
   } finally { flow.close(); }
 });
@@ -553,4 +553,43 @@ if(step==='plan_check')`));
       assert.equal(selected?.extract, source.excerpt);
     } finally { store.close(); }
   } finally { flow.close(); }
+});
+
+
+test('an unanswered ticket question prevents observable design/planner invocation', () => {
+  const flow = scenario(); const original = childProcess.spawnSync;
+  let question: DecisionChange | undefined;
+  try {
+    childProcess.spawnSync = ((...args: any[]) => {
+      const result = (original as any)(...args);
+      if (args[1]?.[1] === 'understand' && result.status === 0) {
+        const store = new ProjectStore(flow.database);
+        try {
+          const feature = store.get('project-1', 'feature-1'); assert.ok(feature?.kind === 'feature_revision');
+          const time = new Date().toISOString();
+          question = { kind: 'decision_change', id: 'owner-question-before-design', projectId: 'project-1', schemaVersion: 1,
+            revision: 1, createdAt: time, updatedAt: time, questionOrChange: 'Allow changing the connection?',
+            affectedRecords: [ref(feature)], rationale: 'Owner input required', disposition: 'proposed',
+            sourceRefs: [recordSource(feature)], scopeChanges: [], choice: { kind: 'product', state: 'open' } };
+          applyCommand(store, { schemaVersion: 1, id: 'ask-owner', projectId: 'project-1', issuedAt: time,
+            idempotencyKey: 'ask-owner', command: 'record_decision_suggestion', targetId: question.id, expectedRevision: 0,
+            payload: { decision: question } });
+        } finally { store.close(); }
+      }
+      return result;
+    }) as typeof original;
+    syncBuiltinESMExports();
+    assert.throws(() => runFeature(flow.config, 'plan'), /ticket_awaiting_owner/);
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line).step);
+    assert.deepEqual(calls, ['understand']);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+    const store = new ProjectStore(flow.database);
+    try {
+      assert.ok(question);
+      applyCommand(store, buildEditCommand({ kind: 'answer', decision: question }, { answer: 'Yes', reason: 'Owner answer' },
+        'owner-answer', new Date().toISOString()));
+      assert.doesNotThrow(() => assertNoOwnerQuestions(store.history('project-1'), 'feature-1'));
+      assert.equal(store.records('project-1').filter(record => record.kind === 'request').length, 1);
+    } finally { store.close(); }
+  } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); flow.close(); }
 });

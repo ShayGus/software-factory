@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { RecordsSchema, ProjectStore, reviewProduct, parseRoborevResult, readRoborevResult, snapshotDelivery,
   stepAgentCommand, validateRecords, validateReviewForCompletion, type Assignment, type CriterionResult, type FactoryRecord,
-  ref, recordSource, planReadinessFindings, type StageRevision, type ProductVerdict, type QualityResult } from '../src/index.js';
+  checkFactoryMerge, ref, recordSource, planReadinessFindings, type StageRevision, type ProductVerdict, type QualityResult } from '../src/index.js';
 import { fakeJudgeOptions } from './judge-helper.js';
 
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
@@ -685,4 +685,32 @@ test('aggregate quality cache preserves opposite repository verdicts at a shared
     assert.deepEqual(repeat.review.conformance?.technicalReviews.map((result) => result.verdict), ['failed', 'passed']);
     assert.equal(repeat.review.outcome, 'failed');
   } finally { flow.close(); rmSync(other, { recursive: true, force: true }); }
+});
+
+
+test('factory merge requires a passing full product review for the exact head and mapped ticket', () => {
+  const flow = setup();
+  try {
+    flow.git('remote', 'add', 'origin', 'git@github.com:example/factory.git');
+    const project = flow.store.get('project-1', 'project-1'); assert.ok(project?.kind === 'project');
+    const decision = { kind: 'decision_change', id: 'bind-project', projectId: 'project-1', schemaVersion: 1,
+      revision: 1, createdAt: at, updatedAt: at, questionOrChange: 'Bind native repository', affectedRecords: [ref(project)],
+      rationale: 'Test native project binding', disposition: 'selected', sourceRefs: [{ uri: 'fixture:registration' }], scopeChanges: [] };
+    flow.store.mutate({ schemaVersion: 1, id: 'bind', projectId: 'project-1', issuedAt: at, idempotencyKey: 'bind',
+      command: 'record_decision_suggestion', targetId: project.id, expectedRevision: project.revision, payload: { decision } },
+      () => [decision, { ...project, revision: project.revision + 1, repositories: [{ uri: flow.directory }], firstMateHomeRef: flow.directory }]);
+    const registry = { version: 1, projects: [{ home: flow.directory, database: flow.db, projectId: 'project-1', agentConfig: '/unused' }] };
+    const check = (head = flow.commit, task = 'pilot-build') => checkFactoryMerge(registry, flow.directory, 'https://github.com/example/factory', task, head);
+    assert.throws(() => check(), /requires_passing_product_review_for_head/);
+    flow.run(failure('wrong_implementation', 'planConformance', goodCode));
+    assert.throws(() => check(), /requires_passing_product_review_for_head/);
+    const passed = reviewProduct(flow.store, { ...flow.input, reviewId: 'passing-final', idempotencyKey: 'passing-final' },
+      fakeJudgeOptions({ result: JSON.stringify(passing()) }), flow.reader);
+    assert.equal(passed.review.outcome, 'passed');
+    assert.equal(check().managed, true);
+    assert.throws(() => check('b'.repeat(40)), /requires_passing_product_review_for_head/);
+    assert.throws(() => check(flow.commit, 'unmapped-task'), /ticket_missing_or_ambiguous/);
+    assert.throws(() => checkFactoryMerge(registry, flow.directory, 'https://github.com/example/other', 'pilot-build', flow.commit), /repository_context_mismatch/);
+    assert.deepEqual(checkFactoryMerge(registry, flow.directory, 'https://github.com/example/other', 'unmapped', flow.commit), { ok: true, managed: false });
+  } finally { flow.close(); }
 });

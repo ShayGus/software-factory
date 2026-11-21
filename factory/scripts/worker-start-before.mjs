@@ -6,7 +6,7 @@ import { parseStrictJson } from '../dist/src/strict-json.js';
 try {
   if (process.argv.length !== 3) throw new Error('usage: worker-start-before.mjs /absolute/hook-projects.json');
   const report = checkStartingWorker(parseStrictJson(readFileSync(process.argv[2], 'utf8')),
-    parseStrictJson(readFileSync(0, 'utf8')));
+    parseStrictJson(readFileSync(0, 'utf8')), {});
   process.stdout.write(JSON.stringify(report) + '\n');
   process.exitCode = report.ok ? 0 : 1;
 } catch (error) {

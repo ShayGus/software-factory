@@ -1,3 +1,4 @@
+import { assertNoOwnerQuestions } from './owner-questions.js';
 import { bundleUrl } from './ui-bundle.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -38,6 +39,11 @@ export function recordStage(store: ProjectStore, input: unknown) {
     if (feature?.kind !== 'feature_revision' || !samePlanningRef(feature, stage.feature)) {
       throw new StoreError('conflict', 'stage_requires_current_feature_revision');
     }
+    if (stage.stage !== 'understand') {
+      assertNoOwnerQuestions(history, stage.feature.id);
+      assertNoOwnerQuestions([...history, ...data.records], stage.feature.id);
+    }
+    if (data.records.some(record => record.kind === 'decision_change' && record.answer)) throw new StoreError('validation', 'owner_answers_require_answer_operation');
     const previous = history.filter((record) => record.id === stage.id).at(-1);
     if (previous?.kind === 'stage_revision' && (previous.stage !== stage.stage || previous.feature.id !== stage.feature.id)) {
       throw new StoreError('validation', 'stage_identity_change');
@@ -175,6 +181,7 @@ export function designPlanFeature(store: ProjectStore, input: unknown) {
   const result = store.mutate(command, (history) => {
     if (payload.plan.readiness.ready) throw new StoreError('validation', 'use_readiness_check_to_record_ready_plan');
     if (payload.feature) {
+      assertNoOwnerQuestions(history, payload.feature.id);
       const current = history.filter((entry) => entry.id === payload.feature!.id).at(-1);
       if (current?.kind !== 'feature_revision' || !samePlanningRef(current, payload.feature)) {
         throw new StoreError('conflict', 'design_requires_current_feature_revision');

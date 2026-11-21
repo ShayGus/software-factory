@@ -174,7 +174,7 @@ const candidate=${JSON.stringify(data)}+'/'+process.argv[2]+'/launch-brief.md';
 const mode=JSON.parse(readFileSync(${JSON.stringify(join(root, 'mode.json'))},'utf8'));
 const text='# Current worker role contract\\nYou are a crewmate.\\n\\n'+readFileSync(source,'utf8')+(mode.narrow?'\\nImplement feature X for ERPNext only.\\n':'');writeFileSync(candidate,text);
 writeFileSync(${JSON.stringify(join(root, 'spawn-args.json'))},JSON.stringify(process.argv.slice(2)));
-const event={version:1,event:'worker.start.before',operation:'spawn',home:process.env.FM_HOME,task_id:process.argv[2],source_brief_path:source,brief_path:candidate,brief_sha256:createHash('sha256').update(text).digest('hex')};
+const event={version:1,event:'worker.start.before',operation:'spawn',home:process.env.FM_HOME,project:process.argv[3],kind:'ship',task_id:process.argv[2],source_brief_path:source,brief_path:candidate,brief_sha256:createHash('sha256').update(text).digest('hex')};
 const checked=spawnSync(${JSON.stringify(script)},[${JSON.stringify(hookRegistry)}],{input:JSON.stringify(event),encoding:'utf8'});
 writeFileSync(${JSON.stringify(join(root, 'hook-result.json'))},checked.stdout||checked.stderr);
 if(checked.status!==0) process.exit(1);
@@ -187,6 +187,14 @@ import assert from 'node:assert/strict';assert.deepEqual(process.argv.slice(2,4)
 process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict},job:{id:42,git_ref:process.argv[4],status:'done',job_type:'review'}}));`);
   const project = { ...baseline.find((record) => record.kind === 'project')!, repositories: [{ uri: repository }], firstMateHomeRef: home };
   const runtime = fakeRuntime(home);
+  mkdirSync(join(home, 'bin'));
+  writeFileSync(join(home, 'bin/fm-fleet-snapshot.sh'), `#!${process.execPath}
+const {execFileSync}=require('node:child_process');const fs=require('node:fs');
+const snapshot=JSON.parse(execFileSync(${JSON.stringify(runtime.executable)},[],{encoding:'utf8'}));
+const native=JSON.parse(fs.readFileSync(${JSON.stringify(wrapper.statePath)},'utf8'));
+snapshot.backlog.records=Object.values(native.tasks).map((task,i)=>({id:task.id,order:i+1,state:task.state,kind:task.kind,repo:task.repo,hold_reason:task.hold?.reason??null,blocked_by_ids:task.deps.filter(d=>d.type==='blocked-by').map(d=>d.id)}));
+process.stdout.write(JSON.stringify(snapshot));
+`, {mode:0o755});
   const config: z.input<typeof FeatureRunConfigSchema> = { version: 1, project, database, runDirectory, agentConfig,
     hookRegistry, requestFile, clientRequestId: 'milestone', taskId: 'milestone-worker', repository,
     firstMate: { home, snapshotExecutable: runtime.executable, dataDirectory: data, briefExecutable: brief, spawnExecutable: spawn, inboxExecutable: inbox,

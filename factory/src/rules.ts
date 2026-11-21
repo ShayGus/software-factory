@@ -1,3 +1,4 @@
+import { unansweredOwnerQuestions } from './owner-questions.js';
 import { correctionTargetsAttempt, outstandingTaskCorrections, unresolvedTaskCorrections, correctionOrder, type TrackedCorrection } from './correction-state.js';
 import { activeGuidance, learningKey } from './learning-context.js';
 import { reusableAnswer } from './decision-context.js';
@@ -911,6 +912,8 @@ export function validateAssignmentForDispatch(input: unknown, assignmentRef: Ref
   const design = ctx.get(owner, owner.design, 'design_revision', 'design');
   if (!plan?.readiness.ready || design?.sourceComparison.result !== 'passed') ctx.add(owner, 'plan_not_ready', 'plan', 'Design/plan not ready');
   if (owner.feature) {
+    for (const question of unansweredOwnerQuestions(validated.data, owner.feature.id)) ctx.add(owner,
+      'ticket_awaiting_owner', 'feature', `${question.id}@${question.revision}: ${question.questionOrChange}`);
     const assigned = ctx.get(owner, owner.feature, 'feature_revision', 'feature');
     const current = ctx.current.get(owner.feature.id);
     if (assigned && current?.kind === 'feature_revision') {

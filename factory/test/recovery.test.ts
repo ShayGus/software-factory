@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,8 +18,10 @@ function setup(t: TestContext, onlyProject = false) {
   const home = mkdtempSync(join(tmpdir(), 'sf-recovery-'));
   writeFileSync(join(home, 'Software_Factory_Design.md'), 'Recorded design source');
   const database = join(home, 'store.sqlite'); let store = new ProjectStore(database);
-  if (onlyProject) initializeProject(store, baseline.find((record) => record.kind === 'project'));
-  else store.importProject({ schemaVersion: 1, projectId, history: baseline.filter((record) => !['observation', 'guidance_revision'].includes(record.kind)), receipts: [] });
+  execFileSync('git', ['-C', home, 'init', '-q']);
+  const bound = baseline.map(record => record.kind === 'project' ? { ...record, firstMateHomeRef: home, repositories: [{ uri: home }] } : record);
+  if (onlyProject) initializeProject(store, bound.find(record => record.kind === 'project'));
+  else store.importProject({ schemaVersion: 1, projectId, history: bound.filter((record) => !['observation', 'guidance_revision'].includes(record.kind)), receipts: [] });
   const tasks = fakeTaskWrapper(home, true, database);
   const runtime = fakeRuntime(home);
   const adapter = { fmHome: home, tasksExecutable: tasks.executable, snapshotExecutable: runtime.executable };
@@ -284,7 +286,7 @@ for (const mode of ['pause', 'hand_back'] as const) test(`disable ${mode} leaves
   assert.equal(flow.tasks.read().calls.some((call) => call.args.includes('exit') || call.args.includes('done')), false);
   assert.throws(() => reconcileManagedTask(flow.store, projectId, pending.operation.id, flow.adapter), /disabled/);
   assert.deepEqual(checkStartingWorker({ version: 1, projects: [{ home: flow.home, projectId, database: flow.database,
-    agentConfig: join(flow.home, 'unused.json') }] }, { version: 1, event: 'worker.start.before', home: flow.home,
+    agentConfig: join(flow.home, 'unused.json') }] }, { version: 1, event: 'worker.start.before', home: flow.home, project: flow.home,
     task_id: 'pilot-build', source_brief_path: null, brief_path: null, brief_sha256: null }), { ok: true, managed: false });
   // A malformed observation keeps the gate closed.
   const broken = flow.executable('bad-snapshot.cjs', "process.stdout.write('{}');");
@@ -535,12 +537,12 @@ test('review 1299-8: successful restore retires its artifact gate before normal 
   } finally { restored.close(); }
 });
 
-test('review 1299-10: a reconciling project does not block unmanaged tasks in its FirstMate home', t => {
+test('a reconciling factory project cannot launch unmapped tasks', t => {
   const flow = setup(t); const broken = flow.executable('broken.cjs', "process.stdout.write('{}');");
   assert.throws(() => reconcileProject(flow.store, projectId, { ...flow.adapter, snapshotExecutable: broken }));
-  assert.deepEqual(checkStartingWorker({ version: 1, projects: [{ home: flow.home, projectId, database: flow.database,
-    agentConfig: join(flow.home, 'unused.json') }] }, { version: 1, event: 'worker.start.before', home: flow.home,
-    task_id: 'unmanaged-task', source_brief_path: null, brief_path: null, brief_sha256: null }), { ok: true, managed: false });
+  assert.throws(() => checkStartingWorker({ version: 1, projects: [{ home: flow.home, projectId, database: flow.database,
+    agentConfig: join(flow.home, 'unused.json') }] }, { version: 1, event: 'worker.start.before', home: flow.home, project: flow.home,
+    task_id: 'unmanaged-task', source_brief_path: null, brief_path: null, brief_sha256: null }), /requires_reconciliation/);
 });
 
 
