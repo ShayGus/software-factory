@@ -239,6 +239,9 @@ For publishing runs, each sub-task receives a native local-only brief and starts
 FirstMate initializes that branch on the first start.
 After the sub-task passes review, the guarded local landing fast-forwards the ticket branch to its reviewed commit.
 Preparation and reviews are single-use; recover failures using saved inputs and existing individual commands with deliberate new keys, rather than deleting markers and blindly replaying effects.
+Planning recovery preserves its mapped feature and recorded task operations; [run-feature.mjs](../scripts/run-feature.mjs) owns the resume command and guards.
+New repository citations are copied from the run's recorded Git baseline and pinned for task preparation.
+For missing external references on a checked run, provide approved HTTPS snapshots through the runner's resume command.
 
 Review each producer before completing its normal FirstMate delivery and releasing consumers.
 A slice review returns `taskOutcome: passed` only when that task's own assigned criteria, worker results and exact-commit technical evidence pass the shared task-delivery rules.
