@@ -10,7 +10,7 @@ import { ProjectStore } from './store.js';
 import { currentAssignmentAttempts, currentTaskMappings } from './task-readiness.js';
 import { parseStrictJson } from './strict-json.js';
 import { validateReviewForCompletion } from './rules.js';
-import { readTicketDelivery, reviewedTicketIntent, ticketDeliveryMarker, ticketDeliveryStartCommand, verifyTicketBranch } from './ticket-delivery.js';
+import { readTicketDelivery, reviewedTicketIntent, reviewedTicketNotes, ticketDeliveryMarker, ticketDeliveryStartCommand, verifyTicketBranch } from './ticket-delivery.js';
 
 const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
 export const WorkerHookConfigSchema = FactoryProjectsSchema;
@@ -53,7 +53,8 @@ function checkTicketDeliveryWorker(store: ProjectStore, projectId: string, event
     !validateReviewForCompletion(history, review).ok) throw fail();
   const ticket = review.conformance.currentTicket;
   const manifest = z.object({ requestId: z.string() }).parse(parseStrictJson(readFileSync(join(runDirectory, 'planned.json'), 'utf8')));
-  if ((ticket && ticket.id !== event.task_id) || intent !== reviewedTicketIntent(history, review, manifest.requestId)) throw fail();
+  if ((ticket && ticket.id !== event.task_id) || intent !== reviewedTicketIntent(history, review, manifest.requestId) ||
+    (delivery.reviewNotes ?? '') !== reviewedTicketNotes(history, review)) throw fail();
   for (const reference of review.assignments) {
     const assignment = store.get(projectId, reference.id, reference.revision);
     if (assignment?.kind !== 'assignment' || !mappings.some((mapping) => mapping.firstMateTaskId === assignment.firstMateTaskId) ||

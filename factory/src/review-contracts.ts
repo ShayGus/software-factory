@@ -5,6 +5,18 @@ import { WorkflowAgentProfileSchema } from './agent-profiles.js';
 import { parseStrictJson } from './strict-json.js';
 
 export const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u);
+export const FindingDispositionSchema = z.enum(['blocking', 'note']);
+export const QualityReviewerSchema = z.enum(['code', 'scope']);
+export const ClassifiedFindingSchema = z.strictObject({
+  disposition: FindingDispositionSchema, message: TextSchema,
+});
+export const QualityReviewOutputSchema = z.strictObject({
+  verdict: z.enum(['pass', 'fail', 'unable_to_review']), findings: z.array(ClassifiedFindingSchema),
+}).refine((result) => result.verdict === 'unable_to_review' ||
+  (result.verdict === 'fail') === result.findings.some((finding) => finding.disposition === 'blocking'));
+export type QualityReviewer = z.infer<typeof QualityReviewerSchema>;
+export type ClassifiedFinding = z.infer<typeof ClassifiedFindingSchema>;
+export const findingDirections = 'Classify every finding as blocking or note. Block only on a concrete bug, a security problem, or a violated requirement from the confirmed definition of done. Explain which of those applies and cite the exact requirement for a definition-of-done blocker. Record other observations, including optional improvements and harmless extras, as notes.';
 const TechnicalFindingSchema = z.strictObject({
   severity: TextSchema, location: TextSchema, problem: TextSchema, fix: TextSchema,
 });
@@ -15,6 +27,7 @@ export const QualityResultSchema = z.strictObject({
   verdict: z.enum(['passed', 'failed', 'uncertain']), artifact: ArtifactSchema,
   observedAt: TimestampSchema, raw: TextSchema,
   scopeDigest: TextSchema.optional(),
+  reviewer: QualityReviewerSchema.optional(),
   advisoryAcceptance: z.strictObject({
     approval: EvidenceSchema, findings: z.union([TechnicalFindingsSchema, ScopeFindingsSchema]),
   }).optional(),
@@ -31,6 +44,7 @@ export function technicalReviewSatisfied(result: QualityResult): boolean {
     result.artifact.digest !== `sha256:${createHash('sha256').update(result.raw).digest('hex')}`) return false;
   try {
     const receipt = parseStrictJson(result.raw);
+    if (result.reviewer) return false;
     if (result.scopeDigest !== undefined) {
       const scope = z.object({ job_id: z.literal(result.jobId), prompt_digest: z.literal(result.scopeDigest), output: z.string(),
         job: z.object({ id: z.literal(result.jobId), git_ref: z.literal(`factory-scope-${result.scopeDigest.slice(-16)}`),
@@ -63,17 +77,18 @@ export const ProductVerdictSchema = z.strictObject({
   criteria: z.array(z.strictObject({
     criterion: RefSchema.nullable(), state: z.enum(['accomplished', 'failed', 'uncertain', 'out_of_scope']),
     behavior: TextSchema, quotes: z.array(ReviewQuoteSchema).min(1), limitations: z.array(TextSchema),
-  })).min(1),
+  })),
   findings: z.array(z.strictObject({
     check: z.enum(['sourceComparison', 'instructionFidelity', 'planConformance']),
     type: z.enum(['missing_behavior', 'wrong_implementation', 'original_request_omission', 'narrowed_generality', 'instruction_mismatch', 'unrequested_addition']),
-    message: TextSchema, quotes: z.array(ReviewQuoteSchema).min(1),
+    message: TextSchema, quotes: z.array(ReviewQuoteSchema).min(1), disposition: FindingDispositionSchema.optional(),
   })),
   suggestions: z.array(TextSchema), unresolvedQuestions: z.array(TextSchema),
-}).refine((value) => value.findings.every((finding) => value[finding.check] !== 'passed'),
-  'A finding cannot accompany a passing comparison')
+}).refine((value) => value.findings.every((finding) => finding.disposition === 'note' || value[finding.check] !== 'passed'),
+  'A blocking finding cannot accompany a passing comparison')
   .refine((value) => (['sourceComparison', 'instructionFidelity', 'planConformance'] as const).every((check) =>
-    value[check] !== 'failed' || value.findings.some((finding) => finding.check === check)), 'Failed comparisons need findings');
+    value[check] !== 'failed' || value.findings.some((finding) => finding.check === check && finding.disposition !== 'note')),
+  'Failed comparisons need blocking findings');
 export type ProductVerdict = z.infer<typeof ProductVerdictSchema>;
 export const DeliveredFileSchema = z.strictObject({
   path: TextSchema, text: z.string(), artifact: ArtifactSchema, sizeBytes: z.number().int().positive().optional(),
@@ -81,6 +96,7 @@ export const DeliveredFileSchema = z.strictObject({
 export const ProductConformanceSchema = z.strictObject({
   inputDigest: TextSchema, profile: WorkflowAgentProfileSchema, sessionId: TextSchema,
   currentTicket: ReviewTicketSchema.optional(),
+  previousRound: RefSchema.optional(),
   verdict: ProductVerdictSchema.nullable(), error: TextSchema.optional(),
   reusedProductReview: RefSchema.optional(),
   deliveredFiles: z.array(DeliveredFileSchema).min(1), technicalReviews: z.array(QualityResultSchema),

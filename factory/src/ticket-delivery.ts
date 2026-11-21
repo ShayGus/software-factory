@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { CommitSchema } from './review-contracts.js';
 import { digestText, requiredAssignmentContext } from './instruction-context.js';
 import { planningRecord } from './planning-checks.js';
+import { deliveryReviewFindings } from './product-review.js';
 import type { FactoryRecord, ProductReview } from './records.js';
 import { parseStrictJson } from './strict-json.js';
 
@@ -13,6 +14,7 @@ const TicketDeliverySchema = z.object({
   taskId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u),
   mode: z.literal('no-mistakes'), branch: z.string(), repository: absolute, commit: CommitSchema,
   intentFile: absolute, intentDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  reviewNotes: z.string().min(1).optional(),
 });
 
 export function readTicketDelivery(path: string, expectedIntentFile?: string) {
@@ -55,6 +57,21 @@ export function reviewedTicketIntent(records: FactoryRecord[], review: ProductRe
   }
   const additional = [...ownerAnswers].filter((answer) => !ticketText.includes(answer.trim()));
   return additional.length ? `${ticketText}\n\n## Recorded owner answers\n\n${additional.join('\n\n')}` : ticketText;
+}
+
+export function reviewedTicketNotes(records: FactoryRecord[], review: ProductReview): string {
+  const notes = new Set<string>();
+  let round: ProductReview | undefined = review;
+  while (round) {
+    for (const { reviewer, message, disposition } of deliveryReviewFindings(round)) {
+      if (disposition !== 'note') continue;
+      const text = message.replace(/\s+/gu, ' ').trim().replace(/[&<>@]/gu, (char) => `&#${char.charCodeAt(0)};`);
+      notes.add(`- **${reviewer}** ${text}`);
+    }
+    const previous: FactoryRecord | undefined = round.conformance?.previousRound && planningRecord(records, round.conformance.previousRound);
+    round = previous?.kind === 'product_review' && previous.id === round.id && previous.revision < round.revision ? previous : undefined;
+  }
+  return notes.size ? `## Factory review notes\n\n${[...notes].join('\n')}` : '';
 }
 
 export const ticketDeliveryMarker = 'Factory ticket delivery: ';

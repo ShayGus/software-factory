@@ -299,12 +299,14 @@ for (const existingTicket of [false, true]) test(`a publishing run gives both su
     assert.equal(existsSync(join(config.runDirectory, 'ticket-delivery.json')), false);
     git('update-ref', localRef, finalCommit, firstCommit);
     writeFileSync(config.requestFile, 'A mutable replacement cannot become the published ticket.');
+    flow.mode({ codeNote: true, scopeNote: true, productNote: true });
     const result = runFeature(config, 'review-all') as any;
     assert.equal(result.review.outcome, 'passed');
     const deliveryPath = join(config.runDirectory, 'ticket-delivery.json');
     const intentFile = join(config.runDirectory, 'ticket-intent.md');
+    const reviewNotes = '## Factory review notes\n\n- **code** Code observation\n- **scope** Scope observation\n- **product** Product observation';
     assert.deepEqual(result.ticketDelivery, { taskId: parent.id, branch, mode: 'no-mistakes', yolo: 'off',
-      repository: config.repository, commit: finalCommit, intentFile, intentDigest: digestText(expectedIntent) });
+      repository: config.repository, commit: finalCommit, intentFile, intentDigest: digestText(expectedIntent), reviewNotes });
     assert.deepEqual(JSON.parse(readFileSync(deliveryPath, 'utf8')), result.ticketDelivery);
     assert.equal(readFileSync(intentFile, 'utf8'), expectedIntent);
 
@@ -325,6 +327,7 @@ fs.writeFileSync(${JSON.stringify(prBody)}, '## What Changed\\n\\nSynthetic pipe
     assert.equal(deliveryBrief.status, 0, deliveryBrief.stderr);
     assert.ok(deliveryBrief.stdout.includes(`git switch --no-guess ${branch}`));
     assert.match(deliveryBrief.stdout, /ticket-validation\.mjs' start '/u);
+    assert.match(deliveryBrief.stdout, /pr-body action/u);
     assert.doesNotMatch(deliveryBrief.stdout, /^Base branch: /mu);
     const launch = join(flow.data, 'ticket-delivery-brief.md');
     writeFileSync(launch, deliveryBrief.stdout);
@@ -345,7 +348,12 @@ fs.writeFileSync(${JSON.stringify(prBody)}, '## What Changed\\n\\nSynthetic pipe
     const started = validate('start');
     assert.equal(started.status, 0, started.stderr);
     const pr = readFileSync(prBody, 'utf8');
-    const checked = validate('check-pr', pr);
+    assert.match(validate('check-pr', pr).stderr, /does not contain the Factory review notes/);
+    const composed = validate('pr-body', pr);
+    assert.equal(composed.status, 0, composed.stderr);
+    assert.ok(composed.stdout.endsWith(reviewNotes + '\n'));
+    assert.equal(validate('pr-body', composed.stdout).stdout, composed.stdout);
+    const checked = validate('check-pr', composed.stdout);
     assert.equal(checked.status, 0, checked.stderr);
     assert.equal(validate('check-pr', pr.split('## Definition of done (confirmed)')[0]).status, 1);
     const changedIntent = expectedIntent + '\nAppended outside the review.';

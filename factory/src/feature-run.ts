@@ -20,7 +20,7 @@ import { planReviewAuthority, planReviewDirections, PlanRevisionSchema, planRevi
 import { BriefSpecEditsSchema, ComparisonSchema, EvidenceSchema, RefSchema, SourceRefSchema, TextSchema, type Ref } from './primitives.js';
 import { DecisionChangeSchema, DesignRevisionSchema, DetailedPlanTaskSchema, ImplementationPlanRevisionSchema,
   ProjectSchema, ProductReviewSchema, UnderstandingRevisionSchema, type Assignment, type FactoryRecord, type ProductReview, type StageRevision } from './records.js';
-import { ReviewProductInputSchema } from './product-review.js';
+import { deliveryReviewFindings, ReviewProductInputSchema } from './product-review.js';
 import { CommitSchema, ReviewTicketSchema } from './review-contracts.js';
 import { ProjectStore, StoreError } from './store.js';
 import { parseStrictJson } from './strict-json.js';
@@ -28,7 +28,7 @@ import { validateTaskReviewForDelivery } from './rules.js';
 import { readFeatureReviewTicket, TaskAdapterOptionsSchema } from './tasks.js';
 import { WorkerHookConfigSchema } from './worker-start-hook.js';
 import { assertFactoryReviewHeads } from './factory-locks.js';
-import { reviewedTicketIntent } from './ticket-delivery.js';
+import { reviewedTicketIntent, reviewedTicketNotes } from './ticket-delivery.js';
 
 const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
 const safeId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
@@ -257,7 +257,7 @@ function bootstrapRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
 }
 
 /** A deliberately small runbook executor: existing commands own all mutations.
- * No scheduler, polling, quality enqueue or lifecycle hook install.
+ * No scheduler, worker polling or lifecycle hook install.
  * Bootstrap replays the existing idempotent init; start observes FirstMate to
  * recover its durable operation after an ambiguous result. */
 export function runFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string, references?: unknown) {
@@ -930,28 +930,17 @@ Each detailed task must require its worker to commit code, verify each assigned 
       if (eligibility.ok) return { ...result, taskOutcome: 'passed' as const };
       save('task-review-eligibility', eligibility);
     } else if (review.outcome === 'passed') return result;
-    if (!fm.sendExecutable || scopeRound > maxRevisionRounds || !review.conformance || review.conformance.error) {
+    if (!fm.sendExecutable || scopeRound > maxRevisionRounds || !review.conformance) {
       throw failed();
     }
-    const { verdict, technicalReviews, deliveredFiles, deliveries: reviewedDeliveries } = review.conformance;
     const store = new ProjectStore(config.database, { readOnly: true });
     try {
       const snapshot = readFleetSnapshot({ fmHome: fm.home, snapshotExecutable: fm.snapshotExecutable });
       const pendingTasks = [];
       for (const [index, taskId] of taskIds.entries()) {
         const delivery = deliveries[index]!;
-        const reviewed = reviewedDeliveries?.[index];
-        const criteria = verdict?.criteria.filter((criterion) => ['failed', 'uncertain'].includes(criterion.state) &&
-          delivery.results.some((entry) => isDeepStrictEqual(entry.criterion, criterion.criterion))) ?? [];
-        const technical = reviewed?.technicalReviewIndexes?.map((entry) => technicalReviews[entry])
-          .filter((entry) => entry && entry.verdict !== 'passed') ?? [];
-        const findings = verdict?.findings.filter((finding) => {
-          const quotes = finding.quotes.filter((quote) => quote.source === 'delivery');
-          return !quotes.length || !reviewed || deliveredFiles.some((file) =>
-            reviewed.fileArtifacts.some((artifact) => isDeepStrictEqual(artifact, file.artifact)) &&
-            quotes.some((quote) => file.text.includes(quote.text)));
-        }) ?? [];
-        if (!criteria.length && !technical.length && !findings.length && !review.unresolvedQuestions.length) continue;
+        const findings = deliveryReviewFindings(review, index);
+        if (!findings.some((finding) => finding.disposition === 'blocking')) continue;
         const started = store.get(project.id, workerStartOperationId(project.id, `${taskId}-start`));
         const task = runtimeTask(snapshot, taskId, false);
         const generation = started?.kind === 'operation' && started.state === 'succeeded' &&
@@ -960,8 +949,8 @@ Each detailed task must require its worker to commit code, verify each assigned 
         if (!generation || !task || task.spawn_gen !== generation || task.project !== config.repository || !endpointAlive(snapshot, taskId)) {
           throw new Error(`product_review_worker_unavailable: ${taskId}; findings in ${reviewLog}`);
         }
-        const message = `Factory product review ${review.id}@${review.revision} found gaps in delivery ${delivery.deliveredArtifact.revision}. Correct only the findings that apply to your assignment. Commit the correction and replace the worker return at your existing path, increasing any previously returned criterion result revisions.\n\n` +
-          JSON.stringify({ criteria, findings, technical, unresolved: review.unresolvedQuestions }, null, 2);
+        const message = `Factory review ${review.id}@${review.revision} of delivery ${delivery.deliveredArtifact.revision} has blocking findings. Fix the blockers that apply to your assignment. Notes are for the PR description. Commit the correction and replace the worker return at your existing path, increasing any previously returned criterion result revisions.\n\n` +
+          JSON.stringify(findings, null, 2);
         invoke(fm.sendExecutable, [taskId, message], `review-feedback-${review.revision}-${taskId}`, true, false, undefined, generation);
         pendingTasks.push(taskId);
       }
@@ -1008,7 +997,8 @@ Each detailed task must require its worker to commit code, verify each assigned 
         writeFileSync(intentFile, intentText, { mode: 0o600 });
         intent = { intentFile, intentDigest: digestText(intentText) };
       }
-      const delivery = { ...ticket, repository: config.repository, commit: head, ...intent };
+      const notes = reviewedTicketNotes(history(), review);
+      const delivery = { ...ticket, repository: config.repository, commit: head, ...intent, ...(notes ? { reviewNotes: notes } : {}) };
       save('ticket-delivery', delivery);
       return { ...result, ticketDelivery: delivery };
     }

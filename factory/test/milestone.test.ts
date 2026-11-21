@@ -378,31 +378,30 @@ test('legacy return perfectly following a bad brief fails product review despite
   } finally { flow.close(); }
 });
 
-for (const gate of ['RoboRev', 'product'] as const) test(`${gate} independently blocks extras in an otherwise complete Factory delivery`, () => {
+for (const reviewer of ['scope', 'product'] as const) test(`${reviewer} records harmless extras as notes in a passing delivery`, () => {
   const confirmedDone = 'Deliver feature X across all connected systems through the common interface.';
   const flow = scenario({ bootstrap: true,
     originalRequest: `Build feature X for every connected system, ERPNext is only an example.\n\n## Definition of done (confirmed)\n${confirmedDone}` });
   try {
     flow.config.maxRevisionRounds = 0;
-    flow.mode({ extraScope: true, confirmedDone, productAcceptsExtra: gate === 'RoboRev', technicalAcceptsExtra: gate === 'product' });
+    flow.mode({ extraScope: true, confirmedDone, productAcceptsExtra: reviewer === 'scope', technicalAcceptsExtra: reviewer === 'product' });
     runFeature(flow.config, 'prepare');
     runFeature(flow.config, 'start');
-    assert.throws(() => runFeature(flow.config, 'review'), /review-product_failed/);
-    const { review } = JSON.parse(readFileSync(join(flow.config.runDirectory, 'review-product.stdout'), 'utf8'));
+    const { review } = runFeature(flow.config, 'review') as any;
     const { verdict, technicalReviews } = review.conformance;
-    assert.equal(review.outcome, 'failed');
+    assert.equal(review.outcome, 'passed');
     assert.ok(verdict.criteria.every((criterion: { state: string }) => criterion.state === 'accomplished'));
     assert.equal(technicalReviews[0].verdict, 'passed');
-    assert.equal(technicalReviews[1].verdict, gate === 'RoboRev' ? 'failed' : 'passed');
+    assert.equal(technicalReviews[1].verdict, 'passed');
     assert.equal(technicalReviews[1].commit, review.reviewedArtifacts[0].revision);
     const findings = [unrequestedOption, unrequestedTest];
-    if (gate === 'RoboRev') {
+    if (reviewer === 'scope') {
       const scoped = JSON.parse(JSON.parse(technicalReviews[1].raw).output);
-      assert.deepEqual(scoped.findings, findings);
+      assert.deepEqual(scoped.findings, findings.map((message) => ({ disposition: 'note', message })));
       assert.equal(verdict.planConformance, 'passed');
     } else {
-      assert.deepEqual(verdict.findings.map((finding: { type: string; message: string }) =>
-        [finding.type, finding.message]), findings.map((message) => ['unrequested_addition', message]));
+      assert.deepEqual(verdict.findings.map(({ disposition, message }: { disposition: string; message: string }) =>
+        [disposition, message]), findings.map((message) => ['note', message]));
     }
   } finally { flow.close(); }
 });
@@ -415,32 +414,46 @@ test('plan reviewer failure stops before a task or worker is created', () => {
   } finally { flow.close(); }
 });
 
-test('a failed product review sends scoped feedback to the original worker and reviews its new commit', () => {
+test('reviewers start together, send one finding list and check only their earlier findings and the fix diff', () => {
   const flow = scenario();
   try {
     const send = join(flow.root, 'send.mjs');
     const sent = join(flow.root, 'feedback.json');
     writeFileSync(send, `#!${process.execPath}
-import {writeFileSync} from 'node:fs';
-writeFileSync(${JSON.stringify(sent)},JSON.stringify({target:process.argv[2],message:process.argv[3],
- generation:process.env.FM_SEND_EXPECTED_SPAWN_GEN,idempotent:process.env.FM_SEND_IDEMPOTENT}));`, { mode: 0o755 });
+import {appendFileSync} from 'node:fs';
+appendFileSync(${JSON.stringify(sent)},JSON.stringify({target:process.argv[2],message:process.argv[3],
+ generation:process.env.FM_SEND_EXPECTED_SPAWN_GEN,idempotent:process.env.FM_SEND_IDEMPOTENT})+'\\n');`, { mode: 0o755 });
     const config = { ...flow.config, firstMate: { ...flow.config.firstMate, sendExecutable: send } };
-    flow.mode({ badDelivery: true, exposeWorkerGeneration: true });
+    flow.mode({ badDelivery: true, exposeWorkerGeneration: true, verifyReviewRound: true });
     runFeature(config, 'prepare');
     runFeature(config, 'start');
     const awaiting = runFeature(config, 'review') as any;
     assert.equal(awaiting.state, 'awaiting_worker_revision');
-    const feedback = JSON.parse(readFileSync(sent, 'utf8'));
+    const [feedback, ...others] = readFileSync(sent, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(others, []);
     assert.equal(feedback.target, config.taskId);
     assert.equal(feedback.generation, 'generation-1');
     assert.equal(feedback.idempotent, '1');
-    assert.match(feedback.message, /ERPNext only violates original generality/u);
-    flow.mode({ returnRevision: 2 });
+    const findings = JSON.parse(feedback.message.split('\n\n')[1]);
+    assert.deepEqual(findings.map(({ reviewer, disposition, message }: any) => [reviewer, disposition, message]), [
+      ['code', 'blocking', 'code blocker'], ['code', 'note', 'Code observation'], ['scope', 'blocking', 'scope blocker'],
+      ['product', 'blocking', 'ERPNext only violates original generality'], ['product', 'blocking', 'ERPNext only violates original generality'],
+    ]);
+    const previousCommit = awaiting.review.reviewedArtifacts[0].revision;
+    flow.mode({ returnRevision: 2, verifyReviewRound: true, previousCommit });
     execFileSync(flow.returnWorker, [config.taskId]);
     const revised = runFeature(config, 'review') as any;
     assert.equal(revised.review.outcome, 'passed');
     assert.equal(revised.review.revision, 2);
-    assert.notEqual(revised.review.reviewedArtifacts[0].revision, awaiting.review.reviewedArtifacts[0].revision);
+    const revisedCommit = revised.review.reviewedArtifacts[0].revision;
+    assert.notEqual(revisedCommit, previousCommit);
+    assert.equal(revised.review.conformance.verdict.criteria.length, 2);
+    const events = readFileSync(join(flow.root, 'review-events.jsonl'), 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+    for (const commit of [previousCommit, revisedCommit]) {
+      assert.deepEqual(events.filter((event) => event.commit === commit).map((event) => event.phase),
+        ['launch', 'launch', 'product', 'collect', 'collect']);
+    }
+    assert.equal(readFileSync(sent, 'utf8').trimEnd().split('\n').length, 1);
   } finally { flow.close(); }
 });
 
