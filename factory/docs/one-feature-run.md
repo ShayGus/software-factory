@@ -258,6 +258,10 @@ No phase polls workers, changes native completion state, installs hooks, enqueue
 
 ## Worker-start hook
 
+The same project registry enables the Factory check on text sent through `fm-send.sh` to its recorded workers.
+New work must fit the confirmed request and assigned plan before a message is delivered.
+Use the existing `--resolve-key` path for answers to open worker decisions, and keep owner wording and owner answers on review findings in the ticket records so their exact text can be forwarded.
+
 The executable `scripts/worker-start-before.mjs` accepts the absolute path of an
 operator-controlled project registry as its only argument and reads FirstMate's
 version 1 event JSON from stdin. After successful database bootstrap, create the

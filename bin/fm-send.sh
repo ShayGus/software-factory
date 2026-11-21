@@ -247,6 +247,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Home-local command hooks: docs/lifecycle-hooks.md.
 # shellcheck source=bin/fm-hook-lib.sh
 . "$SCRIPT_DIR/fm-hook-lib.sh"
+# shellcheck source=bin/fm-factory-lock-lib.sh
+. "$SCRIPT_DIR/fm-factory-lock-lib.sh"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # shellcheck source=bin/fm-gate-refuse-lib.sh
@@ -932,6 +934,26 @@ else
   if [ -z "${MESSAGE//[[:space:]]/}" ]; then
     echo "error: a text steer requires a nonempty message; nothing was sent (an empty marked request would deliver only marker and correlation bytes and leave the parent waiting on a reply to nothing)" >&2
     exit 1
+  fi
+  if [ -n "$TARGET_META" ] && [ "$TARGET_BACKEND" != remote ] && [ "$(fm_meta_get "$TARGET_META" kind)" != secondmate ]; then
+    steer_project=$(fm_meta_get "$TARGET_META" project)
+    if [ -n "$steer_project" ]; then
+      steer_questions=
+      if [ -n "$RESOLVE_STATUS_KEYS" ]; then
+        steer_questions=$(status_own_open_decisions "$RESOLVE_STATUS_FILE" | while IFS=$'\t' read -r key verb note; do
+          case " $RESOLVE_STATUS_KEYS " in
+            *" $key "*) [ "$verb" != needs-decision ] || printf '%s\n' "$note" ;;
+          esac
+        done)
+      fi
+      steer_generation=$(fm_meta_get "$TARGET_META" spawn_gen)
+      fm_factory_lock steer "$steer_project" "$(fm_send_id_from_meta "$TARGET_META")" "$steer_questions" < <(printf '%s' "$MESSAGE") || exit 1
+      if [ "$(fm_meta_get "$TARGET_META" project)" != "$steer_project" ] ||
+        [ "$(fm_meta_get "$TARGET_META" spawn_gen)" != "$steer_generation" ]; then
+        echo 'error: steer target changed during the Factory check; nothing was sent' >&2
+        exit 1
+      fi
+    fi
   fi
   if [ "$TARGET_BACKEND" = remote ]; then
     FM_SEND_REMOTE_BUDGET=${FM_SEND_REMOTE_BUDGET:-30}
