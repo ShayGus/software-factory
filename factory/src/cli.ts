@@ -55,6 +55,7 @@ All commands print JSON; chat-hook is silent on success. No settings are install
   review-product --db <sqlite> --input <ReviewProductInput JSON file>
                  --agent-config <ProjectAgentConfig JSON file>
                  [--run-directory <agent evidence output directory>]
+                 [--adapter-config <task adapter JSON file for a fresh ticket read>]
   learning-capture --db <sqlite> --input <CaptureLearningInput JSON file>
   learning-consolidate --db <sqlite> --input <ConsolidateLearningInput JSON file>
                  --agent-config <ProjectAgentConfig JSON file>
@@ -119,7 +120,8 @@ const optionsByCommand: Record<string, Record<string, { type: 'string'; multiple
   'check-plan': { db: valueOption, input: valueOption },
   'prepare-brief': { db: valueOption, input: valueOption },
   'check-brief': { db: valueOption, project: valueOption, assignment: valueOption, revision: valueOption, brief: valueOption, 'agent-config': valueOption, 'preparation-gate': valueOption, 'revision-rounds': valueOption },
-  'review-product': { db: valueOption, input: valueOption, 'agent-config': valueOption, 'run-directory': valueOption, 'revision-rounds': valueOption },
+  'review-product': { db: valueOption, input: valueOption, 'agent-config': valueOption, 'run-directory': valueOption, 'revision-rounds': valueOption,
+    'adapter-config': valueOption },
   findings: { db: valueOption, project: valueOption, plan: valueOption },
   stages: { db: valueOption, project: valueOption, feature: valueOption },
   unclassified: { db: valueOption, project: valueOption },
@@ -237,7 +239,8 @@ export function runCli(args: string[]): number {
         }
         case 'review-product': {
           const report = reviewProduct(store, jsonFile('input'), jsonFile('agent-config'), undefined, optional('run-directory'),
-            z.coerce.number().int().nonnegative().parse(optional('revision-rounds') ?? 0));
+            z.coerce.number().int().nonnegative().parse(optional('revision-rounds') ?? 0),
+            optional('adapter-config') ? TaskAdapterOptionsSchema.parse(jsonFile('adapter-config')) : undefined);
           output(report); return report.review.outcome === 'passed' ? 0 : 1;
         }
         case 'findings': output(planReadinessHistory(store, required('project'), required('plan'))); break;

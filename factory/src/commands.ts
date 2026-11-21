@@ -8,6 +8,7 @@ import {
   FeatureRevisionSchema, CriterionSchema, UnderstandingRevisionSchema, StageRevisionSchema,
   ProjectSchema, DependencySchema,
 } from './records.js';
+import { ReviewTicketSchema } from './review-contracts.js';
 
 const envelope = {
   schemaVersion: z.literal(1), id: IdSchema, projectId: IdSchema,
@@ -111,6 +112,7 @@ export const RecordReviewResultCommandSchema = z.strictObject({
     results: z.array(CriterionResultSchema), review: ProductReviewSchema.optional(),
     generation: z.strictObject({ repository: TextSchema, paths: z.array(TextSchema), maxSourceChars: z.number().int().positive(),
       baselineEvidence: z.array(EvidenceSchema), agentConfigDigest: TextSchema,
+      currentTicket: ReviewTicketSchema.optional(),
       additionalDeliveries: z.array(ReviewDeliveryTargetSchema).optional() }).optional(),
   }),
 });

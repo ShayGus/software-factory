@@ -120,7 +120,7 @@ For each task, use the returned native `taskId`:
    Keep each returned repository and commit readable through the final aggregate review; defer normal worktree cleanup until that review finishes.
    Preserve the return's criterion identities, limitations and evidence; do not manufacture a technical pass or use a result from a different commit.
    Run `run-feature.mjs review <configPath> <taskId>`.
-   It calls `review-product` against the original request and actual committed snapshots, with a separate reviewer and existing technical result.
+   It calls `review-product` against the current scope and actual committed snapshots, with a separate reviewer and existing technical result.
    For `awaiting_worker_revision`, keep the same worker and resume review on its revised return.
    When review exhausts its revisions or the original worker is unavailable, report the remaining findings and keep that task's delivery and dependents held.
    Keep unrelated eligible branches progressing.
@@ -133,7 +133,7 @@ For each task, use the returned native `taskId`:
    Continue with the next eligible task through the same commands and supervision.
 
 After every task has returned, run `run-feature.mjs review-all <configPath>`.
-This invokes the existing `review-product` command with all exact assignments and deliveries from one return snapshot taken at aggregate start, covering the whole original request and integration across slices.
+This invokes the existing `review-product` command with all exact assignments and deliveries from one return snapshot taken at aggregate start, covering the current ticket scope and integration across slices.
 If returns are missing, it reports `state: awaiting_worker_returns` and `pendingTasks`; resume aggregate review on later return wakes.
 For `awaiting_worker_revision`, resume aggregate review on a revised return from the named workers.
 Aggregate failure or pending work keeps the feature incomplete and never blocks an independently passing task's delivery.

@@ -160,6 +160,20 @@ class TaskProcessError extends Error {
   constructor(readonly code: string | undefined, readonly stdout: string, readonly stderr: string, message: string) { super(message); }
 }
 class DefinitiveTaskRejection extends Error {}
+function featureTaskMarker(projectId: string, featureId: string) {
+  return `Software Factory feature: ${stableId('feature', projectId, featureId)}`;
+}
+
+export function readFeatureReviewTicket(options: TaskAdapterOptions, projectId: string, featureId?: string, featureTaskId?: string) {
+  const id = featureTaskId ?? (featureId && stableId('feature-task', projectId, featureId));
+  if (!id) return;
+  const native = new TaskWrapper(options).read(id);
+  if (!native && featureTaskId) throw new Error(`review_ticket_missing: ${id}`);
+  const text = native?.body;
+  if (!text?.trim() || (featureId && text === featureTaskMarker(projectId, featureId))) return;
+  return { id, text };
+}
+
 export class TaskWrapper {
   readonly events: unknown[] = [];
   readonly env: NodeJS.ProcessEnv;
@@ -440,7 +454,7 @@ function reconcileTaskIntent(store: ProjectStore, projectId: string, operationId
     if (mapping.featureTaskId && mapping.disposition.state !== 'cancelled') {
       let parent = wrapper.read(mapping.featureTaskId);
       const specification = payload.featureTask;
-      const marker = `Software Factory feature: ${stableId('feature', projectId, mapping.feature!.id)}`;
+      const marker = featureTaskMarker(projectId, mapping.feature!.id);
       if (!parent && specification?.kind === 'new') {
         parent = wrapper.write(['add', mapping.featureTaskId, specification.title, '--kind', 'feature',
           '--repo', specification.repo, '--queue', '--body', marker, '--hold-reason', marker],

@@ -16,13 +16,13 @@ import { planningRecord, samePlanningRef } from './planning-checks.js';
 import { RecordStageInputSchema } from './planning.js';
 import { planReviewAuthority, planReviewDirections, PlanRevisionSchema, planRevisionDirections, reviseReviewedPlan } from './plan-review.js';
 import { BriefSpecEditsSchema, EvidenceSchema, RefSchema, type Ref } from './primitives.js';
-import { ProjectSchema, ProductReviewSchema, type Assignment, type FactoryRecord, type StageRevision } from './records.js';
+import { ProjectSchema, ProductReviewSchema, type Assignment, type FactoryRecord, type ProductReview, type StageRevision } from './records.js';
 import { ReviewProductInputSchema, snapshotDelivery } from './product-review.js';
 import { CommitSchema } from './review-contracts.js';
 import { ProjectStore, StoreError } from './store.js';
 import { parseStrictJson } from './strict-json.js';
 import { validateTaskReviewForDelivery } from './rules.js';
-import { TaskAdapterOptionsSchema, TaskWrapper } from './tasks.js';
+import { readFeatureReviewTicket, TaskAdapterOptionsSchema } from './tasks.js';
 import { WorkerHookConfigSchema } from './worker-start-hook.js';
 
 const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
@@ -267,8 +267,10 @@ function executeFeature(configInput: unknown, phase: FeatureRunPhase, selectedTa
   };
   const issuedAt = () => new Date().toISOString();
   let selectedPlan: FactoryRecord | undefined; let selectedDetailedTask: FactoryRecord | undefined; let selectedMappingId: string; let selectedRequestId: string;
-  const taskAdapter = save('task-adapter', { fmHome: fm.home, tasksExecutable: fm.tasksExecutable,
-    ...(fm.guardTaskId ? { guardTaskId: fm.guardTaskId } : {}) });
+  const taskOptions = { fmHome: fm.home, tasksExecutable: fm.tasksExecutable, guardTaskId: fm.guardTaskId };
+  const taskAdapter = save('task-adapter', taskOptions);
+  const readReviewTicket = (featureId?: string) =>
+    readFeatureReviewTicket(taskOptions, project.id, featureId, config.featureTaskId);
   if (phase === 'prepare' || phase === 'plan') {
     const publishesTicket = phase === 'plan' && fm.mode !== 'local-only';
     if (planningAuthorSteps.some(step => agents.steps[step].harness !== agents.steps.understand.harness)) {
@@ -355,8 +357,9 @@ Each detailed task must require its worker to commit code, verify each assigned 
       const plan = planningRecord(records, stage.artifact);
       if (plan?.kind !== 'implementation_plan_revision') throw new Error('run_plan_missing');
       const tasks = plan.deliverySequence.map((task) => planningRecord(records, task));
-      const authority = planReviewAuthority(request.originalText, [...records, ...decisions]);
-      const snapshot = { feature: stage.feature, detailStage: ref(stage), authority,
+      const currentTicket = config.featureTaskId ? readReviewTicket(stage.feature.id) : undefined;
+      const authority = planReviewAuthority(request.originalText, [...records, ...decisions], currentTicket);
+      const snapshot = { feature: stage.feature, detailStage: ref(stage), authority, ...(currentTicket ? { currentTicket } : {}),
         plan, tasks, records, research: config.sourceFiles };
       const suffix = round === 0 ? '' : `-r${round}`;
       const reviewer: PlanningSession = { cwd: directory };
@@ -563,19 +566,28 @@ Each detailed task must require its worker to commit code, verify each assigned 
   if (phase === 'prepare' || phase === 'prepare-task') return prepareSelected();
   const reviewDelivery = (deliveries: Array<z.infer<typeof FeatureWorkerReturnSchema> & { assignment: Ref }>,
     taskIds: string[], reviewId: string, label: string) => {
-    const previous = history().filter((record) => record.kind === 'product_review' && record.id === reviewId).at(-1);
-    const unchanged = previous?.kind === 'product_review' &&
+    const records = history();
+    const assignment = planningRecord(records, deliveries[0]!.assignment);
+    const currentTicket = readReviewTicket(assignment?.kind === 'assignment' ? assignment.feature?.id : undefined);
+    const previousReviews = records.filter((record): record is ProductReview => record.kind === 'product_review' && record.id === reviewId);
+    const previous = previousReviews.at(-1);
+    const sameScopeRounds = previousReviews.reduce((rounds, review) =>
+      isDeepStrictEqual(review.conformance?.currentTicket, currentTicket) ? rounds + 1 : 0, 0);
+    const unchanged = previous &&
+      isDeepStrictEqual(previous.conformance?.currentTicket, currentTicket) &&
       isDeepStrictEqual(previous.reviewedArtifacts, deliveries.map((delivery) => delivery.deliveredArtifact)) &&
       isDeepStrictEqual(previous.results, deliveries.flatMap((delivery) => delivery.results.map(ref)));
+    const scopeRound = sameScopeRounds + (unchanged ? 0 : 1);
     let result: Record<string, any>;
     if (unchanged) {
       result = { review: previous, replayed: true };
     } else {
       const revision = (previous?.revision ?? 0) + 1;
-      if (revision > maxRevisionRounds + 1) throw new Error(`product_review_failed: exhausted ${maxRevisionRounds} revision rounds`);
+      if (scopeRound > maxRevisionRounds + 1) throw new Error(`product_review_failed: exhausted ${maxRevisionRounds} revision rounds`);
       if (revision === 1 && !existsSync(join(directory, `${phase}.started`))) begin();
       const reviewLabel = revision === 1 ? label : `${label}-r${revision}`;
       result = command('review-product', ['--input', save(`${reviewLabel}-input`, { ...deliveries[0],
+        ...(currentTicket ? { currentTicket } : {}),
         ...(deliveries.length > 1 ? { additionalDeliveries: deliveries.slice(1) } : {}), projectId: project.id, reviewId,
         expectedRevision: revision - 1, idempotencyKey: revision === 1 ? reviewId : `${reviewId}-r${revision}`, issuedAt: issuedAt(),
         baselineEvidence: config.baselineEvidence }), '--agent-config', config.agentConfig, '--run-directory', directory,
@@ -589,7 +601,7 @@ Each detailed task must require its worker to commit code, verify each assigned 
       if (eligibility.ok) return { ...result, taskOutcome: 'passed' as const };
       save('task-review-eligibility', eligibility);
     } else if (review.outcome === 'passed') return result;
-    if (!fm.sendExecutable || review.revision > maxRevisionRounds || !review.conformance || review.conformance.error) {
+    if (!fm.sendExecutable || scopeRound > maxRevisionRounds || !review.conformance || review.conformance.error) {
       throw failed();
     }
     const { verdict, technicalReviews, deliveredFiles, deliveries: reviewedDeliveries } = review.conformance;
@@ -600,7 +612,7 @@ Each detailed task must require its worker to commit code, verify each assigned 
       for (const [index, taskId] of taskIds.entries()) {
         const delivery = deliveries[index]!;
         const reviewed = reviewedDeliveries?.[index];
-        const criteria = verdict?.criteria.filter((criterion) => criterion.state !== 'accomplished' &&
+        const criteria = verdict?.criteria.filter((criterion) => ['failed', 'uncertain'].includes(criterion.state) &&
           delivery.results.some((entry) => isDeepStrictEqual(entry.criterion, criterion.criterion))) ?? [];
         const technical = reviewed?.technicalReviewIndexes?.map((entry) => technicalReviews[entry])
           .filter((entry) => entry && entry.verdict !== 'passed') ?? [];
@@ -665,14 +677,11 @@ Each detailed task must require its worker to commit code, verify each assigned 
         const requestRef = review.originalRequests.find((request) => request.id === manifest.requestId);
         const request = requestRef && planningRecord(records, requestRef);
         if (request?.kind !== 'request') throw new Error('ticket_intent_requires_reviewed_request');
-        if (config.featureTaskId) {
-          const nativeTicket = new TaskWrapper({ fmHome: fm.home, tasksExecutable: fm.tasksExecutable }).read(ticket.taskId);
-          if (!nativeTicket || (nativeTicket.body?.trim() && !request.originalText.includes(nativeTicket.body.trim()))) {
-            throw new Error('ticket_intent_requires_current_backlog_body_in_reviewed_request');
-          }
-        }
+        const ticketText = review.conformance?.currentTicket?.text ?? request.originalText;
         const ownerAnswers = new Set<string>();
-        for (const assignmentRef of review.assignments) {
+        // A revised backlog ticket supersedes answers carried by the original plan.
+        const answerSources = ticketText.trim() === request.originalText.trim() ? review.assignments : [];
+        for (const assignmentRef of answerSources) {
           const assignment = planningRecord(records, assignmentRef);
           if (assignment?.kind !== 'assignment') throw new Error('ticket_intent_requires_reviewed_assignment');
           const context = requiredAssignmentContext(records, assignment, assignment.selectedContext);
@@ -687,8 +696,8 @@ Each detailed task must require its worker to commit code, verify each assigned 
             }
           }
         }
-        const additional = [...ownerAnswers].filter((answer) => !request.originalText.includes(answer.trim()));
-        const intentText = additional.length ? `${request.originalText}\n\n## Recorded owner answers\n\n${additional.join('\n\n')}` : request.originalText;
+        const additional = [...ownerAnswers].filter((answer) => !ticketText.includes(answer.trim()));
+        const intentText = additional.length ? `${ticketText}\n\n## Recorded owner answers\n\n${additional.join('\n\n')}` : ticketText;
         const intentFile = join(directory, 'ticket-intent.md');
         writeFileSync(intentFile, intentText, { mode: 0o600 });
         intent = { intentFile, intentDigest: digestText(intentText) };

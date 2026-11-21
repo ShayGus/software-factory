@@ -62,7 +62,8 @@
             "enum": [
               "accomplished",
               "failed",
-              "uncertain"
+              "uncertain",
+              "out_of_scope"
             ]
           },
           "behavior": {
