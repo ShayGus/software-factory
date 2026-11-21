@@ -1,8 +1,10 @@
 import { assertNoOwnerQuestions } from './owner-questions.js';
 import { endpointAlive, firstMateEnv, readFleetSnapshot, runtimeTask, startManagedWorker, workerStartCheckRefused, workerStartOperationId } from './runtime.js';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { isUtf8 } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -15,10 +17,10 @@ import { digestText, requiredAssignmentContext, sameSource } from './instruction
 import { planningRecord, samePlanningRef } from './planning-checks.js';
 import { RecordStageInputSchema } from './planning.js';
 import { planReviewAuthority, planReviewDirections, PlanRevisionSchema, planRevisionDirections, reviseReviewedPlan } from './plan-review.js';
-import { BriefSpecEditsSchema, EvidenceSchema, RefSchema, type Ref } from './primitives.js';
+import { BriefSpecEditsSchema, EvidenceSchema, RefSchema, SourceRefSchema, type Ref } from './primitives.js';
 import { ProjectSchema, ProductReviewSchema, type Assignment, type FactoryRecord, type ProductReview, type StageRevision } from './records.js';
 import { ReviewProductInputSchema, snapshotDelivery } from './product-review.js';
-import { CommitSchema } from './review-contracts.js';
+import { CommitSchema, ReviewTicketSchema } from './review-contracts.js';
 import { ProjectStore, StoreError } from './store.js';
 import { parseStrictJson } from './strict-json.js';
 import { validateTaskReviewForDelivery } from './rules.js';
@@ -46,7 +48,13 @@ export const FeatureRunConfigSchema = z.strictObject({
   baselineEvidence: z.array(EvidenceSchema).min(1),
 }).refine((value) => resolve(value.firstMate.dataDirectory) === join(resolve(value.firstMate.home), 'data'),
   'Feature run requires the standard home/data layout used by the task adapter');
+const PinnedSourceSchema = z.strictObject({ source: SourceRefSchema, revision: CommitSchema.optional(),
+  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u) });
+const ApprovedReferenceSchema = PinnedSourceSchema.omit({ revision: true }).refine(({ source }) =>
+  !source.record && z.url({ protocol: /^https$/u }).safeParse(source.uri).success, 'An approved reference must be an HTTPS citation');
+type PinnedSource = z.infer<typeof PinnedSourceSchema>;
 const PlannedSchema = z.strictObject({ requestId: z.string(), configDigest: z.string(), plan: RefSchema,
+  pinnedSources: z.array(PinnedSourceSchema).optional(),
   tasks: z.array(z.strictObject({ taskId: safeId, task: RefSchema, operationId: z.string() })).min(1) });
 export type FeatureRunPhase = 'bootstrap' | 'prepare' | 'plan' | 'prepare-task' | 'start' | 'review' | 'review-all';
 const PreparedSchema = z.strictObject({ requestId: z.string(), assignment: RefSchema, briefPath: absolute, configDigest: z.string() });
@@ -60,6 +68,60 @@ function git(repository: string, args: string[]) {
   const result = spawnSync('git', ['-C', repository, ...args], { encoding: 'utf8', timeout: 15_000 });
   if (result.error || result.signal) throw new Error(`ticket_git_failed: ${result.error?.message ?? result.signal}`);
   return result;
+}
+
+const pinnedSourcePath = (directory: string, digest: string) => join(directory, 'sources', `cited-${digest.slice(7)}.txt`);
+
+function pinRepositorySource(config: z.infer<typeof FeatureRunConfigSchema>, directory: string, source: PinnedSource['source']): PinnedSource {
+  const { repository } = config;
+  const refusal = () => new Error(`unauthorized_run_source: ${source.uri}`);
+  let path: string;
+  try { path = source.uri.startsWith('file:') ? fileURLToPath(source.uri) : source.uri; }
+  catch { throw refusal(); }
+  const local = relative(repository, path);
+  if (!isAbsolute(path) || !local || local === '..' || local.startsWith(`..${sep}`) || isAbsolute(local)) throw refusal();
+  const revision = config.baselineEvidence.find(({ artifact }) => artifact.uri === `git:${repository}`)?.artifact.revision;
+  if (!revision || !CommitSchema.safeParse(revision).success) throw refusal();
+  const entry = git(repository, ['--literal-pathspecs', 'ls-tree', '-rz', '--full-tree', revision, '--', local]);
+  const match = /^(?:100644|100755) blob ([a-f0-9]+)\t([^\0]+)\0$/u.exec(entry.stdout);
+  if (entry.status !== 0 || !match || match[2] !== local) throw refusal();
+  const object = spawnSync('git', ['-C', repository, 'cat-file', 'blob', match[1]!], { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 });
+  if (object.error || object.status !== 0 || !isUtf8(object.stdout) || object.stdout.includes(0)) throw refusal();
+  const text = object.stdout.toString('utf8');
+  if (!text.trim() || (source.excerpt && !text.includes(source.excerpt))) throw refusal();
+  const digest = digestText(text);
+  const snapshot = pinnedSourcePath(directory, digest);
+  mkdirSync(dirname(snapshot), { recursive: true });
+  try { writeFileSync(snapshot, object.stdout, { flag: 'wx', mode: 0o600 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  return { source, revision, digest };
+}
+
+function pinnedSourceFile(directory: string, { source, revision, digest }: PinnedSource) {
+  const path = pinnedSourcePath(directory, digest);
+  if (!lstatSync(path).isFile()) throw new Error(`pinned_run_source_changed: ${source.uri}`);
+  const bytes = readFileSync(path);
+  const text = bytes.toString('utf8');
+  if (!isUtf8(bytes) || bytes.includes(0) || !text.trim() || digestText(text) !== digest ||
+    (source.excerpt && !text.includes(source.excerpt))) throw new Error(`pinned_run_source_changed: ${source.uri}`);
+  return { source, path, artifact: { uri: source.uri, revision, digest } };
+}
+
+function savedPlanAuthority(directory: string, detailStage: Ref, checkedAt: string) {
+  const evidence = readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('plan_check-agent-'))
+    .map((entry) => join(directory, entry.name, 'input.json'))
+    .filter(existsSync)
+    .map((path) => ({ path, time: statSync(path).mtimeMs }))
+    .filter(({ time }) => Math.floor(time) <= Date.parse(checkedAt))
+    .sort((a, b) => b.time - a.time);
+  for (const { path } of evidence) {
+    const input = z.object({ detailStage: RefSchema, authority: z.array(z.string()), currentTicket: ReviewTicketSchema.optional() })
+      .safeParse(json(path));
+    if (input.success && samePlanningRef(input.data.detailStage, detailStage)) {
+      return input.data.currentTicket ? planReviewAuthority('', [], input.data.currentTicket) : input.data.authority;
+    }
+  }
 }
 
 function ticketHead(repository: string, branch: string) {
@@ -148,7 +210,9 @@ function bootstrapRunProject(config: z.infer<typeof FeatureRunConfigSchema>) {
  * No scheduler, polling, quality enqueue or lifecycle hook install.
  * Bootstrap replays the existing idempotent init; start observes FirstMate to
  * recover its durable operation after an ambiguous result. */
-export function runFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string) {
+export function runFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string, references?: unknown) {
+  const approved = z.array(ApprovedReferenceSchema).parse(references ?? []);
+  if (approved.length && (phase !== 'plan' || selectedTaskId !== '--resume')) throw new Error('references_require_plan_resume');
   if (!['plan', 'review', 'review-all'].includes(phase)) return executeFeature(configInput, phase, selectedTaskId);
   const config = FeatureRunConfigSchema.parse(configInput);
   if (phase === 'review' && selectedTaskId) safeId.parse(selectedTaskId);
@@ -159,20 +223,24 @@ export function runFeature(configInput: unknown, phase: FeatureRunPhase, selecte
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${label}_attempt_in_progress: reconcile before retry`);
     throw error;
   }
-  try { return executeFeature(configInput, phase, selectedTaskId); }
+  try { return executeFeature(configInput, phase, selectedTaskId, approved); }
   finally { rmSync(lock, { recursive: true }); }
 }
 
-function executeFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string) {
+function executeFeature(configInput: unknown, phase: FeatureRunPhase, selectedTaskId?: string, approvedReferences: PinnedSource[] = []) {
+  const resumePlan = phase === 'plan' && selectedTaskId === '--resume';
+  if (resumePlan) selectedTaskId = undefined;
   let config = FeatureRunConfigSchema.parse(configInput);
   const baseConfig = config;
   const planDirectory = config.runDirectory;
   let selected: z.infer<typeof PlannedSchema>['tasks'][number] | undefined;
   let planned: z.infer<typeof PlannedSchema> | undefined;
+  let pinnedSources: PinnedSource[] = [];
   if (phase === 'prepare-task' || selectedTaskId) {
     if (!['prepare-task', 'start', 'review'].includes(phase)) throw new Error('task_selection_not_supported');
     planned = PlannedSchema.parse(json(join(config.runDirectory, 'planned.json')));
     if (planned.configDigest !== digestText(JSON.stringify(config))) throw new Error('planned_run_config_changed');
+    pinnedSources = planned.pinnedSources ?? [];
     selected = planned.tasks.find((task) => task.taskId === selectedTaskId);
     if (!selected) throw new Error('select_a_planned_task');
     config = { ...config, taskId: selected.taskId, runDirectory: join(config.runDirectory, 'tasks', selected.taskId) };
@@ -273,11 +341,61 @@ function executeFeature(configInput: unknown, phase: FeatureRunPhase, selectedTa
     readFeatureReviewTicket(taskOptions, project.id, featureId, config.featureTaskId);
   if (phase === 'prepare' || phase === 'plan') {
     const publishesTicket = phase === 'plan' && fm.mode !== 'local-only';
+    const attempt = resumePlan ? `resume-${randomUUID()}-` : '';
+    if (resumePlan && existsSync(join(directory, 'planned.json'))) {
+      const manifest = PlannedSchema.parse(json(join(directory, 'planned.json')));
+      if (manifest.configDigest !== digestText(JSON.stringify(config))) throw new Error('planned_run_config_changed');
+      const records = history();
+      const latest = new Map(records.map((record) => [record.id, record]));
+      const plan = latest.get(manifest.plan.id);
+      const check = plan?.kind === 'implementation_plan_revision' && plan.workflow?.readinessCheck ?
+        records.find((record) => record.id === plan.workflow!.readinessCheck!.id && record.revision === plan.workflow!.readinessCheck!.revision) : undefined;
+      const feature = plan?.kind === 'implementation_plan_revision' && plan.feature ? latest.get(plan.feature.id) : undefined;
+      if (plan?.kind !== 'implementation_plan_revision' || plan.revision !== manifest.plan.revision || !plan.readiness.ready ||
+        check?.kind !== 'plan_readiness_revision' || !check.ready || feature?.kind !== 'feature_revision' ||
+        feature.revision !== plan.feature?.revision || feature.disposition.state !== 'active' ||
+        check.feature.id !== feature.id || check.feature.revision !== feature.revision ||
+        check.plan.id !== plan.id || check.plan.revision + 1 !== plan.revision ||
+        plan.deliverySequence.length !== manifest.tasks.length || new Set(manifest.tasks.map((task) => task.taskId)).size !== manifest.tasks.length) {
+        throw new Error('planned_reconciliation_context_changed');
+      }
+      for (const [index, task] of manifest.tasks.entries()) {
+        const mapping = latest.get(`${task.taskId}-mapping`);
+        const operation = latest.get(task.operationId);
+        const selected = plan.deliverySequence[index]!;
+        if (selected.id !== task.task.id || selected.revision !== task.task.revision || mapping?.kind !== 'task_mapping' ||
+          mapping.firstMateTaskId !== task.taskId || mapping.detailedPlanTask?.id !== task.task.id ||
+          mapping.detailedPlanTask.revision !== task.task.revision || mapping.management?.operationId !== task.operationId ||
+          mapping.feature?.id !== feature.id || mapping.feature.revision !== feature.revision ||
+          operation?.kind !== 'operation' || operation.command !== 'map_manage_execution_task') {
+          throw new Error('planned_reconciliation_context_changed');
+        }
+      }
+      for (const task of manifest.tasks) {
+        const operation = latest.get(task.operationId);
+        if (operation?.kind === 'operation' && operation.state !== 'succeeded') {
+          const recovered = command('reconcile-task', ['--project', project.id, '--operation', task.operationId,
+            '--adapter-config', taskAdapter], false, `${attempt}reconcile-task-${task.taskId}`);
+          if (recovered.state !== 'succeeded') throw new Error(`task_reconciliation_incomplete: ${task.operationId}`);
+        }
+      }
+      return manifest;
+    }
     if (planningAuthorSteps.some(step => agents.steps[step].harness !== agents.steps.understand.harness)) {
       throw new Error('planning_author_steps_require_one_harness');
     }
     const planningSession: PlanningSession = { cwd: directory };
-    begin();
+    if (resumePlan) {
+      if (!existsSync(join(directory, 'plan.started'))) throw new Error('resume_plan_requires_unqueued_started_run');
+      const configPath = join(directory, 'plan-config.json');
+      const configDigest = existsSync(configPath) ?
+        z.object({ configDigest: z.string() }).parse(json(configPath)).configDigest :
+        digestText(JSON.stringify(FeatureRunConfigSchema.parse(json(join(directory, 'run.json')))));
+      if (configDigest !== digestText(JSON.stringify(config))) throw new Error('planned_run_config_changed');
+    } else {
+      begin();
+      if (phase === 'plan') save('plan-config', { configDigest: digestText(JSON.stringify(config)) });
+    }
     const captured = command('capture', ['--project', project.id, '--client-request-id', config.clientRequestId,
       '--channel', config.requestChannel ?? 'cli', '--source', config.requestFile, '--text-file', config.requestFile]);
     const request = captured.request;
@@ -286,7 +404,36 @@ function executeFeature(configInput: unknown, phase: FeatureRunPhase, selectedTa
     const agentFiles = { runDirectory: directory, requestFile: requestSnapshot, repositories: [config.repository] };
     let previousStage: StageRevision | undefined;
     let featureId: string | undefined;
-    for (const step of planningAuthorSteps) {
+    let retained: Extract<FactoryRecord, { kind: 'implementation_plan_revision' }> | undefined;
+    if (resumePlan) {
+      const mapping = MapRequestInputSchema.parse(json(join(directory, 'map-input.json')));
+      if (mapping.target.kind !== 'new_feature' || mapping.projectId !== project.id || mapping.requestId !== request.id) {
+        throw new Error('resume_plan_mapping_mismatch');
+      }
+      featureId = mapping.target.feature.id;
+      const records = history();
+      const latest = new Map(records.map((record) => [record.id, record]));
+      const feature = latest.get(featureId);
+      const details = [...latest.values()].filter((record): record is StageRevision =>
+        record.kind === 'stage_revision' && record.stage === 'detail' && record.feature.id === featureId);
+      const detail = details.length === 1 ? details[0] : undefined;
+      const plan = detail && latest.get(detail.artifact.id);
+      const check = plan?.kind === 'implementation_plan_revision' && plan.workflow?.readinessCheck ?
+        planningRecord(records, plan.workflow.readinessCheck) : undefined;
+      if (!detail || feature?.kind !== 'feature_revision' || feature.disposition.state !== 'active' ||
+        !samePlanningRef(feature, detail.feature) || !feature.sourceRequests.some((source) => samePlanningRef(source, request)) ||
+        records.some((record) => record.kind === 'task_mapping' && record.feature?.id === featureId) ||
+        plan?.kind !== 'implementation_plan_revision' || !plan.readiness.ready ||
+        check?.kind !== 'plan_readiness_revision' || !check.ready || plan.revision !== detail.artifact.revision + 1 ||
+        !samePlanningRef(check.plan, detail.artifact) || !samePlanningRef(check.detailStage, detail)) {
+        throw new Error('resume_plan_requires_unqueued_checked_plan');
+      }
+      assertNoOwnerQuestions(records, featureId);
+      previousStage = detail;
+      retained = plan;
+      save(`${attempt}checked-plan-retained`, { plan: ref(plan), check: ref(check) });
+    }
+    for (const step of resumePlan ? [] : planningAuthorSteps) {
       if (featureId && step !== 'understand') assertNoOwnerQuestions(history(), featureId);
       const schema = step === 'understand' ? z.strictObject({ mapping: MapRequestInputSchema, input: RecordStageInputSchema }) : RecordStageInputSchema;
       const continuing = planningSession.id !== undefined;
@@ -359,6 +506,12 @@ Each detailed task must require its worker to commit code, verify each assigned 
       const tasks = plan.deliverySequence.map((task) => planningRecord(records, task));
       const currentTicket = config.featureTaskId ? readReviewTicket(stage.feature.id) : undefined;
       const authority = planReviewAuthority(request.originalText, [...records, ...decisions], currentTicket);
+      const check = retained?.workflow?.readinessCheck && planningRecord(all, retained.workflow.readinessCheck);
+      if (retained && check?.kind === 'plan_readiness_revision' &&
+        isDeepStrictEqual(savedPlanAuthority(directory, ref(stage), check.createdAt), authority)) {
+        ready = { readyPlan: ref(retained) };
+        break;
+      }
       const snapshot = { feature: stage.feature, detailStage: ref(stage), authority, ...(currentTicket ? { currentTicket } : {}),
         plan, tasks, records, research: config.sourceFiles };
       const suffix = round === 0 ? '' : `-r${round}`;
@@ -374,10 +527,11 @@ Each detailed task must require its worker to commit code, verify each assigned 
       const blocking = verdict.findings.filter((finding) => finding.quotes.some((quote) =>
         quote.source === 'original_request' && authority.some((text) => text.includes(quote.text))));
       const notes = [...advisory, ...verdict.findings.filter((finding) => !blocking.includes(finding)).map((finding) => finding.message)];
-      let reviewPath = save(`plan-check-agent${suffix}`, { profile,
+      let reviewPath = save(`${attempt}plan-check-agent${suffix}`, { profile,
         verdict: { verdict: blocking.length ? 'fail' : 'pass', findings: blocking }, notes });
       let findings: unknown[] = blocking;
       if (!findings.length) {
+        if (retained) { ready = { readyPlan: ref(retained) }; break; }
         const key = `check-plan${suffix}`;
         ready = command('check-plan', ['--input', save(`${key}-input`, { projectId: project.id, detailStage: ref(stage),
           expectedPlanRevision: stage.artifact.revision, idempotencyKey: `${config.taskId}-${key}`, issuedAt: issuedAt() })], true, key);
@@ -385,7 +539,7 @@ Each detailed task must require its worker to commit code, verify each assigned 
         findings = ready.check.findings;
         reviewPath = save(`${key}-findings`, findings);
       }
-      if (round === maxRevisionRounds) {
+      if (retained || round === maxRevisionRounds) {
         const code = blocking.length ? 'plan_review_failed' : 'check-plan_failed';
         throw new Error(`${code}: exhausted ${round} revision rounds; inspect ${reviewPath}`);
       }
@@ -412,15 +566,18 @@ Each detailed task must require its worker to commit code, verify each assigned 
       if (task?.kind !== 'detailed_plan_task') throw new Error('run_task_missing');
       return task;
     });
-    // Agent-authored URIs can select only operator snapshots or the captured
-    // request. Never let an absolute path become authority to read a local file.
+    // Resolve new citations from the registered repository’s pinned tree.
     const sources = tasks.flatMap((task) => requiredAssignmentContext(history(), { projectId: project.id, feature: plan.feature,
       design: plan.design, plan: ref(plan), detailedPlanTask: ref(task), criteria: task.criteria }).sources);
     const sourceFiles: z.input<typeof PrepareWorkerBriefInputSchema>['sourceFiles'] = [{ source: { uri: config.requestFile }, path: requestSnapshot }, ...config.sourceFiles];
     const pendingOutputs = plan.dependencies.flatMap((edge) => edge.needs.kind === 'criterion' ?
       [`factory:criterion-output/${encodeURIComponent(edge.prerequisiteTaskId)}/${encodeURIComponent(edge.needs.criterion.id)}@${edge.needs.criterion.revision}`] : []);
     for (const source of sources) if (!source.record && !pendingOutputs.includes(source.uri) && !sourceFiles.some((file) => sameSource(file.source, source))) {
-      throw new Error(`unauthorized_run_source: ${source.uri}`);
+      if (!currentProject.repositories.some((repo) => repo.uri === config.repository)) throw new Error(`unauthorized_run_source: ${source.uri}`);
+      const approved = approvedReferences.find((reference) => sameSource(reference.source, source));
+      const pinned = approved ?? pinRepositorySource(config, directory, source);
+      pinnedSources.push(pinned);
+      sourceFiles.push(pinnedSourceFile(directory, pinned));
     }
     const feature = plan.feature && history().find(record => record.id === plan.feature!.id && record.revision === plan.feature!.revision);
     if (plan.feature && feature?.kind !== 'feature_revision') throw new Error('run_feature_missing');
@@ -447,6 +604,7 @@ Each detailed task must require its worker to commit code, verify each assigned 
     // Save the checked selection before external effects. A partial reconcile is
     // recovered through outbox/reconcile-task, never by re-running planning.
     const manifest = PlannedSchema.parse({ requestId: request.id, plan: ref(plan), tasks: queuedTasks,
+      ...(pinnedSources.length ? { pinnedSources } : {}),
       configDigest: digestText(JSON.stringify(config)) });
     save('planned', manifest);
     for (const task of queuedTasks) command('reconcile-task', ['--project', project.id, '--operation', task.operationId,
@@ -479,7 +637,8 @@ Each detailed task must require its worker to commit code, verify each assigned 
     const request = history().find((record) => record.id === selectedRequestId! && record.kind === 'request');
     if (!request || request.kind !== 'request') throw new Error('captured_request_missing');
     const requestSnapshot = join(directory, 'captured-request.txt'); writeFileSync(requestSnapshot, request.originalText);
-    const sourceFiles: z.input<typeof PrepareWorkerBriefInputSchema>['sourceFiles'] = [{ source: { uri: config.requestFile }, path: requestSnapshot }, ...config.sourceFiles];
+    const sourceFiles: z.input<typeof PrepareWorkerBriefInputSchema>['sourceFiles'] = [{ source: { uri: config.requestFile }, path: requestSnapshot },
+      ...config.sourceFiles, ...pinnedSources.map((source) => pinnedSourceFile(planDirectory, source))];
     if (planned) {
       for (const edge of plan.dependencies.filter((edge) => edge.consumerTaskId === task.id)) {
         const producer = planned.tasks.find((entry) => entry.task.id === edge.prerequisiteTaskId);

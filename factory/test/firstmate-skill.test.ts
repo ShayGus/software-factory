@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -576,5 +576,81 @@ test('planning records the exact stored excerpt for an authored request range', 
       assert.ok(stored.sourceRefs.some(source => source.record?.id === mapped.id &&
         source.record.revision === mapped.revision && source.excerpt === excerpt));
     } finally { store.close(); }
+  } finally { flow.close(); }
+});
+
+test('a checked plan resumes without agents and passes newly cited baseline files to task preparation', () => {
+  const { flow, config } = intake();
+  try {
+    const path = join(config.repository, 'new-citation.mjs');
+    const text = 'export const pinnedBaseline = true;\n';
+    const git = (...args: string[]) => execFileSync('git', ['-C', config.repository, ...args], { encoding: 'utf8' }).trim();
+    writeFileSync(path, text);
+    git('add', '--', path);
+    git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Add source the planner discovers');
+    const revision = git('rev-parse', 'HEAD');
+    config.baselineEvidence[0]!.artifact.revision = revision;
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    const source = { uri: path, excerpt: 'pinnedBaseline = true' };
+    const reference = { source: { uri: 'https://example.invalid/reference' }, digest: digestText('Reviewed reference.\n') };
+    outputs.design.records[0].sourceRefs.push(source, reference.source);
+    flow.save(outputsPath, outputs);
+    const digest = digestText(text);
+    const pin = join(config.runDirectory, 'sources', `cited-${digest.slice(7)}.txt`);
+    writeFileSync(pin, 'A damaged snapshot must stop queueing.');
+    assert.throws(() => runFeature(config, 'plan'), /pinned_run_source_changed/);
+    assert.equal(flow.wrapper.read().calls.length, 0);
+    assert.equal(existsSync(join(config.runDirectory, 'planned.json')), false);
+    const calls = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    const checked = JSON.parse(readFileSync(join(config.runDirectory, 'check-plan.stdout'), 'utf8'));
+    rmSync(pin);
+    writeFileSync(path, 'Mutable checkout content after planning.\n');
+    const referencePath = join(config.runDirectory, 'sources', `cited-${reference.digest.slice(7)}.txt`);
+    writeFileSync(referencePath, 'Reviewed reference.\n');
+    const references = join(flow.root, 'references.json');
+    flow.save(references, [reference]);
+    const run = join(flow.root, 'resume-run.json');
+    flow.save(run, config);
+    const planned = JSON.parse(execFileSync(process.execPath, [join(factory, 'scripts/run-feature.mjs'), 'plan', run,
+      '--resume', '--references', references], { encoding: 'utf8' }));
+    assert.deepEqual(planned.plan, checked.readyPlan);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), calls);
+    assert.deepEqual(planned.pinnedSources, [{ source, revision, digest }, reference]);
+    assert.equal(readFileSync(pin, 'utf8'), text);
+    const taskId = planned.tasks[0].taskId;
+    assert.equal(flow.wrapper.read().tasks[taskId]!.held, true);
+    const prepared = runFeature(config, 'prepare-task', taskId) as any;
+    const store = new ProjectStore(config.database, { readOnly: true });
+    try {
+      const assignment = store.get(config.project.id, prepared.assignment.id, prepared.assignment.revision);
+      assert.ok(assignment?.kind === 'assignment');
+      assert.ok(assignment.selectedContext.some((context) =>
+        context.source.uri === path && context.extract === source.excerpt && context.artifact?.uri === pin));
+      assert.ok(assignment.selectedContext.some((context) =>
+        context.source.uri === reference.source.uri && context.artifact?.uri === referencePath));
+    } finally { store.close(); }
+  } finally { flow.close(); }
+});
+
+for (const link of [false, true]) test(`plan refuses a citation outside its repository (${link ? 'tracked symlink' : 'file path'})`, () => {
+  const { flow, config } = intake();
+  try {
+    const outside = join(flow.root, 'outside.txt');
+    writeFileSync(outside, 'This file is outside the registered repository.\n');
+    const source = link ? join(config.repository, 'escape.txt') : outside;
+    if (link) {
+      symlinkSync(outside, source);
+      const git = (...args: string[]) => execFileSync('git', ['-C', config.repository, ...args], { encoding: 'utf8' }).trim();
+      git('add', '--', source);
+      git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'Track symlink outside repository');
+      config.baselineEvidence[0]!.artifact.revision = git('rev-parse', 'HEAD');
+    }
+    const outputsPath = join(flow.root, 'outputs.json');
+    const outputs = JSON.parse(readFileSync(outputsPath, 'utf8'));
+    outputs.design.records[0].sourceRefs.push({ uri: source });
+    flow.save(outputsPath, outputs);
+    assert.throws(() => runFeature(config, 'plan'), /unauthorized_run_source/);
+    assert.equal(flow.wrapper.read().calls.length, 0);
   } finally { flow.close(); }
 });

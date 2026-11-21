@@ -16,7 +16,7 @@ export function planReviewAuthority(request: string, records: FactoryRecord[], c
     body: text.slice(match.index + match[0].length, headings[index + 1]?.index).trim(),
   }));
   const done = sections.find(({ heading }) => /^definition of done\b.*\bconfirmed\b/iu.test(heading) ||
-    (currentTicket && /^definition of done\s*:?\s*$/iu.test(heading)));
+    (currentTicket && /^definition of done(?:[ \t]+\([^\r\n]+\))?\s*:?\s*$/iu.test(heading)));
   const answers = sections.filter(({ heading }) => /\bowner['’]s answers\b/iu.test(heading))
     .flatMap(({ body }) => body.split('\n').flatMap((line) =>
       [...line.matchAll(/(?:\bAnswer:|^- Owner(?: rule|, [^:]+)?:|^- Q\d+[^:]*\(owner[^)]*\):)\s*["“]([^"”]+)["”]/giu)]
