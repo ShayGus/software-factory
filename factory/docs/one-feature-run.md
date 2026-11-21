@@ -241,6 +241,8 @@ After the sub-task passes review, the guarded local landing fast-forwards the ti
 Preparation and reviews are single-use; recover failures using saved inputs and existing individual commands with deliberate new keys, rather than deleting markers and blindly replaying effects.
 
 Review each producer before completing its normal FirstMate delivery and releasing consumers.
+Code and product review require the returned commit to match the current head of the builder branch recorded in the assignment.
+Keep builder branches available until the aggregate review completes.
 A slice review returns `taskOutcome: passed` only when that task's own assigned criteria, worker results and exact-commit technical evidence pass the shared task-delivery rules.
 The canonical review may remain feature-incomplete.
 Sibling returns do not enter task review inputs or eligibility; a sibling's failed review or concurrent return cannot block unrelated work.

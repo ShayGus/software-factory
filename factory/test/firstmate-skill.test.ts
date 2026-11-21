@@ -70,6 +70,44 @@ test('chat request materializes immutable sources, bootstraps, builds and review
   } finally { flow.close(); }
 });
 
+test('managed reviews refuse a stale return and resume once the builder returns the branch head', () => {
+  const { flow, config } = intake();
+  try {
+    const planned = runFeature(config, 'plan') as any;
+    const taskId = planned.tasks[0].taskId;
+    runFeature(config, 'prepare-task', taskId);
+    runFeature(config, 'start', taskId);
+    const directory = join(config.runDirectory, 'tasks', taskId);
+    const path = join(directory, 'worker-return.json');
+    const original = readFileSync(path, 'utf8');
+    const oldHead = JSON.parse(original).deliveredArtifact.revision as string;
+    assert.equal((runFeature(config, 'review', taskId) as any).taskOutcome, 'passed');
+    const before = readFileSync(join(flow.root, 'agents.jsonl'), 'utf8');
+    const originalScope = readFileSync(join(flow.root, 'scope-review.json'), 'utf8');
+    flow.mode({ returnRevision: 2 });
+    execFileSync(flow.returnWorker, [taskId]);
+    const refreshed = readFileSync(path, 'utf8');
+    const newest = JSON.parse(refreshed).deliveredArtifact.revision as string;
+    assert.notEqual(newest, oldHead);
+    writeFileSync(path, original);
+    const stale = new RegExp(`factory_review_stale_return:.*${newest}.*update worker-return\\.json.*${oldHead}`);
+    assert.throws(() => runFeature(config, 'review', taskId), stale);
+    assert.throws(() => runFeature(config, 'review-all'), stale);
+    const cli = spawnSync(process.execPath, [join(factory, 'dist/src/cli.js'), 'review-product',
+      '--db', config.database, '--input', join(directory, 'review-input.json'), '--agent-config', config.agentConfig],
+    { encoding: 'utf8' });
+    assert.equal(cli.status, 1);
+    assert.match(cli.stderr, stale);
+    assert.equal(readFileSync(join(flow.root, 'agents.jsonl'), 'utf8'), before);
+    assert.equal(readFileSync(join(flow.root, 'scope-review.json'), 'utf8'), originalScope);
+    assert.equal(existsSync(join(config.runDirectory, 'review-all.started')), false);
+    writeFileSync(path, refreshed);
+    const reviewed = runFeature(config, 'review', taskId) as any;
+    assert.equal(reviewed.taskOutcome, 'passed');
+    assert.equal(reviewed.review.reviewedArtifacts[0].revision, newest);
+  } finally { flow.close(); }
+});
+
 test('plan, code and product reviews read the current backlog ticket, including edits after delivery', () => {
   const id = 'current-review-ticket';
   const original = 'Build feature X for every connected system. ERPNext is an example.\n\n' +

@@ -5,10 +5,13 @@ import { z } from 'zod';
 import { ProjectStore } from './store.js';
 import type { Assignment, FactoryRecord, TaskMapping } from './records.js';
 import type { FleetSnapshot } from './runtime.js';
-import { currentAssignmentAttempts, taskReadinessReasons } from './task-readiness.js';
+import { currentAssignmentAttempts, currentTaskMappings, taskReadinessReasons } from './task-readiness.js';
 import { validateAssignmentForDispatch, validateReviewForCompletion } from './rules.js';
 import { assertNoOwnerQuestions } from './owner-questions.js';
 import { parseStrictJson } from './strict-json.js';
+import { samePlanningRef } from './planning-checks.js';
+import { CommitSchema } from './review-contracts.js';
+import type { Artifact, Ref } from './primitives.js';
 
 const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
 export const FactoryProjectsSchema = z.strictObject({
@@ -62,6 +65,37 @@ export function factoryProject(config: unknown, home: string, repository: string
   }
   if (matches.length > 1) throw new Error('hook_project_context_ambiguous');
   return matches[0] ?? null;
+}
+
+/** The branch in the recorded scaffold is the one FirstMate authorizes at
+ * spawn. Resolve it in the registered checkout, independently of the return. */
+export function assertFactoryReviewHeads(records: FactoryRecord[], deliveries: Array<{ assignment: Ref; deliveredArtifact: Pick<Artifact, 'revision'> }>) {
+  const mappings = currentTaskMappings(records);
+  for (const delivery of deliveries) {
+    const assignment = records.find((record): record is Assignment => record.kind === 'assignment' && samePlanningRef(record, delivery.assignment));
+    if (!assignment || !mappings.some((mapping) => mapping.firstMateTaskId === assignment.firstMateTaskId && mapping.management)) continue;
+    const branches = [...(assignment.brief?.scaffold ?? '').matchAll(/^Ship branch: ([^\s]+)[ \t]*\r?$/gmu)];
+    if (branches.length !== 1) throw new Error(`factory_review_builder_branch_unavailable: ${assignment.firstMateTaskId}`);
+    const branch = branches[0]![1]!;
+    execFileSync('git', ['check-ref-format', `refs/heads/${branch}`], { stdio: 'ignore', timeout: 10_000 });
+    const project = records.filter((record) => record.kind === 'project' && record.id === assignment.projectId).at(-1);
+    const repositories = project?.kind === 'project' ? project.repositories.filter(({ uri }) => isAbsolute(uri)) : [];
+    const heads = new Set<string>();
+    for (const { uri } of repositories) {
+      try {
+        const sha = execFileSync('git', ['-C', uri, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}^{commit}`],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 }).trim();
+        heads.add(CommitSchema.parse(sha));
+      } catch (error) {
+        if ((error as { status?: number }).status !== 1) throw error;
+      }
+    }
+    if (heads.size !== 1) throw new Error(`factory_review_builder_branch_unavailable: ${assignment.firstMateTaskId} (${branch})`);
+    const [head] = heads;
+    if (delivery.deliveredArtifact.revision !== head) {
+      throw new Error(`factory_review_stale_return: ${assignment.firstMateTaskId} branch ${branch} is at ${head}. The builder must update worker-return.json for ${head} (returned ${delivery.deliveredArtifact.revision}).`);
+    }
+  }
 }
 
 /** Native backlog `order` is the owner's order, not ID/creation/array order.
