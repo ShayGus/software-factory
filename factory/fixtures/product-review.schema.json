@@ -134,7 +134,8 @@
               "wrong_implementation",
               "original_request_omission",
               "narrowed_generality",
-              "instruction_mismatch"
+              "instruction_mismatch",
+              "unrequested_addition"
             ]
           },
           "message": {

@@ -7,6 +7,7 @@ export const QualityResultSchema = z.strictObject({
   tool: z.literal('roborev'), commit: CommitSchema, jobId: z.number().int().positive(),
   verdict: z.enum(['passed', 'failed', 'uncertain']), artifact: ArtifactSchema,
   observedAt: TimestampSchema, raw: TextSchema,
+  scopeDigest: TextSchema.optional(),
 });
 export type QualityResult = z.infer<typeof QualityResultSchema>;
 export const ReviewQuoteSchema = z.strictObject({
@@ -22,7 +23,7 @@ export const ProductVerdictSchema = z.strictObject({
   })).min(1),
   findings: z.array(z.strictObject({
     check: z.enum(['sourceComparison', 'instructionFidelity', 'planConformance']),
-    type: z.enum(['missing_behavior', 'wrong_implementation', 'original_request_omission', 'narrowed_generality', 'instruction_mismatch']),
+    type: z.enum(['missing_behavior', 'wrong_implementation', 'original_request_omission', 'narrowed_generality', 'instruction_mismatch', 'unrequested_addition']),
     message: TextSchema, quotes: z.array(ReviewQuoteSchema).min(1),
   })),
   suggestions: z.array(TextSchema), unresolvedQuestions: z.array(TextSchema),

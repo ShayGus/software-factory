@@ -11,6 +11,8 @@ import { fakeTaskWrapper } from './task-wrapper-helper.js';
 const at = '2026-11-11T18:00:00Z';
 const defaultOriginal = 'Build feature X for every connected system, ERPNext is only an example.';
 const goodCode = 'export function feature(system) { return system.featureX(); }\n';
+export const unrequestedOption = 'export const providerTimeout = 180_000;';
+export const unrequestedTest = 'export const futureTimeoutTest = () => providerTimeout > 0;';
 const badCode = 'export function feature(system) { if (system.name !== "ERPNext") throw Error("unsupported"); return system.featureX(); }\n';
 const baseline = RecordsSchema.parse(JSON.parse(readFileSync(new URL('../../fixtures/workflow.json', import.meta.url), 'utf8')));
 const script = fileURLToPath(new URL('../../scripts/worker-start-before.mjs', import.meta.url));
@@ -139,11 +141,22 @@ if(step==='instruction_check') {
 if(step==='product_review') {
  if(mode.publishReturnDuringReview) copyFileSync(mode.publishReturnDuringReview.source,mode.publishReturnDuringReview.path);
  assert.equal(snapshot.originalRequests[0].text,${JSON.stringify(original)});
- assert.equal(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').text,mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)});
  const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};
+ const extra=mode.extraScope?${JSON.stringify([unrequestedOption, unrequestedTest])}:[];
+ assert.equal(snapshot.deliveredFiles.find(f=>f.path==='feature.mjs').text,code+extra.map(x=>x+'\\n').join(''));
  out={sourceComparison:'passed',instructionFidelity:mode.badDelivery?'failed':'passed',planConformance:mode.badDelivery?'failed':'passed',
  criteria:snapshot.assignedCriteria.map((criterion,i)=>({criterion,state:mode.badDelivery&&i===1?'failed':'accomplished',behavior:'Common interface behavior',quotes:[{source:'delivery',text:code.trim()}],limitations:[]})),
  findings:mode.badDelivery?['instructionFidelity','planConformance'].map(check=>({check,type:'narrowed_generality',message:'ERPNext only violates original generality',quotes:[{source:'original_request',text:${JSON.stringify(original)}},{source:'delivery',text:code.trim()}]})):[],suggestions:[],unresolvedQuestions:[]};
+ if(mode.extraScope) {
+  assert.deepEqual(snapshot.deliveries[0].confirmedDefinitionOfDone,[mode.confirmedDone]);
+  const diff=readFileSync(snapshot.deliveries[0].diffPath,'utf8');
+  for(const addition of extra) assert.ok(diff.includes('+'+addition));
+  if(!mode.productAcceptsExtra) {
+   out.planConformance='failed';
+   out.findings=extra.map(addition=>({check:'planConformance',type:'unrequested_addition',message:addition,
+     quotes:[{source:'delivery',text:addition}]}));
+  }
+ }
 }
 if (sessionId) {
  writeFileSync(args[args.indexOf('--output-last-message')+1],JSON.stringify(out));
@@ -168,8 +181,10 @@ const store=new ProjectStore(${JSON.stringify(database)});
 const assignment=store.records('project-1').find(r=>r.kind==='assignment'&&r.firstMateTaskId===taskId);store.close();
 const run=dirname(assignment.returnLocation);
 const mode=JSON.parse(readFileSync(root+'/mode.json','utf8')); const prepared={assignment:{id:assignment.id,revision:assignment.revision}};
-writeFileSync(repository+'/feature.mjs',mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)});
+const code=mode.badDelivery?${JSON.stringify(badCode)}:${JSON.stringify(goodCode)};
+writeFileSync(repository+'/feature.mjs',code+(mode.extraScope?${JSON.stringify(`${unrequestedOption}\n${unrequestedTest}\n`)}:''));
 const git=(...a)=>execFileSync('git',['-C',repository,...a],{encoding:'utf8'}).trim();git('add','feature.mjs');git('-c','core.hooksPath=/dev/null','commit','--allow-empty','-qm','Fake worker delivery '+taskId);
+if(mode.extraScope) git('-c','core.hooksPath=/dev/null','commit','--allow-empty','-qm','Finalize multi-commit delivery');
 const artifact={uri:'git:'+repository,revision:git('rev-parse','HEAD')};
 writeFileSync(run+'/worker-return.json',JSON.stringify({repository,deliveredArtifact:artifact,paths:['feature.mjs'],results:assignment.criteria.map((criterion,i)=>({
 kind:'criterion_result',id:taskId+'-result-'+i,projectId:'project-1',schemaVersion:1,revision:mode.returnRevision??1,createdAt:${JSON.stringify(at)},updatedAt:${JSON.stringify(at)},
@@ -195,11 +210,34 @@ if(mode.exposeWorkerGeneration) writeFileSync(${JSON.stringify(join(home, 'runti
  current_state:{state:'active',freshness:'fresh',observed_at:''}
 }]));
 const worker=spawnSync(${JSON.stringify(returnWorker)},[process.argv[2]],{encoding:'utf8'});process.stderr.write(worker.stderr);process.exit(worker.status??1);`);
-  executable('roborev', `import {readFileSync} from 'node:fs';
-const mode=JSON.parse(readFileSync(${JSON.stringify(join(root, 'mode.json'))},'utf8'));
-const verdict=mode.technicalFailureCommits?.includes(process.argv[4])?'fail':'pass';
-import assert from 'node:assert/strict';assert.deepEqual(process.argv.slice(2,4),['show','--json']);
-process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict},job:{id:42,git_ref:process.argv[4],status:'done',job_type:'review'}}));`);
+  executable('roborev', `import {readFileSync,writeFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const root=${JSON.stringify(root)};
+const mode=JSON.parse(readFileSync(root+'/mode.json','utf8'));
+const [command,...args]=process.argv.slice(2);
+const uuid='937a87c5-a027-4797-9d74-04d1538cb46c';
+if(command==='run') {
+ assert.deepEqual(args.slice(0,3),['--json','--no-context','--label']);
+ const prompt=readFileSync(0,'utf8');
+ const input=JSON.parse(prompt.split('\\n').at(-1));
+ assert.match(input.commit,/^[a-f0-9]{40}$/);
+ assert.ok(input.definitionOfDone.length);
+ if(mode.extraScope) assert.deepEqual(input.definitionOfDone,[mode.confirmedDone]);
+ const additions=${JSON.stringify([unrequestedOption, unrequestedTest])}.filter(addition=>input.patch.includes('+'+addition));
+ const findings=mode.technicalAcceptsExtra?[]:additions;
+ const output=JSON.stringify({verdict:findings.length?'fail':'pass',findings});
+ const job={id:43,uuid,git_ref:args[3],status:'done',job_type:'task'};
+ writeFileSync(root+'/scope-review.json',JSON.stringify({job_id:43,job,prompt,output}));
+ process.stdout.write(JSON.stringify({job_id:43,job_uuid:uuid,git_ref:args[3],status:'queued'}));
+} else if(command==='wait') assert.deepEqual(args,['--job','--quiet','43']);
+else if(args[0]==='--job') {
+ assert.deepEqual(args,['--job','--json','43']);
+ process.stdout.write(readFileSync(root+'/scope-review.json','utf8'));
+} else {
+ assert.equal(command,'show');assert.equal(args[0],'--json');
+ const verdict=mode.technicalFailureCommits?.includes(args[1])?'fail':'pass';
+ process.stdout.write(JSON.stringify({job_id:42,output:'Synthetic existing technical pass',created_at:${JSON.stringify(at)},structured_output:{verdict},job:{id:42,git_ref:args[1],status:'done',job_type:'review'}}));
+}`);
   const project = { ...baseline.find((record) => record.kind === 'project')!, repositories: [{ uri: repository }], firstMateHomeRef: home };
   const runtime = fakeRuntime(home);
   mkdirSync(join(home, 'bin'));

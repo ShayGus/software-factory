@@ -124,7 +124,7 @@ test('two dependent tasks stay held until producer evidence, then both receive o
     const files = JSON.parse(calls.at(-1).prompt.trimEnd().split('\n').at(-1));
     const aggregate = JSON.parse(readFileSync(files.evidence, 'utf8'));
     assert.equal(aggregate.deliveries.length, 2);
-    assert.equal(aggregate.technicalReviews.length, 2);
+    assert.equal(aggregate.technicalReviews.length, 4);
     assert.equal(aggregate.assignedCriteria.length, 2);
   } finally { flow.close(); }
 });
@@ -341,7 +341,7 @@ test('a sibling return arriving during A review cannot affect A delivery', () =>
     assert.equal(existsSync(bReturn), true);
     assert.equal(reviewed.taskOutcome, 'passed');
     assert.equal(reviewed.review.assignments.length, 1);
-    assert.equal(reviewed.review.conformance.technicalReviews.length, 1);
+    assert.equal(reviewed.review.conformance.technicalReviews.length, 2);
   } finally { flow.close(); }
 });
 
