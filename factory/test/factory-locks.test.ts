@@ -60,23 +60,26 @@ test('factory starts require the installed native hook even when hooks.json is a
     assert.doesNotThrow(() => requireFactoryStartHook(f.registry, path, f.home, f.repo, executable));
   } finally { f.close(); }
 });
-test('three builders defer a fourth; done without a PR frees a place; scouts and endpoint loss have distinct effects', () => {
+test('configured builder capacity defers excess workers; unset is unlimited and done without a PR frees a place', () => {
   const f = setup();
   try {
-    assert.equal(checkBuilderAdmission(f.records, f.assignment, f.snapshot(2), f.repo).builders, 2);
+    assert.equal(checkBuilderAdmission(f.records, f.assignment, f.snapshot(2), f.repo, 3).builders, 2);
     const incomplete = f.snapshot(1); incomplete.tasks[0]!.project = null;
-    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, incomplete, f.repo), /inventory_incomplete/);
+    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, incomplete, f.repo, 3), /inventory_incomplete/);
+    assert.doesNotThrow(() => checkBuilderAdmission(f.records, f.assignment, f.snapshot(6), f.repo), 'Unset capacity has no limit');
+    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, f.snapshot(2), f.repo, 2), /project capacity 2/);
+    assert.doesNotThrow(() => checkBuilderAdmission(f.records, f.assignment, f.snapshot(4), f.repo, 5));
     const snapshot = f.snapshot(3);
-    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo), /three builders/);
+    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo, 3), /project capacity 3/);
     snapshot.tasks[0]!.endpoint = { agent_alive: 'dead', exists: false, freshness: 'fresh', observed_at: snapshot.generated }; // Loss is not completion.
-    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo), /three builders/);
+    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo, 3), /project capacity 3/);
     snapshot.tasks[0]!.current_state.state = 'done';
-    assert.equal(checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo).builders, 2);
+    assert.equal(checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo, 3).builders, 2);
     snapshot.tasks[0]!.current_state.state = 'working'; snapshot.tasks[0]!.kind = 'scout';
-    assert.equal(checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo).builders, 2);
+    assert.equal(checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo, 3).builders, 2);
     snapshot.tasks[0]!.kind = 'ship'; snapshot.tasks[0]!.current_state.freshness = 'stale';
     snapshot.tasks[0]!.current_state.state = 'done';
-    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo), /three builders/);
+    assert.throws(() => checkBuilderAdmission(f.records, f.assignment, snapshot, f.repo, 3), /project capacity 3/);
   } finally { f.close(); }
 });
 test('native owner order wins over IDs and array order; a stuck earlier ticket permits independent work', () => {
@@ -91,13 +94,13 @@ test('native owner order wins over IDs and array order; a stuck earlier ticket p
     records.push(earlierMapping, earlierAssignment);
     const snapshot = f.snapshot();
     snapshot.backlog.records.push({ id: earlierMapping.firstMateTaskId, order: 1, state: 'queued', kind: 'ship', repo: 'repo' });
-    assert.throws(() => checkBuilderAdmission(records, f.assignment, snapshot, f.repo), /earlier eligible ticket zz-owner-first/);
+    assert.throws(() => checkBuilderAdmission(records, f.assignment, snapshot, f.repo, 3), /earlier eligible ticket zz-owner-first/);
     snapshot.backlog.records[1]!.hold_reason = 'Owner question';
-    assert.doesNotThrow(() => checkBuilderAdmission(records, f.assignment, snapshot, f.repo));
+    assert.doesNotThrow(() => checkBuilderAdmission(records, f.assignment, snapshot, f.repo, 3));
     snapshot.backlog.records[0]!.blocked_by_ids = [earlierMapping.firstMateTaskId];
-    assert.throws(() => checkBuilderAdmission(records, f.assignment, snapshot, f.repo), /held or blocked/);
+    assert.throws(() => checkBuilderAdmission(records, f.assignment, snapshot, f.repo, 3), /held or blocked/);
     delete snapshot.backlog.records[0]!.order;
-    assert.throws(() => checkBuilderAdmission(records, f.assignment, snapshot, f.repo), /order_unavailable/);
+    assert.throws(() => checkBuilderAdmission(records, f.assignment, snapshot, f.repo, 3), /order_unavailable/);
   } finally { f.close(); }
 });
 

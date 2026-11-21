@@ -4244,7 +4244,9 @@ fi
 # worker that already holds a place, and a secondmate is not a worker.
 SPAWN_PROJECT_CAPACITY=
 SPAWN_PROJECT_CAPACITY_ANY=
-if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
+# Factory relaunches pass the same declaration to the builder-admission hook.
+if [ "$KIND" != secondmate ] &&
+  { [ "$RELAUNCH" -eq 0 ] || [ -e "$CONFIG/software-factory.projects.json" ]; }; then
   SPAWN_CAPACITY_CONFIG=$(fm_project_capacity_config_dir "$FM_HOME" "$CONFIG") || {
     echo "error: could not resolve the root Firstmate home that declares project capacity for $PROJ_ABS" >&2
     exit 1
@@ -4272,7 +4274,7 @@ if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] &&
   fi
   SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=1
 fi
-if [ -n "$SPAWN_PROJECT_CAPACITY" ]; then
+if [ "$RELAUNCH" -eq 0 ] && [ -n "$SPAWN_PROJECT_CAPACITY" ]; then
   if ! fm_project_capacity_occupants "$SPAWN_TREEHOUSE_PROJECT_LOCK" "$PROJ_ABS" "$STATE" "$ID"; then
     echo "error: spawn refused: project $(basename "$PROJ_ABS") declares a capacity of $SPAWN_PROJECT_CAPACITY, but this machine's task records cannot all be read to count it ($FM_PROJECT_CAPACITY_ERROR)" >&2
     exit 1
@@ -4971,7 +4973,7 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
   . "$SCRIPT_DIR/fm-factory-lock-lib.sh"
   fm_factory_lock start "$PROJ_ABS" "$ID" || exit 1
   fm_hook_begin worker.start "$HOOK_OPERATION" task_id "$ID" kind "$KIND" \
-    project "$PROJ_ABS" mode "$MODE" yolo "$YOLO" harness "$HARNESS" \
+    project "$PROJ_ABS" project_capacity "$SPAWN_PROJECT_CAPACITY" mode "$MODE" yolo "$YOLO" harness "$HARNESS" \
     backend "$BACKEND" branch "${BRANCH:-}" base_branch "${BASE_BRANCH:-}" \
     source_brief_path "${SOURCE_BRIEF:-$BRIEF}" brief_path "$BRIEF" \
     worktree "${RELAUNCH_WT:-}" raw_command "${RAW_COMMAND:-}" || exit 1
