@@ -257,6 +257,16 @@ A per-task pass does not replace this final integration review.
 No phase polls workers, changes native completion state, installs hooks or adds a scheduling service.
 Review phases run the [Factory scope review](../README.md#plan-based-product-review---build-10) alongside the existing technical review evidence.
 
+## Publishing a reviewed ticket
+
+For no-mistakes delivery, `ticket-delivery.json` identifies a private `intentFile` containing the full reviewed ticket text and any additional recorded owner answers, and records its digest.
+An existing backlog ticket's body must be present in the reviewed request before the handoff can proceed.
+From the isolated checkout at the reviewed ticket head, use `node /absolute/software-factory/factory/scripts/ticket-validation.mjs start /absolute/ticket-delivery.json` for a new run.
+The helper passes the complete captured ticket to no-mistakes through `--intent-file`, and the pipeline owns opening the PR.
+Reattach to an active run through the ordinary driver and keep its original intent.
+Read the full body of the pipeline-opened PR from the forge and pipe the raw Markdown into `node /absolute/software-factory/factory/scripts/ticket-validation.mjs check-pr /absolute/ticket-delivery.json`.
+Delivery needs the full Intent section, so an omitted, shortened or otherwise incomplete ticket leaves the verification incomplete under the repository's existing publication settings.
+
 ## Worker-start hook
 
 The executable `scripts/worker-start-before.mjs` accepts the absolute path of an

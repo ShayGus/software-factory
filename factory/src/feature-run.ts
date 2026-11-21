@@ -22,7 +22,7 @@ import { CommitSchema } from './review-contracts.js';
 import { ProjectStore, StoreError } from './store.js';
 import { parseStrictJson } from './strict-json.js';
 import { validateTaskReviewForDelivery } from './rules.js';
-import { TaskAdapterOptionsSchema } from './tasks.js';
+import { TaskAdapterOptionsSchema, TaskWrapper } from './tasks.js';
 import { WorkerHookConfigSchema } from './worker-start-hook.js';
 
 const absolute = z.string().min(1).refine(isAbsolute, 'Absolute path required');
@@ -656,9 +656,44 @@ Each detailed task must require its worker to commit code, verify each assigned 
       }
     }
     const result = reviewDelivery(deliveries, snapshot.map((entry) => entry.taskId), `${config.taskId}-aggregate-review`, 'review-all');
-    if (ticket && ProductReviewSchema.parse(result.review).outcome === 'passed') {
+    const review = ProductReviewSchema.parse(result.review);
+    if (ticket && review.outcome === 'passed') {
       if (!head || ticketHead(config.repository, ticket.branch) !== head) throw new Error('ticket_branch_changed_during_review');
-      const delivery = { ...ticket, repository: config.repository, commit: head };
+      let intent: { intentFile: string; intentDigest: string } | undefined;
+      if (ticket.mode === 'no-mistakes') {
+        const records = history();
+        const requestRef = review.originalRequests.find((request) => request.id === manifest.requestId);
+        const request = requestRef && planningRecord(records, requestRef);
+        if (request?.kind !== 'request') throw new Error('ticket_intent_requires_reviewed_request');
+        if (config.featureTaskId) {
+          const nativeTicket = new TaskWrapper({ fmHome: fm.home, tasksExecutable: fm.tasksExecutable }).read(ticket.taskId);
+          if (!nativeTicket || (nativeTicket.body?.trim() && !request.originalText.includes(nativeTicket.body.trim()))) {
+            throw new Error('ticket_intent_requires_current_backlog_body_in_reviewed_request');
+          }
+        }
+        const ownerAnswers = new Set<string>();
+        for (const assignmentRef of review.assignments) {
+          const assignment = planningRecord(records, assignmentRef);
+          if (assignment?.kind !== 'assignment') throw new Error('ticket_intent_requires_reviewed_assignment');
+          const context = requiredAssignmentContext(records, assignment, assignment.selectedContext);
+          for (const decision of context.records) {
+            if (decision.kind !== 'decision_change' || decision.choice?.kind !== 'product' || decision.choice.state !== 'resolved') continue;
+            if (decision.answer) ownerAnswers.add(`${decision.questionOrChange}\n\n${decision.answer.text}`);
+            for (const source of decision.sourceRefs) {
+              const captured = source.record && planningRecord(records, source.record);
+              if (captured?.kind !== 'request' || captured.id === request.id) continue;
+              if (source.excerpt && !captured.originalText.includes(source.excerpt)) throw new Error('ticket_intent_requires_exact_owner_answer');
+              ownerAnswers.add(source.excerpt ?? captured.originalText);
+            }
+          }
+        }
+        const additional = [...ownerAnswers].filter((answer) => !request.originalText.includes(answer.trim()));
+        const intentText = additional.length ? `${request.originalText}\n\n## Recorded owner answers\n\n${additional.join('\n\n')}` : request.originalText;
+        const intentFile = join(directory, 'ticket-intent.md');
+        writeFileSync(intentFile, intentText, { mode: 0o600 });
+        intent = { intentFile, intentDigest: digestText(intentText) };
+      }
+      const delivery = { ...ticket, repository: config.repository, commit: head, ...intent };
       save('ticket-delivery', delivery);
       return { ...result, ticketDelivery: delivery };
     }

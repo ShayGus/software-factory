@@ -63,7 +63,7 @@ Do not report completion until the command and acceptance succeed.
    ```
 
    Derive project facts from registration and project documentation; keep unresolved product choices explicit.
-   When the request comes from an existing feature ticket, set selection `featureTaskId` to its exact tasks-axi ID so planned tasks become its native sub-tasks.
+   When the request comes from an existing feature ticket, save its full body in the exact request file and set selection `featureTaskId` to its exact tasks-axi ID so planned tasks become its native sub-tasks.
    Otherwise the task adapter creates a held feature ticket for the plan.
    `project` initializes a new project only; an existing database reuses its original initialized project.
    Run `node <factoryRoot>/skills/software-factory/scripts/materialize-run.mjs <settings-file> <selection-file> <exact-request-file>`.
@@ -140,11 +140,12 @@ Aggregate failure or pending work keeps the feature incomplete and never blocks 
 For one task the same final phase supplies a whole-request review.
 For a publishing run, wait for the verified `ticketDelivery` result from the aggregate review.
 Look up the ticket's PR using the destination repository and exact head branch, including closed and merged PRs.
-Reuse any existing PR across retries and record its URL on the parent ticket.
+Reuse any existing PR across retries.
 If none exists, verify that the ticket branch still has the recorded commit, then start its configured delivery with the original ticket intent.
-On a no-mistakes run, use the existing pipeline from an isolated checkout of that ticket branch and reuse any active run on it. The pipeline owns opening the PR.
+On a no-mistakes run, use the [ticket validation handoff](../../docs/one-feature-run.md#publishing-a-reviewed-ticket) from an isolated checkout of the ticket branch.
+Reuse any active run on the branch and verify the full ticket in the pipeline-opened PR before reporting delivery complete.
 On a direct-PR run, push the ticket branch and open its single PR through the normal FirstMate forge workflow.
-The ticket is the sole PR owner.
+The ticket is the sole PR owner. Record the PR URL on the parent ticket.
 Use [the command runbook](../../docs/one-feature-run.md) for phase mechanics and recovery.
 After a partial or ambiguous external effect, inspect saved output, `outbox`, native state and the existing recovery operations; never restart planning or blindly spawn a replacement.
 
