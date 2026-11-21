@@ -51,11 +51,21 @@ export function readFleetSnapshot(input: RuntimeAdapter): FleetSnapshot {
 }
 export function runtimeTask(snapshot: FleetSnapshot, id: string, requireCrewState = true) {
   const task = snapshot.tasks.find((entry) => entry.id === id);
-  const inventory = snapshot.main_inventory as { valid?: boolean; orphan_in_flight?: unknown[] } | undefined;
-  const orphaned = inventory?.orphan_in_flight?.some((entry) => entry === id ||
-    (!!entry && typeof entry === 'object' && 'id' in entry && entry.id === id));
-  const inFlight = snapshot.backlog.records.some((entry) => entry.id === id && entry.state === 'in_flight');
-  if (orphaned || (!task?.spawn_gen && (inventory?.valid === false || inFlight))) throw new Error('target_inventory_metadata_incomplete');
+  const inventory = snapshot.main_inventory as {
+    valid?: boolean; orphan_in_flight?: unknown[]; unstructured_current_count?: number;
+  } | undefined;
+  const orphanIds = inventory?.orphan_in_flight?.map((entry) =>
+    entry && typeof entry === 'object' && 'id' in entry ? entry.id : entry) ?? [];
+  const records = snapshot.backlog.records;
+  const inFlight = records.some((entry) => entry.id === id && entry.state === 'in_flight');
+  const queued = records.some((entry) => entry.id === id && entry.state === 'queued');
+  // Known missing metadata for other tasks cannot conceal this structured
+  // queued target. Unstructured rows or an unexplained invalidity still can.
+  const onlyKnownOrphans = inventory?.unstructured_current_count === 0 && orphanIds.length > 0 &&
+    orphanIds.every((orphan) => typeof orphan === 'string' &&
+      records.some((entry) => entry.id === orphan && entry.state === 'in_flight'));
+  const incomplete = inventory?.valid === false && !(queued && onlyKnownOrphans);
+  if (orphanIds.includes(id) || (!task?.spawn_gen && (incomplete || inFlight))) throw new Error('target_inventory_metadata_incomplete');
   if (requireCrewState && task && (task.current_state.freshness !== 'fresh' || task.current_state.state === 'unknown' ||
     task.current_state.observed_at !== snapshot.generated)) throw new Error('runtime_task_unknown_or_stale');
   return task;

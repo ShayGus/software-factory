@@ -11,7 +11,7 @@ import {
 import { takeBody } from "../body.js";
 import { deriveLinks, extractTags } from "../backends/markdown-grammar.js";
 import { PR_URL_EXPECTED } from "../pr-url.js";
-import { renderMutation, stateLabel, taskToJson } from "../confirm.js";
+import { renderJson, renderMutation, stateLabel, taskToJson } from "../confirm.js";
 import { requireCtx, type TasksContext } from "../context.js";
 import { blockedIds, heldTasks, isHoldActive } from "../derive.js";
 import { AxiError, notFound } from "../errors.js";
@@ -62,6 +62,7 @@ examples:
 export const LIST_HELP = `usage: tasks-axi list [flags]
 flags:
   --state <queued|in_flight|done|held>, --repo <name>, --kind <name>, --blocked
+  --json   print full structured task records with count and total
   --limit <n>, --fields <a,b,c>  (extra: ${Object.keys(LIST_EXTRA_FIELDS)
     .sort()
     .join(", ")})
@@ -412,6 +413,7 @@ export async function listCommand(
 ): Promise<string> {
   const { store } = requireCtx(context);
   const args = [...rawArgs];
+  const json = takeBoolFlag(args, "--json");
 
   const { extraDefs } = parseFields(
     takeFlag(args, "--fields"),
@@ -453,6 +455,13 @@ export async function listCommand(
   const total = matched.length;
   const items =
     limit !== undefined && limit >= 0 ? matched.slice(0, limit) : matched;
+  if (json) {
+    return renderJson({
+      count: items.length,
+      total,
+      tasks: items.map((task) => taskToJson(task, all)),
+    });
+  }
   const isEmpty = total === 0;
 
   const countLine = formatCountLine({

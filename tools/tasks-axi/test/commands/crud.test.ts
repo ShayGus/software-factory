@@ -479,6 +479,23 @@ describe("crud commands", () => {
       }
     });
 
+    it("exports full structured records and preserves the total when limited", async () => {
+      const b = makeBacklog();
+      try {
+        const title = "Complete title ".repeat(8).trim();
+        await addCommand(["json-task-q1", title, "--repo", "json-test"], b.ctx);
+        await addCommand(["json-task-q2", "Another task", "--repo", "json-test"], b.ctx);
+        const out = await listCommand(["--json", "--repo", "json-test", "--limit", "1"], b.ctx);
+        expect(JSON.parse(out)).toMatchObject({
+          count: 1,
+          total: 2,
+          tasks: [{ id: "json-task-q1", title, state: "queued", repo: "json-test" }],
+        });
+      } finally {
+        b.cleanup();
+      }
+    });
+
     it("does not report an empty backlog when a zero limit hides matches", async () => {
       const b = makeBacklog();
       try {

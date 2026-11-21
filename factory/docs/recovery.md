@@ -20,7 +20,9 @@ adapter (`fmHome`, optional `snapshotExecutable`, `timeoutMs`,
 before spawn. Every fresh launch requires the configured native hook and runs the same worker-start checker against the prepared brief, dispatch context and independent instruction check. The native hook still checks FirstMate’s final launch candidate and overlays. Missing hook configuration or a rejected check prevents launch. Repeating the same input after a crash observes the original task
 ID and generation, even if a correction has advanced the assignment revision. Hook settings and the project registry are checked again after instruction judgment before a fresh launch. An observed new generation for the recorded repository
 confirms launch; an empty, stale, malformed or unknown snapshot cannot authorize
-another spawn. Missing metadata for an in-flight or orphaned target, or an explicitly invalid inventory without a trustworthy target generation, also prevents launch. An existing generation before a new launch requires an explicit
+another spawn. Missing metadata for an in-flight or orphaned target prevents launch.
+An invalid inventory without a trustworthy target generation also prevents launch, except when the target is explicitly queued and the only inventory gaps are identified in-flight records for other tasks.
+An existing generation before a new launch requires an explicit
 operator decision/new attempt. The one-feature runbook uses this same path.
 
 Corrections carry a unique operation ID in the exact transport payload. After an
